@@ -1,0 +1,11 @@
+# 大体积/可再生内容不入库：解包树、构建树、官方归档、日志、临时诊断
+node_modules/
+asar-archive/
+build-*/
+extract/
+logs/
+stray/
+_verify/
+_selftest/
+*.asar
+*.asar.unpacked/

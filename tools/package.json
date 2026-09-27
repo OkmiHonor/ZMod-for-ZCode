@@ -1,0 +1,9 @@
+{
+  "name": "zmod-build-tools",
+  "private": true,
+  "version": "1.0.0",
+  "description": "ZMod build/deploy toolchain, deliberately kept OUTSIDE the ZCode install dir so installer cleanup cannot delete it",
+  "dependencies": {
+    "@electron/asar": "^3.2.10"
+  }
+}
