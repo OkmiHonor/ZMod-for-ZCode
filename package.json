@@ -1,0 +1,24 @@
+{
+  "name": "zmod",
+  "version": "2.0.0",
+  "description": "Next-generation modular modding framework and loader for ZCode desktop client",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "plugins/*"
+  ],
+  "scripts": {
+    "test": "node --test packages/*/test/*.test.js test/*.test.js",
+    "doctor": "node packages/zmod-cli/bin/zmod.js doctor"
+  },
+  "keywords": [
+    "zcode",
+    "mod",
+    "loader",
+    "electron",
+    "framework"
+  ],
+  "author": "ZMod Team",
+  "license": "MIT"
+}

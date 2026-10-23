@@ -1,0 +1,15 @@
+{
+  "name": "zmod",
+  "version": "2.0.0",
+  "description": "ZMod CLI - Installer, doctor, and plugin manager for ZCode client",
+  "type": "module",
+  "bin": {
+    "zmod": "./bin/zmod.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {},
+  "author": "ZMod Team",
+  "license": "MIT"
+}

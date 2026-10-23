@@ -1,0 +1,17 @@
+{
+  "name": "@zmod/sdk",
+  "version": "2.0.0",
+  "description": "ZMod Plugin Developer SDK - Types, definePlugin, and standard schema",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./schema": "./src/schema.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {},
+  "author": "ZMod Team",
+  "license": "MIT"
+}
