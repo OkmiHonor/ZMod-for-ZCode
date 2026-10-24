@@ -113,8 +113,16 @@ export function autodetectDatasources({ homeDir, existingTypes = [] }) {
       type: 'bailian-bss',
       name: '阿里云百炼资金账户',
       status: 'placeholder',
-      settings: {},
-      reason: '检测到百炼工作台密钥（sk-ws），但资金余额需要 RAM AccessKey 对（AliyunBSSReadOnlyAccess），sk-ws 查不了'
+      settings: { modelKeywords: 'qwen, 百炼, bailian' },
+      reason: '检测到百炼工作台密钥（sk-ws），但资金余额需要 RAM AccessKey 对（AliyunBSSReadOnlyAccess），sk-ws 查不了',
+      guide: {
+        url: 'https://ram.console.aliyun.com/manage/ak',
+        text: '打开阿里云 RAM 控制台创建 AccessKey（建议子账号仅授 AliyunBSSReadOnlyAccess）'
+      },
+      quickFields: [
+        { key: 'accessKeyId', title: 'AccessKey ID', type: 'text', placeholder: '粘贴 AccessKey ID' },
+        { key: 'accessKeySecret', title: 'AccessKey Secret', type: 'secret', placeholder: '粘贴 AccessKey Secret' }
+      ]
     });
   }
 

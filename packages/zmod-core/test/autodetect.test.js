@@ -68,6 +68,9 @@ test('DataSource Autodetect Suite', async (t) => {
     assert.equal(byType['openai-compatible'].status, 'placeholder');
     assert.equal(byType['console-web'].status, 'placeholder'); // mimo
     assert.equal(byType['bailian-bss'].status, 'placeholder');
+    assert.ok(byType['bailian-bss'].guide.url.startsWith('https://'));
+    assert.equal(byType['bailian-bss'].quickFields.length, 2);
+    assert.equal(byType['bailian-bss'].quickFields[1].type, 'secret');
 
     // already-configured types flip to configured
     const again = autodetectDatasources({
