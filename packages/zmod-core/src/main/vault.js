@@ -52,6 +52,12 @@ class SecretVault {
     const entry = rawVault[key];
     if (!entry) return null;
 
+    // Explicitly-unencrypted entries (base64 wrapper, e.g. pre-provisioned by
+    // scripts) read back regardless of safeStorage availability.
+    if (entry.unencrypted) {
+      return Buffer.from(entry.data, 'base64').toString('utf8');
+    }
+
     if (this.isAvailable()) {
       try {
         const buffer = Buffer.from(entry.data, 'hex');
@@ -62,10 +68,6 @@ class SecretVault {
       }
     }
 
-    // Fallback if saved unencrypted or in dev
-    if (entry.unencrypted) {
-      return Buffer.from(entry.data, 'base64').toString('utf8');
-    }
     console.warn(`[ZMod:Vault] safeStorage not available to decrypt "${key}"`);
     return null;
   }
