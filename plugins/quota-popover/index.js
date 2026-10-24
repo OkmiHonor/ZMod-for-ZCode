@@ -22,21 +22,6 @@ function esc(s) {
   })[c]);
 }
 
-function pctFromValue(v) {
-  const m = /(\d+(?:\.\d+)?)\s*%/.exec(String(v ?? ''));
-  if (!m) return null;
-  const n = parseFloat(m[1]);
-  return isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : null;
-}
-
-const LEVEL_CLASSES = {
-  ok: 'border-emerald-500/20 bg-emerald-500/8 text-emerald-600 dark:text-emerald-400',
-  mid: 'border-amber-500/20 bg-amber-500/8 text-amber-600 dark:text-amber-400',
-  low: 'border-rose-500/20 bg-rose-500/8 text-rose-600 dark:text-rose-400'
-};
-const levelOf = (pct) =>
-  pct == null ? null : pct >= 50 ? LEVEL_CLASSES.ok : pct >= 20 ? LEVEL_CLASSES.mid : LEVEL_CLASSES.low;
-
 function hostOf(url) {
   try {
     return new URL(String(url)).host.toLowerCase();
@@ -81,51 +66,125 @@ function matchInstance(providerName, providerBaseUrl, instances) {
   return best;
 }
 
-/* ---- card builders (official token classes, v1 Bento layout) ---- */
+/* ---- v1 detail-card kit (Bento provider quota card, 1:1 of v1
+   __zmodProviderQuotaCard) with two refinements over v1: the voucher footnote
+   stays on one line (v1 wrapped mid-sentence, orphaning 到期) and amounts
+   never wrap mid-number ---- */
 
-function bigTile(label, value, hint, pct) {
-  const lv = levelOf(pct);
-  const bar = lv
-    ? `<div class="h-1 w-full overflow-hidden rounded-full bg-surface-hover/80"><div class="h-full rounded-full ${lv.dot}" style="width:${pct}%"></div></div>`
-    : '';
-  return `<div class="flex min-w-0 flex-col gap-1 rounded-lg border border-border bg-background/60 px-3.5 py-3">` +
-    `<span class="truncate text-ui-sm text-foreground-subtle">${esc(label)}</span>` +
-    `<span class="truncate text-lg font-semibold tabular-nums text-foreground">${esc(value)}</span>` +
-    bar +
-    (hint ? `<span class="truncate text-ui-xs text-foreground-subtle">${esc(hint)}</span>` : '') +
-    `</div>`;
+function pctClass(p) {
+  return p >= 50
+    ? { text: 'text-emerald-600 dark:text-emerald-400', bar: 'bg-emerald-500' }
+    : p >= 20
+      ? { text: 'text-amber-600 dark:text-amber-400', bar: 'bg-amber-500' }
+      : { text: 'text-rose-600 dark:text-rose-400', bar: 'bg-rose-500' };
 }
 
-function pillFor(row) {
-  const pct = pctFromValue(row.value);
-  const cls = levelOf(pct) || 'border-border bg-surface text-foreground-subtle';
-  const dot = levelOf(pct) ? `<span class="inline-block size-1.5 rounded-full ${levelOf(pct) === LEVEL_CLASSES.ok ? 'bg-emerald-500' : levelOf(pct) === LEVEL_CLASSES.mid ? 'bg-amber-500' : 'bg-rose-500'}"></span>` : '';
-  return `<span class="inline-flex h-5 max-w-full items-center gap-1.5 rounded-md border px-1.5 font-mono text-[11px] font-medium select-none ${cls}" title="${esc(row.label)}">` +
-    `${dot}<span class="truncate leading-none">${esc(row.value)}</span></span>`;
+function fmtDateCN(iso) {
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    return `${d.getMonth() + 1}月${d.getDate()}日`;
+  } catch { return ''; }
 }
 
-/** All rows are percentages (≥3) → compact pill cloud (antigravity shape);
-    otherwise balance/rows render as big-number tiles (deepseek/bailian shape). */
-function instanceCardBody(status) {
+/** v1 mkBar: mono label + colored % + h-1.5 track with colored fill */
+function barRow(label, pct) {
+  const c = pctClass(pct);
+  return (
+    `<div class="space-y-1">` +
+    `<div class="flex items-center justify-between text-[11px] font-mono text-foreground-subtle">` +
+    `<span>${esc(label)}</span><span class="font-semibold ${c.text}">${pct}%</span></div>` +
+    `<div class="h-1.5 w-full rounded-full bg-surface-hover/80 overflow-hidden">` +
+    `<div class="h-full rounded-full transition-all duration-300 ${c.bar}" style="width:${pct}%"></div>` +
+    `</div></div>`
+  );
+}
+
+/** 'N 张 · 最近 YYYY-MM-DD 到期' → 'N 张专属券 · 最近 M月D日到期' (single line) */
+function voucherSub(detail) {
+  const m = /^(\d+)\s*张\s*·\s*最近\s*(\d{4})-(\d{2})-(\d{2})\s*到期$/.exec(String(detail || '').trim());
+  if (!m) return String(detail || '');
+  return `${m[1]} 张专属券 · 最近 ${+m[3]}月${+m[4]}日到期`;
+}
+
+function bentoSubCard(title, value, opts = {}) {
+  const boxCls = opts.accent ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-border/60 bg-surface-hover/20';
+  const textCls = opts.accent ? 'text-emerald-600 dark:text-emerald-400' : 'text-foreground';
+  const titleCls = opts.accent ? 'text-emerald-600 dark:text-emerald-400' : 'text-foreground-subtle';
+  return (
+    `<div class="rounded-lg border ${boxCls} p-3 space-y-1 min-w-0">` +
+    `<div class="text-[11px] font-medium ${titleCls}">${esc(title)}</div>` +
+    `<div class="text-ui-xl font-bold font-mono tracking-tight whitespace-nowrap ${textCls}">${esc(value)}</div>` +
+    (opts.foot ? `<div class="text-[10px] text-foreground-subtle truncate">${esc(opts.foot)}</div>` : '') +
+    `</div>`
+  );
+}
+
+/** v1 Bento body per datasource type (user ruling 2026-10-25: the settings
+    detail card follows v1's Bento form; small v1 flaws smoothed over) */
+function renderV1DetailBody(type, status) {
   if (!status) return `<div class="text-ui-sm text-foreground-subtle">状态查询中…</div>`;
   if (!status.ok) return `<div class="text-ui-sm text-foreground-subtle">${esc(status.message || '查询失败')}</div>`;
   const rows = status.rows || [];
-  const allPct = rows.length >= 3 && rows.every((r) => pctFromValue(r.value) != null);
-  if (allPct) {
-    return `<div class="flex flex-wrap items-center gap-1.5">${rows.map(pillFor).join('')}</div>`;
+  if (type === 'antigravity') {
+    const groupCards = (status.groups || []).map((g) => {
+      const b5 = (g.buckets || []).find((b) => b.window === '5h');
+      const bw = (g.buckets || []).find((b) => b.window === 'weekly');
+      const p5 = b5 ? Math.max(0, Math.min(100, Math.round(b5.frac * 100))) : null;
+      const pw = bw ? Math.max(0, Math.min(100, Math.round(bw.frac * 100))) : null;
+      const resetStr = b5 && b5.reset ? fmtDateCN(b5.reset) : bw && bw.reset ? fmtDateCN(bw.reset) : '';
+      return (
+        `<div class="flex-1 min-w-[210px] rounded-lg border border-border/60 bg-surface-hover/20 p-3 flex flex-col justify-between gap-2.5 hover:border-border transition-colors">` +
+        `<div class="flex items-center justify-between">` +
+        `<span class="text-ui-xs font-semibold text-foreground tracking-tight">${esc(g.name || '配额组')}</span>` +
+        (resetStr ? `<span class="text-[11px] font-mono text-foreground-subtle">${esc(resetStr)}</span>` : '') +
+        `</div>` +
+        `<div class="space-y-2">${p5 !== null ? barRow('5小时滚动限额', p5) : ''}${pw !== null ? barRow('每周可用总额', pw) : ''}</div>` +
+        `</div>`
+      );
+    }).join('');
+    if (groupCards) return `<div class="flex flex-wrap gap-2.5">${groupCards}</div>`;
+    return `<div class="text-ui-sm text-foreground-subtle">配额组里没有可用桶</div>`;
   }
-  let html = '';
-  if (status.balance != null) html += bigTile('账户余额', `${status.currency || ''}${status.balance}`);
-  for (const r of rows.slice(0, 6)) {
-    const pct = pctFromValue(r.value);
-    if (pct != null) {
-      const reset = /(\d{1,2}月\d{1,2}日)/.exec(r.value)?.[1] || '';
-      html += bigTile(r.label, pct + '%', reset, pct);
-    } else {
-      html += bigTile(r.label, r.value);
+  if (type === 'deepseek') {
+    const total = parseFloat(status.balance) || 0;
+    const grant = numFrom(rowValue(rows, '赠送余额'));
+    const top = numFrom(rowValue(rows, '充值余额'));
+    const cur = status.currency || '¥';
+    if (grant > 0) {
+      return `<div class="grid grid-cols-2 gap-3 max-sm:grid-cols-1">` +
+        bentoSubCard('充值余额 (永久有效)', `${cur} ${top.toFixed(2)}`) +
+        bentoSubCard('赠送余额', `${cur} ${grant.toFixed(2)}`, { accent: true }) +
+        `</div>`;
     }
+    return (
+      `<div class="rounded-lg border border-border/60 bg-surface-hover/20 p-3 flex items-baseline justify-between">` +
+      `<div class="space-y-0.5">` +
+      `<div class="text-[11px] text-foreground-subtle font-medium">当前可用余额 (按量扣减)</div>` +
+      `<div class="text-ui-2xl font-bold font-mono tracking-tight text-foreground">${esc(cur)} ${total.toFixed(2)} <span class="text-ui-sm font-normal text-foreground-subtle">${esc(codeOf(status))}</span></div>` +
+      `</div>` +
+      `<span class="text-ui-xs text-foreground-subtle font-mono">API 直连</span></div>`
+    );
   }
-  return `<div class="grid grid-cols-2 gap-2">${html}</div>`;
+  if (type === 'bailian-bss') {
+    const avail = parseFloat(status.balance) || 0;
+    const voucher = numFrom(rowValue(rows, '可用代金券'));
+    const detail = rowValue(rows, '代金券明细');
+    return `<div class="grid grid-cols-2 gap-3 max-sm:grid-cols-1">` +
+      bentoSubCard('现金可用余额 (实时)', `${status.currency || '¥'} ${avail.toFixed(2)}`, { foot: '按量付费账单抵扣' }) +
+      (isFinite(voucher) && voucher > 0
+        ? bentoSubCard('有效代金券 (优先抵扣)', `${status.currency || '¥'} ${voucher.toFixed(2)}`, { accent: true, foot: voucherSub(detail) })
+        : '') +
+      `</div>`;
+  }
+  // generic engines: label/value lines in a Bento sub-card
+  const lines = (status.balance != null
+    ? [{ label: '余额', value: `${status.currency || ''}${money(status.balance)}` }, ...rows]
+    : rows
+  ).slice(0, 8)
+    .map((r) => `<div class="flex items-baseline justify-between gap-3"><span class="text-ui-sm text-foreground-subtle">${esc(r.label)}</span><span class="text-ui-sm font-medium tabular-nums text-foreground">${esc(r.value)}</span></div>`)
+    .join('');
+  return `<div class="rounded-lg border border-border/60 bg-surface-hover/20 p-3 space-y-1.5">${lines || '<div class="text-ui-sm text-foreground-subtle">无数据行</div>'}</div>`;
 }
 
 /* ================= v1 balance-card kit =================
@@ -377,7 +436,7 @@ export default definePlugin({
   id: 'quota-popover',
   name: '余量弹窗与模型页余量',
   version: '2.1.0',
-  description: '官方「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1：DS 控制台同款深灰卡+平台链接+官方配额条）+ 官方设置模型页供应商详情注入账户额度卡（数据源驱动，不改官方文件）',
+  description: '官方「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1）+ 官方设置模型页供应商详情注入 v1 Bento 账户额度卡（数据源驱动，不改官方文件）',
   author: 'ZMod Team',
 
     async start(ctx) {
@@ -546,17 +605,31 @@ export default definePlugin({
       const card = document.createElement('div');
       card.setAttribute('data-' + DETAIL_MARK, inst.id);
       card.dataset.snapshotAt = String(snapshotAt || 0);
-      card.className = 'rounded-xl border border-border bg-surface/40 p-4';
-      const total = status && status.ok && status.balance != null ? `可用总额: ${status.currency || ''}${status.balance}` : '';
+      card.className = 'rounded-xl border border-border bg-surface p-4 space-y-3 shadow-xs';
+      const ok = status && status.ok;
+      const rows = ok ? status.rows || [] : [];
+      // header meta per v1: money sources show 可用总额, antigravity shows its tier pill
+      let meta = '';
+      if (ok && inst.type === 'antigravity') {
+        const tier = rowValue(rows, '订阅档位');
+        if (tier) {
+          meta = `<span class="rounded-full px-2 py-0.5 text-[10px] font-semibold bg-primary/10 text-primary border border-primary/20 tracking-wider">${esc(tier)}</span>`;
+        }
+      } else if (ok && status.balance != null) {
+        let total = parseFloat(status.balance) || 0;
+        if (inst.type === 'bailian-bss') total += numFrom(rowValue(rows, '可用代金券')) || 0;
+        const code = inst.type === 'bailian-bss' ? 'CNY' : codeOf(status);
+        meta = `<span class="text-ui-xs font-mono text-foreground-subtle">可用总额: <span class="font-semibold text-foreground">${esc(status.currency || '¥')}${total.toFixed(2)} ${esc(code)}</span></span>`;
+      }
       const title = /额度$/.test(inst.name) ? inst.name : inst.name + '账户额度';
       card.innerHTML =
-        `<div class="flex items-center justify-between gap-3 pb-2">` +
-        `<div class="flex min-w-0 items-baseline gap-2">` +
-        `<span class="text-ui-base font-semibold text-foreground">${esc(title)}</span>` +
-        `<span class="text-ui-xs text-foreground-subtle">${esc(total)}</span></div>` +
-        `<button type="button" data-${REFRESH_MARK}="${inst.id}" class="inline-flex h-7 shrink-0 items-center rounded-md border border-border px-2.5 text-ui-sm text-foreground-subtle hover:bg-surface-hover hover:text-foreground">刷新</button>` +
-        `</div>${instanceCardBody(status)}` +
-        `<div class="pt-1.5 text-ui-xs text-foreground-subtle/70">ZMod 数据源 · ${status && status.ok ? '更新于 ' + new Date(snapshotAt).toLocaleTimeString() : esc(status?.message || '查询失败')}</div>`;
+        `<div class="flex items-center justify-between gap-3">` +
+        `<div class="flex min-w-0 flex-wrap items-center gap-2">` +
+        `<span class="text-ui-base font-semibold text-foreground">${esc(title)}</span>${meta}</div>` +
+        `<button type="button" data-${REFRESH_MARK}="${inst.id}" class="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border/80 bg-surface px-2.5 py-1 text-ui-xs font-medium text-foreground-subtle hover:bg-surface-hover hover:text-foreground transition-all cursor-pointer shadow-2xs">刷新</button>` +
+        `</div>` +
+        renderV1DetailBody(inst.type, status) +
+        `<div class="text-ui-xs text-foreground-subtle/70">ZMod 数据源 · ${ok ? '更新于 ' + new Date(snapshotAt).toLocaleTimeString() : esc(status?.message || '查询失败')}</div>`;
       card.querySelector(`[data-${REFRESH_MARK}]`)?.addEventListener('click', async () => {
         await refreshSnapshot(true).catch(() => {});
         rerenderDetail();
