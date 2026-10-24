@@ -138,6 +138,131 @@ async function antigravityQuotaStatus(settings, ctx) {
   };
 }
 
+/* Aliyun BSS RPC signing (v1 quota-bridge parity): RFC3986 percentEncode +
+   HMAC-SHA1 over "GET&%2F&" + encoded query, endpoint business.aliyuncs.com.
+   Signed in the renderer via WebCrypto (zmod-local:// is a secure scheme). */
+function bssEnc(s) {
+  return encodeURIComponent(String(s)).replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+}
+
+async function bssCall(action, id, secret, ctx) {
+  const params = {
+    Action: action,
+    Format: 'JSON',
+    Version: '2017-12-14',
+    AccessKeyId: id,
+    SignatureMethod: 'HMAC-SHA1',
+    SignatureVersion: '1.0',
+    SignatureNonce: crypto.randomUUID(),
+    Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+  };
+  const sorted = Object.keys(params).sort().map((k) => `${bssEnc(k)}=${bssEnc(params[k])}`).join('&');
+  const strToSign = 'GET&%2F&' + bssEnc(sorted);
+  const keyBytes = new TextEncoder().encode(secret + '&');
+  const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const sigBuf = await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(strToSign));
+  const sig = btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
+  const res = await ctx.net.fetch({
+    url: `https://business.aliyuncs.com/?${sorted}&Signature=${bssEnc(sig)}`,
+    method: 'GET'
+  });
+  let json = null;
+  try { json = JSON.parse(res.text); } catch { /* handled below */ }
+  return { status: res.status, json };
+}
+
+/* Xiaomi MiMo console endpoints (v1 TokenMeter parity): balance/usage live on
+   the platform domain only; the cookie must contain api-platform_ph. */
+function cookieValue(cookie, name) {
+  const m = new RegExp(`(?:^|;\\s*)${name}=([^;]*)`).exec(String(cookie));
+  return m ? m[1] : '';
+}
+
+async function mimoStatus(settings, ctx) {
+  const cookie = String(settings.cookie || '').trim();
+  if (!cookie) {
+    return {
+      ok: false,
+      message: '未配置登录 Cookie — 登录 platform.xiaomimimo.com 后从 DevTools 复制整串 Cookie（须含 api-platform_ph，约 24h 过期需更新）'
+    };
+  }
+  const ph = cookieValue(cookie, 'api-platform_ph');
+  const headers = {
+    Cookie: cookie,
+    'x-timezone': 'Asia/Shanghai',
+    Origin: 'https://platform.xiaomimimo.com',
+    Referer: 'https://platform.xiaomimimo.com/console/usage'
+  };
+  const bal = await ctx.net.fetch({
+    url: `https://platform.xiaomimimo.com/api/v1/balance${ph ? `?api-platform_ph=${encodeURIComponent(ph)}` : ''}`,
+    method: 'GET',
+    headers: { ...headers, Referer: 'https://platform.xiaomimimo.com/console/usage' }
+  });
+  if (bal.status === 401) return { ok: false, message: 'Cookie 已失效 — 重新复制 platform.xiaomimimo.com 登录 Cookie' };
+  let balJson = null;
+  try { balJson = JSON.parse(bal.text); } catch { return { ok: false, message: `响应不是 JSON（HTTP ${bal.status}）` }; }
+  if (!balJson || balJson.code !== 0 || !balJson.data) {
+    return { ok: false, message: `接口错误 ${balJson?.code ?? bal.status}${balJson?.msg ? '：' + balJson.msg : ''}` };
+  }
+  const rows = [];
+  try {
+    const usage = await ctx.net.fetch({
+      url: `https://platform.xiaomimimo.com/api/v1/usage${ph ? `?api-platform_ph=${encodeURIComponent(ph)}` : ''}`,
+      method: 'GET',
+      headers: { ...headers, Referer: 'https://platform.xiaomimimo.com/console/usage' }
+    });
+    const uj = JSON.parse(usage.text);
+    const mc = parseFloat(uj?.data?.costUsage?.currentMonthCost);
+    const tt = parseInt(uj?.data?.tokenUsage?.totalToken, 10);
+    if (isFinite(mc)) rows.push({ label: '本月消费', value: `¥${mc.toFixed(2)}` });
+    if (isFinite(tt)) rows.push({ label: '本月 Token', value: tt >= 1e6 ? (tt / 1e6).toFixed(1) + 'M' : String(tt) });
+  } catch { /* usage is optional */ }
+  return { ok: true, balance: String(parseFloat(balJson.data.balance)), currency: '¥', rows };
+}
+
+async function bailianBssStatus(settings, ctx) {
+  const id = String(settings.accessKeyId || '').trim();
+  const secret = String(settings.accessKeySecret || '').trim();
+  if (!id || !secret) return { ok: false, message: '未配置 RAM AccessKey（需 AliyunBSSReadOnlyAccess 授权）' };
+  let bal;
+  try {
+    bal = await bssCall('QueryAccountBalance', id, secret, ctx);
+  } catch (e) {
+    return { ok: false, message: (e?.message || String(e)) + '（网络请求失败）' };
+  }
+  if (bal.status !== 200) {
+    return { ok: false, message: `HTTP ${bal.status}${bal.json?.Message ? '：' + bal.json.Message : ''}` };
+  }
+  const bj = bal.json || {};
+  if (!bj.Data || bj.Data.AvailableAmount == null) {
+    return { ok: false, message: (bj.Code ? bj.Code + ': ' : '返回结构异常：') + (bj.Message || '空数据') };
+  }
+  const rows = [];
+  // vouchers are non-fatal (v1 parity: failure just drops the row)
+  try {
+    const vc = await bssCall('QueryCashCoupons', id, secret, ctx);
+    const list = vc.json?.Data && (vc.json.Data.CashCoupon || vc.json.Data.UserCoupons || vc.json.Data.Coupons);
+    if (Array.isArray(list)) {
+      let sum = 0, n = 0, expire = null;
+      for (const c of list) {
+        const st = String(c?.Status || '').toLowerCase();
+        if (st && !/valid|normal|effective|available/.test(st)) continue;
+        const v = parseFloat(c && (c.Balance != null ? c.Balance : c.FaceValue));
+        if (isFinite(v) && v > 0) {
+          sum += v; n++;
+          const d = String(c?.ValidEndTime || c?.ExpiryTime || '').trim().slice(0, 10);
+          if (/^\d{4}-\d{2}-\d{2}$/.test(d) && (!expire || d < expire)) expire = d;
+        }
+      }
+      if (n > 0) {
+        rows.push({ label: '可用代金券', value: `¥${sum.toFixed(2)}` });
+        rows.push({ label: '代金券明细', value: `${n} 张 · 最近 ${expire} 到期` });
+      }
+    }
+  } catch { /* optional */ }
+  return { ok: true, balance: String(parseFloat(bj.Data.AvailableAmount)), currency: '¥', rows };
+}
+
 const COMMON_ENGINE_SETTINGS = {
   url: {
     type: 'text',
@@ -333,6 +458,47 @@ export default definePlugin({
         }
       })
     );
-    console.log('[official-providers] registered 5 data source providers');
+    ds.registerProvider(
+      preset({
+        type: 'bailian-bss',
+        label: '阿里云百炼资金账户（BSS）',
+        description: 'BSS QueryAccountBalance/QueryCashCoupons 查现金余额与代金券（RAM 用户 + AliyunBSSReadOnlyAccess 授权；sk- API Key 查不了余额，这是唯一正路）',
+        settings: {
+          accessKeyId: { type: 'secret', title: 'AccessKey ID', description: '阿里云 RAM 用户的 AccessKey ID，加密保存' },
+          accessKeySecret: { type: 'secret', title: 'AccessKey Secret', description: 'RAM 用户的 AccessKey Secret，加密保存' },
+          modelKeywords: {
+            title: '供应商/模型匹配关键字（可选）',
+            description: '逗号分隔。当前选中的供应商名或模型名含任一关键字时，用量浮窗显示此源；留空则按实例名称相似度自动匹配',
+            placeholder: '百炼, qwen, dashscope'
+          }
+        },
+        fetchStatus: bailianBssStatus,
+        test: async (settings, ctx2) => {
+          const r = await bailianBssStatus(settings, ctx2);
+          return r.ok ? { ok: true, message: `连接成功，现金余额 ¥${r.balance}` } : r;
+        }
+      })
+    );
+    ds.registerProvider(
+      preset({
+        type: 'mimo',
+        label: '小米 MiMo 账户',
+        description: 'platform.xiaomimimo.com 控制台余额与本月消费（需登录 Cookie，约 24h 过期需更新）',
+        settings: {
+          cookie: { type: 'secret', title: '登录 Cookie', description: '登录 platform.xiaomimimo.com 后从 DevTools 复制整串 Cookie（须含 api-platform_ph），加密保存' },
+          modelKeywords: {
+            title: '供应商/模型匹配关键字（可选）',
+            description: '逗号分隔。当前选中的供应商名或模型名含任一关键字时，用量浮窗显示此源；留空则按实例名称相似度自动匹配',
+            placeholder: 'mimo, xiaomi, 小米'
+          }
+        },
+        fetchStatus: mimoStatus,
+        test: async (settings, ctx2) => {
+          const r = await mimoStatus(settings, ctx2);
+          return r.ok ? { ok: true, message: `连接成功，余额 ¥${r.balance}` } : r;
+        }
+      })
+    );
+    console.log('[official-providers] registered 7 data source providers');
   }
 });
