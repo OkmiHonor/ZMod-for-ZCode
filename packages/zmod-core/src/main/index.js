@@ -1,5 +1,5 @@
 import { registerPrivileges, registerProtocolHandler } from './protocol.js';
-import { rpcGateway } from './rpc.js';
+import { rpcGateway, installTelemetryTap } from './rpc.js';
 import { ensureDirectories } from '../common/paths.js';
 
 let electronApp = null;
@@ -40,6 +40,11 @@ export function bootstrap() {
   whenReady
     .then(() => {
       registerProtocolHandler();
+      // Official telemetry handler registers around app ready; retry once
+      // shortly after in case it is not there yet.
+      if (!installTelemetryTap()) {
+        setTimeout(() => installTelemetryTap(), 3000).unref?.();
+      }
       console.log('[ZMod:Core] main runtime ready');
     })
     .catch((err) => console.error('[ZMod:Core] ready hook failed:', err));

@@ -276,6 +276,14 @@ class RpcGateway {
       return { success: true };
     });
 
+    // ---- Telemetry tap (v1 __zmodTelemetryTap recipe) ----
+    // Wraps the official "zcode:report-telemetry-event" invoke handler once,
+    // forwarding message_completion payloads to the renderer over
+    // "zmod:telemetry-event" (consumed via the preload bridge's on()).
+    this.register('telemetry.tapStatus', async () => ({
+      installed: telemetryTapInstalled
+    }));
+
     // ---- Plugin discovery ----
     this.register('plugins.discover', async () => {
       const results = [];
@@ -337,3 +345,41 @@ class RpcGateway {
 }
 
 export const rpcGateway = new RpcGateway();
+
+/**
+ * Telemetry tap, ported from v1 __zmodTelemetryTap: swap the official
+ * invoke handler for a wrapper that mirrors message_completion events to the
+ * renderer via webContents.send("zmod:telemetry-event"). Installed at runtime
+ * bootstrap (after the official handler exists — tail-import guarantees that).
+ */
+const TELEMETRY_CH = 'zcode:report-telemetry-event';
+const TELEMETRY_FWD = 'zmod:telemetry-event';
+let telemetryTapInstalled = false;
+
+export function installTelemetryTap() {
+  if (telemetryTapInstalled || !electronIpcMain) return telemetryTapInstalled;
+  try {
+    const handlers = electronIpcMain._invokeHandlers;
+    const orig = handlers && typeof handlers.get === 'function' ? handlers.get(TELEMETRY_CH) : null;
+    if (typeof orig !== 'function') {
+      console.log('[ZMod:RPC] telemetry tap: official handler not found, skip');
+      return false;
+    }
+    electronIpcMain.removeHandler(TELEMETRY_CH);
+    electronIpcMain.handle(TELEMETRY_CH, async (event, payload) => {
+      try {
+        const elem = payload?.elementName ?? payload?.eventName;
+        if (elem === 'message_completion' || elem === 'agent_step') {
+          const win = getMainWindow();
+          win?.webContents?.send?.(TELEMETRY_FWD, payload);
+        }
+      } catch {}
+      return orig(event, payload);
+    });
+    telemetryTapInstalled = true;
+    console.log(`[ZMod:RPC] telemetry tap ready → ${TELEMETRY_FWD}`);
+  } catch (err) {
+    console.error('[ZMod:RPC] telemetry tap failed:', err?.message || err);
+  }
+  return telemetryTapInstalled;
+}

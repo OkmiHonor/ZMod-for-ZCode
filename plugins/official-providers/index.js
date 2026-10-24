@@ -183,6 +183,61 @@ export default definePlugin({
         }
       })
     );
-    console.log('[official-providers] registered 3 data source providers');
+    ds.registerProvider(
+      preset({
+        type: 'deepseek',
+        label: 'DeepSeek 官方余额',
+        description: 'DeepSeek 开放平台余额接口：充值/赠送双卡（api.deepseek.com），令牌加密保存',
+        settings: {
+          url: {
+            title: '请求地址',
+            default: 'https://api.deepseek.com/user/balance',
+            placeholder: 'https://api.deepseek.com/user/balance'
+          },
+          token: {
+            title: 'API Key',
+            description: 'DeepSeek 开放平台的 API Key，以 Bearer 头发送，加密保存'
+          },
+          pathsJson: {
+            default: '',
+            placeholder: '{"总余额": "balance_infos.0.total_balance", "赠送": "balance_infos.0.granted_balance", "充值": "balance_infos.0.topped_up_balance"}',
+            description: '默认留空即可自动使用官方双卡字段；响应含 balance_infos 数组'
+          }
+        },
+        fetchStatus: async (settings, ctx2) => {
+          const url = settings.url || 'https://api.deepseek.com/user/balance';
+          const res = await ctx2.net.fetch({
+            url,
+            method: 'GET',
+            headers: settings.token ? { Authorization: `Bearer ${settings.token}` } : {}
+          });
+          if (!res.ok && res.status === 0) return { ok: false, message: res.error || '网络请求失败' };
+          let json = null;
+          try { json = JSON.parse(res.text); } catch { return { ok: false, message: `响应不是 JSON（HTTP ${res.status}）` }; }
+          if (!res.ok) {
+            return { ok: false, message: `HTTP ${res.status}${json.error?.message ? '：' + json.error.message : ''}` };
+          }
+          if (!json.is_available || !Array.isArray(json.balance_infos) || !json.balance_infos.length) {
+            return { ok: false, message: '账户不可用或无余额信息' };
+          }
+          const info = json.balance_infos[0];
+          const cur = info.currency === 'CNY' ? '¥' : info.currency || '';
+          return {
+            ok: true,
+            balance: String(parseFloat(info.total_balance || 0)),
+            currency: cur,
+            rows: [
+              { label: '充值余额', value: String(parseFloat(info.topped_up_balance || 0)) },
+              { label: '赠送余额', value: String(parseFloat(info.granted_balance || 0)) }
+            ]
+          };
+        },
+        test: async (settings, ctx2) => {
+          const r = await jsonEngineStatus({ ...settings, url: settings.url || 'https://api.deepseek.com/user/balance', method: 'GET' }, ctx2);
+          return r.ok ? { ok: true, message: '连接成功，余额接口可访问' } : r;
+        }
+      })
+    );
+    console.log('[official-providers] registered 4 data source providers');
   }
 });
