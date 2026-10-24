@@ -493,7 +493,7 @@ export default definePlugin({
       }
       const status = snapshot.find((s) => s.inst.id === inst.id)?.status;
       const wrap = document.createElement('div');
-      wrap.className = 'flex flex-col gap-2.5 border-t border-border pt-2.5 mt-2.5';
+      wrap.className = 'flex flex-col gap-2.5 border-t border-border pt-2 mt-2';
       wrap.setAttribute('data-' + POPOVER_MARK, inst.id);
       wrap.innerHTML = renderV1Section(inst.type, status, sel, inst.name);
       for (const a of wrap.querySelectorAll('.zmod-bal-pl a[data-zmod-url]')) {
@@ -527,7 +527,10 @@ export default definePlugin({
           const hasOfficialBalance = /今日余额/.test(text) && /\d{1,2}月\d{1,2}日/.test(text);
           const block = buildPopoverBlock(hasOfficialBalance);
           if (!block) continue;
-          const host = pop.querySelector('[class*="flex-col"]')?.lastElementChild?.parentElement || pop;
+          // native rows live in the padded official column (bg-menu p-3
+          // space-y-3) — injecting there inherits the native padding and
+          // rhythm exactly like v1, whose cards sat inside the same container
+          const host = pop.querySelector('[class*="bg-menu"]') || pop.querySelector('[class*="space-y-3"]') || pop;
           host.appendChild(block);
           console.log('[quota-popover] appended balance cards to official popover (inst=' + block.getAttribute('data-' + POPOVER_MARK) + ')');
         }
