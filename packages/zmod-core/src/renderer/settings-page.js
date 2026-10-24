@@ -178,7 +178,9 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     if (!overlay) {
       overlay = document.createElement('div');
       overlay.setAttribute('data-zmod-settings-overlay', 'true');
-      overlay.style.cssText = 'position:fixed;z-index:40;display:flex;flex-direction:column;';
+      // The official settings dialog renders above z-50 (Radix); our overlay
+      // must sit above it while staying below ZMod toasts (2147483000).
+      overlay.style.cssText = 'position:fixed;z-index:60;display:flex;flex-direction:column;';
       overlay.className = 'bg-background';
       document.body.appendChild(overlay);
     }
@@ -441,7 +443,9 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       </div>`;
     const toolbar = document.createElement('div');
     toolbar.className = 'flex items-center gap-1';
-    card.firstChild.appendChild(toolbar);
+    // firstElementChild, not firstChild: the innerHTML template starts with a
+    // newline, so firstChild would be a text node (no appendChild).
+    card.firstElementChild.appendChild(toolbar);
     toolbar.appendChild(iconButton('refresh', '刷新状态', async (e) => {
       const btn = e?.currentTarget || e?.target;
       await refreshStatusInto(inst.id, card, { force: true });
