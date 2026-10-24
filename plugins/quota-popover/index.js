@@ -5,9 +5,11 @@ import { definePlugin } from '@zmod/sdk';
  * patch-styles-popover. No official file is touched; both surfaces are located
  * by DOM traits (data-testid / data-slot) and re-checked on mutation.
  *
- * Surface 1 (composer 上下文容量 hover-card): append a 今日余额 section,
- *   one card grid per datasource instance — v1 layout (section title + 2-col
- *   big-number cards). Statuses come from the shared 60s-TTL datasource cache.
+ * Surface 1 (composer 上下文容量 hover-card): append a 今日余额 section in
+ *   v1 token-monitor v3.8.1 card semantics — DS-console dark cards (balCard),
+ *   platform link rows (balWrap), official-style quota bars (quotaCard) and
+ *   infoCard text states, matched to the current selection like v1. Statuses
+ *   come from the shared TTL datasource cache.
  * Surface 2 (settings 模型设置 provider detail): inject an account-quota card
  *   between the API Key block and 模型列表, matching provider → datasource
  *   instance by base-URL host(:port) first, then by name overlap. No match →
@@ -126,22 +128,279 @@ function instanceCardBody(status) {
   return `<div class="grid grid-cols-2 gap-2">${html}</div>`;
 }
 
+/* ================= v1 balance-card kit =================
+   1:1 port of v1 token-monitor v3.8.1 popover helpers (patch-styles-popover
+   HELPERS balCard/balWrap/cardWrap/quotaCard/infoCard). Inline styles are kept
+   byte-identical — the popover's tailwind has no arbitrary-value classes, so
+   v1 shipped these as inline styles and so do we. */
+
+const PLAT_LINKS = {
+  deepseek: { name: 'DeepSeek 开放平台', url: 'https://platform.deepseek.com/usage' },
+  mimo: { name: '小米 MiMo 开放平台', url: 'https://platform.xiaomimimo.com/console/usage' },
+  bailian: { name: '阿里云百炼', url: 'https://billing-cost.console.aliyun.com/' }
+};
+
+function pf(x) {
+  try {
+    return new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFractionDigits: 1 }).format(x);
+  } catch { return Math.round((Number(x) || 0) * 100) + '%'; }
+}
+
+function fmtReset(iso) {
+  try {
+    const t = Date.parse(iso);
+    if (!isFinite(t)) return null;
+    const d = t - Date.now();
+    if (d <= 0) return '已刷新';
+    const h = d / 3600000;
+    if (h < 1) return Math.max(1, Math.round(d / 60000)) + '分钟后刷新';
+    if (h < 48) return Math.round(h) + '小时后刷新';
+    return Math.round(h / 24) + '天后刷新';
+  } catch { return null; }
+}
+
+/** v1 balCard: dark rounded card, 11px title / 18px amount / 10px currency+sub */
+function balCard(title, num, cur, sub) {
+  return (
+    `<div style="background:#2c2d2f;border-radius:10px;padding:10px 14px 12px;min-width:0">` +
+    `<div style="font-size:11px;color:#b9bcc1;line-height:1.3">${esc(title)}</div>` +
+    `<div style="margin-top:3px;display:flex;align-items:baseline;gap:4px;min-width:0">` +
+    `<span style="font-size:18px;font-weight:600;color:#ffffff;letter-spacing:0.3px;font-variant-numeric:tabular-nums">${esc(num)}</span>` +
+    (cur ? `<span style="font-size:10px;color:#8a8d92">${esc(cur)}</span>` : '') +
+    `</div>` +
+    (sub ? `<div style="margin-top:2px;font-size:10px;color:#9aa0a6">${esc(sub)}</div>` : '') +
+    `</div>`
+  );
+}
+
+/** v1 balWrap: optional platform link row + compact card grid */
+function balWrap(cards, plat) {
+  const list = cards.filter(Boolean);
+  if (!list.length) return '';
+  let html = '';
+  if (plat && plat.name && plat.url) {
+    html += `<div class="zmod-bal-pl"><a data-zmod-url="${esc(plat.url)}">${esc(plat.name)} ↗</a></div>`;
+  }
+  html += `<div style="display:grid;grid-template-columns:${list.length > 1 ? '1fr 1fr' : '1fr'};gap:8px">${list.join('')}</div>`;
+  return html;
+}
+
+/** v1 cardWrap: sep border + section title + tailwind grid (info/quota cards) */
+function v1CardWrap(title, cards, cols) {
+  return (
+    `<div class="border-t border-border pt-2">` +
+    `<div class="mb-2 flex min-w-0 items-center gap-3">` +
+    `<div class="flex min-w-0 flex-1 items-center gap-1.5">` +
+    `<span class="min-w-0 truncate text-ui-base font-medium text-foreground">${esc(title)}</span>` +
+    `</div></div>` +
+    `<div class="grid gap-2 ${cols > 1 ? 'grid-cols-2' : 'grid-cols-1'}">${cards.join('')}</div>` +
+    `</div>`
+  );
+}
+
+/** v1 quotaCard: official Cmt 1:1 (subtle label + mono percent + green bar) */
+function v1QuotaCard(label, frac, resetIso) {
+  const f = Math.max(0, Math.min(1, Number(frac) || 0));
+  const reset = resetIso ? fmtReset(resetIso) : null;
+  return (
+    `<div class="min-w-0 space-y-1.5">` +
+    `<div class="min-w-0 space-y-0.5 text-ui-sm">` +
+    `<div class="min-w-0 truncate text-foreground-subtle">${esc(label)}</div>` +
+    `<div class="min-w-0 text-ui-sm tabular-nums">` +
+    `<span class="font-mono text-foreground">${esc(pf(f))}</span>` +
+    (reset ? `<span class="text-foreground-subtle"> · ${esc(reset)}</span>` : '') +
+    `</div></div>` +
+    `<div class="h-1.5 overflow-hidden rounded-full bg-surface-hover">` +
+    `<div class="h-full rounded-full bg-success transition-[width] duration-500 ease-out motion-reduce:transition-none" style="width:${f * 100}%"></div>` +
+    `</div></div>`
+  );
+}
+
+/** v1 infoCard: subtle label + mono value text row (error/unconfigured states) */
+function v1InfoCard(label, value) {
+  return (
+    `<div class="min-w-0 space-y-1.5">` +
+    `<div class="min-w-0 truncate text-foreground-subtle text-ui-sm">${esc(label)}</div>` +
+    `<div class="min-w-0 text-ui-sm tabular-nums">` +
+    `<span class="font-mono text-foreground">${esc(value)}</span>` +
+    `</div></div>`
+  );
+}
+
+function rowValue(rows, label) {
+  const r = (rows || []).find((x) => x && x.label === label);
+  return r ? String(r.value) : null;
+}
+
+function money(v) {
+  const n = parseFloat(v);
+  return isFinite(n) ? n.toFixed(2) : null;
+}
+
+/** tolerant numeric extraction — row values may carry currency prefixes (¥255.77) */
+function numFrom(v) {
+  const m = /-?\d+(?:\.\d+)?/.exec(String(v ?? ''));
+  return m ? parseFloat(m[0]) : NaN;
+}
+
+function codeOf(status) {
+  return String(status.currency || '¥') === '¥' ? 'CNY' : String(status.currency || '').toUpperCase();
+}
+
+function signOf(status) {
+  return codeOf(status) === 'USD' ? '$' : '¥';
+}
+
+function agWinLabel(b) {
+  const w = String(b.window || '').toLowerCase();
+  if (w === '5h') return '5小时滚动';
+  if (w === 'weekly') return '每周';
+  if (w === 'daily') return '每日';
+  if (w === 'monthly') return '每月';
+  return w || '窗口';
+}
+
+const ERROR_TITLES = {
+  deepseek: '账户余额 · DeepSeek',
+  mimo: '今日余额 · MiMo',
+  'bailian-bss': '账户余额 · 阿里云百炼',
+  antigravity: '模型配额 · Antigravity'
+};
+
+/** Render one datasource instance's popover section in v1 card semantics:
+    branded types get the v1 balance/quota cards, error/unconfigured states get
+    the v1 infoCard text rows, unknown types fall back to v1 cardWrap layout. */
+function renderV1Section(type, status, sel, instName) {
+  if (!status) {
+    return v1CardWrap('今日余额', [v1InfoCard('状态', '查询中…（首次刷新未完成）')], 1);
+  }
+  if (!status.ok) {
+    return v1CardWrap(ERROR_TITLES[type] || '今日余额 · ' + (instName || type), [v1InfoCard('状态', status.message || '查询失败')], 1);
+  }
+  const rows = status.rows || [];
+  if (type === 'deepseek') {
+    const total = money(status.balance);
+    if (total == null) {
+      return v1CardWrap(ERROR_TITLES.deepseek, [v1InfoCard('状态', '余额数据为空')], 1);
+    }
+    const sign = signOf(status), code = codeOf(status);
+    const grant = parseFloat(rowValue(rows, '赠送余额')) || 0;
+    const top = parseFloat(rowValue(rows, '充值余额')) || 0;
+    if (grant > 0) {
+      return balWrap([
+        balCard('充值余额', sign + (top > 0 ? top : Math.max(0, parseFloat(total) - grant)).toFixed(2), code),
+        balCard('赠送余额', sign + grant.toFixed(2), code)
+      ], PLAT_LINKS.deepseek);
+    }
+    return balWrap([balCard('余额', sign + parseFloat(total).toFixed(2), code)], PLAT_LINKS.deepseek);
+  }
+  if (type === 'mimo') {
+    const total = money(status.balance);
+    if (total == null) {
+      return v1CardWrap(ERROR_TITLES.mimo, [v1InfoCard('状态', '余额数据为空')], 1);
+    }
+    const sign = signOf(status), code = codeOf(status);
+    const cards = [balCard('账户余额', sign + parseFloat(total).toFixed(2), code)];
+    const cost = rowValue(rows, '本月消费');
+    if (cost != null) {
+      const tok = rowValue(rows, '本月 Token');
+      cards.push(balCard('本月消费', String(cost), code, tok ? tok + ' tok' : null));
+    }
+    return balWrap(cards, PLAT_LINKS.mimo);
+  }
+  if (type === 'bailian-bss') {
+    const total = money(status.balance);
+    if (total == null) {
+      return v1CardWrap(ERROR_TITLES['bailian-bss'], [v1InfoCard('状态', '余额数据为空')], 1);
+    }
+    const sign = signOf(status);
+    const cards = [balCard('现金余额', sign + parseFloat(total).toFixed(2), 'CNY')];
+    const voucher = numFrom(rowValue(rows, '可用代金券'));
+    const detail = rowValue(rows, '代金券明细');
+    // v1 rule: an empty voucher card carries no information — single card then
+    if (isFinite(voucher) && (voucher > 0 || detail)) {
+      cards.push(balCard('可用代金券', sign + voucher.toFixed(2), 'CNY', detail || null));
+    }
+    return balWrap(cards, PLAT_LINKS.bailian);
+  }
+  if (type === 'antigravity') {
+    const groups = status.groups || [];
+    const model = String((sel && sel.model) || '').toLowerCase();
+    const wantArgon = /argon/.test(model);
+    const wantC = /claude|gpt|opus|sonnet/.test(model);
+    const wantG = /gemini/.test(model);
+    let selGroup = null;
+    if (wantArgon || wantC || wantG) {
+      for (const g of groups) {
+        const gn = String(g.name || '').toLowerCase();
+        if (wantArgon && /argon/.test(gn)) { selGroup = g; break; }
+        if (wantC && /claude|gpt/.test(gn)) { selGroup = g; break; }
+        if (wantG && /gemini/.test(gn) && !/argon/.test(gn)) { selGroup = g; break; }
+      }
+    }
+    const cards = [];
+    if (selGroup) {
+      for (const b of selGroup.buckets || []) cards.push(v1QuotaCard(agWinLabel(b), b.frac, b.reset));
+    } else {
+      // model unknown → one weekly bar per group (v1 degraded layout)
+      for (const g of groups) {
+        for (const b of g.buckets || []) {
+          if (String(b.window || '').toLowerCase() === 'weekly') {
+            cards.push(v1QuotaCard((g.name || '配额组') + ' · 每周', b.frac, b.reset));
+          }
+        }
+      }
+    }
+    if (cards.length) {
+      return v1CardWrap('模型配额 · ' + (selGroup ? selGroup.name || 'Antigravity' : 'Antigravity'), cards, cards.length > 1 ? 2 : 1);
+    }
+    return v1CardWrap(ERROR_TITLES.antigravity, [v1InfoCard('状态', '配额组里没有可用桶')], 1);
+  }
+  // generic engines (custom-http / openai-compatible / console-web): v1 never
+  // had a family for these — keep its typography (balCard + infoCard rows)
+  const cards = [];
+  if (status.balance != null) {
+    cards.push(balCard('余额', String(status.currency || '¥') + money(status.balance), codeOf(status)));
+  }
+  for (const r of rows.slice(0, 6)) {
+    if (r && r.label) cards.push(v1InfoCard(r.label, String(r.value)));
+  }
+  if (cards.length) {
+    return v1CardWrap('今日余额 · ' + (instName || type), cards, cards.length > 1 ? 2 : 1);
+  }
+  return v1CardWrap('今日余额 · ' + (instName || type), [v1InfoCard('状态', '无数据行')], 1);
+}
+
 const REFRESH_MARK = 'zmod-quota-refresh';
 
 export default definePlugin({
   id: 'quota-popover',
   name: '余量弹窗与模型页余量',
-  version: '2.0.0',
-  description: '官方「上下文容量」浮窗追加今日余额卡 + 官方设置模型页供应商详情注入账户额度卡（数据源驱动，v1 视觉对齐）',
+  version: '2.1.0',
+  description: '官方「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1：DS 控制台同款深灰卡+平台链接+官方配额条）+ 官方设置模型页供应商详情注入账户额度卡（数据源驱动，不改官方文件）',
   author: 'ZMod Team',
 
-  async start(ctx) {
+    async start(ctx) {
     const { cleanup } = ctx;
     const ds = ctx.datasources;
     if (!ds) {
       console.warn('[quota-popover] datasource API unavailable — plugin idle');
       return;
     }
+
+    /* v1 parity: platform link row hover styles can't be inline — one-shot stylesheet */
+    try {
+      if (!document.getElementById('zmod-bal-style')) {
+        const st = document.createElement('style');
+        st.id = 'zmod-bal-style';
+        st.textContent =
+          '.zmod-bal-pl{display:flex;align-items:center;margin-bottom:6px}' +
+          '.zmod-bal-pl a{font-size:11px;color:#9aa0a6;text-decoration:none;cursor:pointer}' +
+          '.zmod-bal-pl a:hover{color:#d6d7d9;text-decoration:underline}';
+        document.head.appendChild(st);
+      }
+    } catch { /* head unavailable — links degrade to plain text */ }
+
 
     let snapshot = []; // { inst, status? }
     let snapshotAt = 0;
@@ -154,6 +413,10 @@ export default definePlugin({
         }))
       );
       snapshotAt = Date.now();
+      console.log(
+        '[quota-popover] snapshot: ' +
+        snapshot.map((s) => `${s.inst.id}=${s.status ? (s.status.ok ? 'ok' + (s.status.models ? '+models(' + s.status.models.length + ')' : '') : 'err') : 'null'}`).join(', ')
+      );
     }
     const snapAfter = async (minAgeMs) => {
       if (Date.now() - snapshotAt > minAgeMs) await refreshSnapshot(false).catch(() => {});
@@ -182,10 +445,13 @@ export default definePlugin({
           // slash — only the model selector has "provider/model effort" shape;
           // the preset-provider case drops the prefix ("GLM-5.3-Flash 低")
           if (/上下文已用|^添加上下文$|^切换模式$|^电脑操作$|^发送$/.test(label)) continue;
-          const m = /^(.+)\/(.+?)\s*(?:极高|高|中|低)?$/.exec(label);
+          // effort words observed in the wild: 极高/最高/高/中/低/关闭 (关闭 =
+          // thinking off; 最高 seen on Google AI Pro) — a trailing word left in
+          // the model name breaks downstream model matching
+          const m = /^(.+)\/(.+?)\s*(?:极高|最高|高|中|低|关闭)?$/.exec(label);
           if (m) return { provider: m[1].trim(), model: m[2].trim() };
-          if (/.+\s(?:极高|高|中|低)$/.test(label)) {
-            return { provider: '', model: label.replace(/\s+(极高|高|中|低)$/, '').trim() };
+          if (/.+\s(?:极高|最高|高|中|低|关闭)$/.test(label)) {
+            return { provider: '', model: label.replace(/\s+(极高|最高|高|中|低|关闭)$/, '').trim() };
           }
         }
       }
@@ -204,7 +470,11 @@ export default definePlugin({
       const byName = matchInstance(sel.provider, '', snapshot.map((s) => s.inst));
       if (byName) return byName;
       for (const { inst, status } of snapshot) {
-        if ((status?.models || []).some((m) => m.name === sel.model.toLowerCase() || sel.model.toLowerCase().includes(m.name))) return inst;
+        // bidirectional prefix match: the gateway registers per-variant names
+        // (gemini-3.8-flash-low) while the toolbar shows the base model
+        // (gemini-3.8-flash) — either direction proves the same family
+        const s = sel.model.toLowerCase();
+        if ((status?.models || []).some((m) => m.name === s || (s.length >= 4 && (s.includes(m.name) || m.name.includes(s))))) return inst;
       }
       return null;
     }
@@ -217,51 +487,52 @@ export default definePlugin({
          shown; unmatched selections render no balance section at all */
       const sel = currentSelection();
       const inst = matchSelection(sel);
-      if (!inst) return null;
+      if (!inst) {
+        console.log('[quota-popover] no instance matched selection ' + JSON.stringify(sel));
+        return null;
+      }
       const status = snapshot.find((s) => s.inst.id === inst.id)?.status;
       const wrap = document.createElement('div');
       wrap.className = 'flex flex-col gap-2.5 border-t border-border pt-2.5 mt-2.5';
-      wrap.setAttribute('data-' + POPOVER_MARK, '1');
-      const head =
-        `<div class="flex items-center justify-between gap-3">` +
-        `<span class="text-ui-sm font-medium text-foreground">${esc(inst.name)}</span>` +
-        `<span class="text-ui-xs text-foreground-subtle">${esc(sel ? sel.provider : inst.type)}</span></div>`;
-      let body;
-      if (!status) body = `<div class="text-ui-sm text-foreground-subtle">状态查询中…</div>`;
-      else if (!status.ok) body = `<div class="text-ui-sm text-foreground-subtle">${esc(status.message || '查询失败')}</div>`;
-      else {
-        const tiles = [];
-        if (status.balance != null) tiles.push(bigTile('账户余额', `${status.currency || ''}${status.balance}`));
-        for (const r of (status.rows || []).slice(0, 6)) {
-          const pct = pctFromValue(r.value);
-          if (pct != null) {
-            // "98.9% 剩余 · 10月31日重置" → big "98.9%" + progress bar + hint
-            const reset = /(\d{1,2}月\d{1,2}日)/.exec(r.value)?.[1] || '';
-            tiles.push(bigTile(r.label, pct + '%', reset, pct));
-          } else {
-            tiles.push(bigTile(r.label, r.value));
-          }
-        }
-        body = `<div class="grid grid-cols-2 gap-2">${tiles.join('')}</div>`;
+      wrap.setAttribute('data-' + POPOVER_MARK, inst.id);
+      wrap.innerHTML = renderV1Section(inst.type, status, sel, inst.name);
+      for (const a of wrap.querySelectorAll('.zmod-bal-pl a[data-zmod-url]')) {
+        a.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ctx.invoke('system.openExternal', { url: a.dataset.zmodUrl }).catch(() => {});
+        });
       }
-      wrap.innerHTML = head + body;
       return wrap;
     }
 
+    /* one enhance cycle at a time + re-check the mark right before append:
+       the popover opens through several React re-renders that drop injected
+       nodes, and concurrent cycles would each see it unmarked and double-append */
+    let enhancing = false;
     async function enhancePopovers() {
-      const pops = [...document.querySelectorAll(POPOVER_SELECTOR)].filter(
-        (p) => p.isConnected && !p.querySelector(`[data-${POPOVER_MARK}]`) && /上下文|今日余额|命中率/.test(p.textContent || '')
-      );
-      if (pops.length === 0) return;
-      await snapAfter(15000);
-      for (const pop of pops) {
-        const text = pop.textContent || '';
-        const hasOfficialBalance = /今日余额/.test(text) && /\d{1,2}月\d{1,2}日/.test(text);
-        const block = buildPopoverBlock(hasOfficialBalance);
-        if (!block) continue;
-        const host = pop.querySelector('[class*="flex-col"]')?.lastElementChild?.parentElement || pop;
-        host.appendChild(block);
-        console.log('[quota-popover] appended balance cards to official popover');
+      if (enhancing) return;
+      enhancing = true;
+      try {
+        // defensive dedupe: pre-races may have left more than one block
+        const existing = [...document.querySelectorAll(`[data-${POPOVER_MARK}]`)];
+        for (let i = 1; i < existing.length; i++) existing[i].remove();
+        const pops = [...document.querySelectorAll(POPOVER_SELECTOR)].filter(
+          (p) => p.isConnected && !p.querySelector(`[data-${POPOVER_MARK}]`) && /上下文|今日余额|命中率/.test(p.textContent || '')
+        );
+        if (pops.length === 0) return;
+        await snapAfter(15000);
+        for (const pop of pops) {
+          if (!pop.isConnected || pop.querySelector(`[data-${POPOVER_MARK}]`)) continue;
+          const text = pop.textContent || '';
+          const hasOfficialBalance = /今日余额/.test(text) && /\d{1,2}月\d{1,2}日/.test(text);
+          const block = buildPopoverBlock(hasOfficialBalance);
+          if (!block) continue;
+          const host = pop.querySelector('[class*="flex-col"]')?.lastElementChild?.parentElement || pop;
+          host.appendChild(block);
+          console.log('[quota-popover] appended balance cards to official popover (inst=' + block.getAttribute('data-' + POPOVER_MARK) + ')');
+        }
+      } finally {
+        enhancing = false;
       }
     }
 
@@ -365,9 +636,13 @@ export default definePlugin({
     cleanup(() => observer.disconnect());
 
     // Base URL is a controlled React input — poll lightly instead of relying
-    // on mutation events for value edits while the settings dialog is open
+    // on mutation events for value edits while the settings dialog is open.
+    // An open hover-card is polled too: React can re-render the popover and
+    // drop the injected section without emitting further mutations, so the
+    // section must be replayed idempotently while the card stays open (v1 hit
+    // the same class of problem with its popover patcher).
     const pollT = setInterval(() => {
-      if (document.querySelector('[data-model-provider-detail-scroll]')) onMutation();
+      if (document.querySelector('[data-model-provider-detail-scroll]') || document.querySelector(POPOVER_SELECTOR)) onMutation();
     }, 1500);
     cleanup(() => clearInterval(pollT));
 

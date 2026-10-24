@@ -176,6 +176,9 @@ export class DataSourceRegistry {
         status = { ok: false, message: String(err?.message || err) };
       }
       const normalized = {
+        // pass structured extras (e.g. antigravity models/groups) through —
+        // consumers render from them; the explicit keys below stay canonical
+        ...(status && typeof status === 'object' ? status : {}),
         ok: Boolean(status?.ok),
         message: status?.message || '',
         balance: status?.balance,
