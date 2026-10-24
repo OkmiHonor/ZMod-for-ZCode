@@ -7,6 +7,8 @@
  * - 'slider': number with range
  * - 'select': enum / dropdown
  * - 'color': hex color string
+ * - 'group': visual section heading (no value; "title" is the heading text)
+ * - 'action': trigger button bound to a plugin action (no persisted value)
  */
 
 export const SETTING_TYPES = new Set([
@@ -16,8 +18,13 @@ export const SETTING_TYPES = new Set([
   'number',
   'slider',
   'select',
-  'color'
+  'color',
+  'group',
+  'action'
 ]);
+
+/** Types that persist a value in config/vault. Group/action are layout-only. */
+export const VALUELESS_SETTING_TYPES = new Set(['group', 'action']);
 
 export function validateSettingSchema(key, schema) {
   if (!schema || typeof schema !== 'object') {
@@ -37,6 +44,11 @@ export function validateSettingSchema(key, schema) {
   if (schema.type === 'slider') {
     if (typeof schema.min !== 'number' || typeof schema.max !== 'number') {
       throw new Error(`Slider setting "${key}" must specify "min" and "max" numbers`);
+    }
+  }
+  if (schema.type === 'action') {
+    if (typeof schema.action !== 'string' || !schema.action) {
+      throw new Error(`Action setting "${key}" must reference a plugin action key via "action"`);
     }
   }
   return true;

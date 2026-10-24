@@ -6,8 +6,18 @@ const DEFAULT_CONFIG = {
   version: 2,
   enabled: true,
   theme: 'default',
-  plugins: {}
+  plugins: {},
+  datasources: []
 };
+
+/** Keep unicode letters/numbers so Chinese names stay readable; join runs of anything else with '-'. */
+function slugify(name) {
+  return String(name || '')
+    .trim()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+}
 
 class ConfigManager {
   constructor() {
@@ -90,6 +100,52 @@ class ConfigManager {
     }
     config.plugins[pluginId].settings[key] = value;
     this.save(config);
+  }
+
+  /**
+   * Data source instances. Shape: { id, type, name, settings: {} }.
+   * Secret-typed settings MUST be split out by the caller into the vault —
+   * config.json never stores credentials.
+   */
+  getDatasources() {
+    const config = this.get();
+    return Array.isArray(config.datasources) ? config.datasources : [];
+  }
+
+  saveDatasource(instance) {
+    if (!instance || typeof instance !== 'object' || typeof instance.type !== 'string') {
+      throw new Error('[ZMod:Config] datasource instance requires a "type" string');
+    }
+    const config = structuredClone(this.get());
+    if (!Array.isArray(config.datasources)) config.datasources = [];
+    const entry = {
+      id: typeof instance.id === 'string' && instance.id ? instance.id : null,
+      type: instance.type,
+      name: typeof instance.name === 'string' && instance.name ? instance.name : instance.type,
+      settings: instance.settings && typeof instance.settings === 'object' ? instance.settings : {}
+    };
+    if (!entry.id) {
+      const base = slugify(entry.name) || 'ds';
+      let candidate = base;
+      let n = 2;
+      while (config.datasources.some((d) => d.id === candidate)) candidate = `${base}-${n++}`;
+      entry.id = candidate;
+    }
+    const idx = config.datasources.findIndex((d) => d.id === entry.id);
+    if (idx >= 0) config.datasources[idx] = entry;
+    else config.datasources.push(entry);
+    this.save(config);
+    return entry;
+  }
+
+  deleteDatasource(id) {
+    const config = structuredClone(this.get());
+    if (!Array.isArray(config.datasources)) return false;
+    const next = config.datasources.filter((d) => d.id !== id);
+    if (next.length === config.datasources.length) return false;
+    config.datasources = next;
+    this.save(config);
+    return true;
   }
 
   subscribe(listener) {

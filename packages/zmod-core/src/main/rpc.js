@@ -17,6 +17,57 @@ const electronGlobalShortcut = electron?.globalShortcut ?? electron?.default?.gl
 
 export const RPC_CHANNEL = 'zmod:rpc:invoke';
 
+const NET_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']);
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Main-process HTTP proxy for renderer plugins. The ZCode renderer cannot
+ * reach third-party APIs directly (CORS + sandbox), so data source providers
+ * route through here. Only public http(s) endpoints are allowed.
+ */
+export async function netFetch({ url, method = 'GET', headers = {}, body, timeoutMs = 15000 }) {
+  let parsed;
+  try {
+    parsed = new URL(String(url));
+  } catch {
+    return { ok: false, status: 0, error: 'Invalid URL' };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, status: 0, error: 'Only http/https URLs are allowed' };
+  }
+  const m = String(method || 'GET').toUpperCase();
+  if (!NET_METHODS.has(m)) {
+    return { ok: false, status: 0, error: `Method not allowed: ${m}` };
+  }
+  const safeHeaders = {};
+  if (headers && typeof headers === 'object' && !Array.isArray(headers)) {
+    for (const [k, v] of Object.entries(headers)) {
+      if (typeof k === 'string' && typeof v === 'string') safeHeaders[k] = v;
+    }
+  }
+  const opts = {
+    method: m,
+    headers: safeHeaders,
+    signal: AbortSignal.timeout(Math.min(Math.max(Number(timeoutMs) || 15000, 1000), 60000))
+  };
+  if (body != null && m !== 'GET' && m !== 'HEAD') {
+    opts.body = typeof body === 'string' ? body : JSON.stringify(body);
+  }
+  const doFetch = electron?.net?.fetch || electron?.default?.net?.fetch || globalThis.fetch;
+  try {
+    const res = await doFetch(parsed.href, opts);
+    const text = (await res.text()).slice(0, MAX_RESPONSE_BYTES);
+    return {
+      ok: res.ok,
+      status: res.status,
+      headers: { 'content-type': res.headers?.get('content-type') || '' },
+      text
+    };
+  } catch (err) {
+    return { ok: false, status: 0, error: String(err?.message || err), text: '' };
+  }
+}
+
 function getMainWindow() {
   if (!electronBrowserWindow) return null;
   const windows = electronBrowserWindow.getAllWindows();
@@ -64,6 +115,18 @@ class RpcGateway {
       configManager.setPluginEnabled(pluginId, enabled);
       return { success: true };
     });
+
+    // ---- Data source instances (credentials live in the vault, never here) ----
+    this.register('datasource.list', async () => configManager.getDatasources());
+
+    this.register('datasource.save', async ({ instance }) => configManager.saveDatasource(instance));
+
+    this.register('datasource.delete', async ({ id }) => ({
+      success: configManager.deleteDatasource(id)
+    }));
+
+    // ---- Outbound HTTP proxy (main-process fetch: no CORS, Chromium network stack) ----
+    this.register('net.fetch', async (params) => netFetch(params));
 
     // ---- Secret vault (safeStorage / DPAPI) ----
     this.register('vault.get', async ({ key }) => secretVault.get(key));

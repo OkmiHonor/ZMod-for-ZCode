@@ -34,10 +34,18 @@ function deployRuntimeAndPlugins() {
   const coreDir = path.join(runtimeDir, 'core');
   fs.rmSync(coreDir, { recursive: true, force: true });
   fs.mkdirSync(coreDir, { recursive: true });
-  fs.copyFileSync(
-    path.join(REPO_ROOT, 'packages', 'zmod-core', 'src', 'renderer', 'index.js'),
-    path.join(coreDir, 'index.js')
-  );
+  // The renderer kernel may split into sibling ES modules; deploy the whole
+  // renderer directory flat (index.js + its relative imports).
+  for (const ent of fs.readdirSync(
+    path.join(REPO_ROOT, 'packages', 'zmod-core', 'src', 'renderer')
+  )) {
+    if (ent.endsWith('.js')) {
+      fs.copyFileSync(
+        path.join(REPO_ROOT, 'packages', 'zmod-core', 'src', 'renderer', ent),
+        path.join(coreDir, ent)
+      );
+    }
+  }
 
   copyDir(path.join(REPO_ROOT, 'packages', 'zmod-sdk', 'src'), path.join(runtimeDir, 'sdk'));
 

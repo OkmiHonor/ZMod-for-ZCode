@@ -6,6 +6,9 @@
  * so no code is embedded in the host asar beyond this one-line script tag.
  */
 
+import { DataSourceRegistry } from './datasources.js';
+import { createSettingsPageIntegration } from './settings-page.js';
+
 const ZMOD_VERSION = '2.0.0';
 
 if (window.__ZMOD_V2_INITIALIZED__) {
@@ -138,64 +141,102 @@ function main() {
     }
 
     /**
-     * Declarative settings form renderer. Builds controls from the plugin's
-     * settings schema (switch / slider / text / number / select / color).
-     * `secret` renders as a password input and persists into the encrypted vault.
+     * Declarative settings form renderer, styled with the host's own Tailwind
+     * token classes so forms look first-party inside the official settings
+     * page and the fallback panel alike.
+     *
+     * Control types: switch / slider / text / number / secret / select /
+     * color / group (heading) / action (button invoking `onAction(key)`).
+     * `secret` never echoes the stored value: the input starts empty and an
+     * empty submit keeps the vault entry untouched.
      */
-    renderSettingsForm(plugin, activeSettings, onChange) {
+    renderSettingsForm(plugin, activeSettings, onChange, onAction) {
       const form = document.createElement('div');
-      form.style.cssText = 'display:flex;flex-direction:column;gap:14px;';
+      form.className = 'flex flex-col';
       const defs = plugin.settings || {};
       const keys = Object.keys(defs);
       if (keys.length === 0) {
         const empty = document.createElement('div');
-        empty.style.cssText = 'color:var(--zmod-fg-dim,#888);font-size:13px;padding:8px 0;';
+        empty.className = 'py-2 text-ui-sm text-foreground-subtle';
         empty.textContent = '此插件无需额外设置。';
         form.appendChild(empty);
         return form;
       }
+      const INPUT_CLS =
+        'h-8 w-full rounded-lg border border-border bg-surface px-2.5 text-ui-base text-foreground outline-none transition-colors placeholder:text-foreground-subtle/60 focus-visible:ring-1 focus-visible:ring-input-border-focused';
+
       for (const key of keys) {
         const def = defs[key];
-        const row = document.createElement('div');
-        row.style.cssText =
-          'display:flex;flex-direction:column;gap:6px;padding-bottom:12px;border-bottom:1px solid var(--zmod-border,rgba(128,128,128,.18));';
-        const label = document.createElement('label');
-        label.style.cssText =
-          'display:flex;align-items:center;justify-content:space-between;font-size:13px;font-weight:500;color:var(--zmod-fg,#eee);';
-        label.textContent = def.title || key;
-        row.appendChild(label);
-        if (def.description) {
-          const desc = document.createElement('div');
-          desc.style.cssText =
-            'font-size:12px;color:var(--zmod-fg-dim,#888);font-weight:normal;line-height:1.4;';
-          desc.textContent = def.description;
-          row.appendChild(desc);
+
+        if (def.type === 'group') {
+          const head = document.createElement('div');
+          head.className = 'pt-2 text-ui-sm font-medium text-foreground-subtle';
+          head.textContent = def.title || key;
+          form.appendChild(head);
+          continue;
         }
 
+        if (def.type === 'action') {
+          if (typeof onAction !== 'function') continue;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className =
+            'mt-1 inline-flex h-8 w-fit cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-3 text-ui-base text-foreground transition-colors hover:bg-surface-hover';
+          btn.textContent = def.title || key;
+          btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try {
+              await onAction(def.action || key);
+            } finally {
+              btn.disabled = false;
+            }
+          });
+          form.appendChild(btn);
+          if (def.description) {
+            const desc = document.createElement('div');
+            desc.className = 'pb-1 text-ui-xs text-foreground-subtle';
+            desc.textContent = def.description;
+            form.appendChild(desc);
+          }
+          continue;
+        }
+
+        const isInline = def.type === 'switch' || def.type === 'color';
+        const row = document.createElement('div');
+        row.className = isInline
+          ? 'flex items-center justify-between gap-4 border-b border-border py-3 last:border-b-0'
+          : 'flex flex-col gap-1.5 border-b border-border py-3 last:border-b-0';
+
+        const labelBox = document.createElement('div');
+        labelBox.className = 'flex min-w-0 flex-col gap-0.5';
+        const label = document.createElement('span');
+        label.className = 'text-ui-base font-medium text-foreground';
+        label.textContent = def.title || key;
+        labelBox.appendChild(label);
+        if (def.description) {
+          const desc = document.createElement('span');
+          desc.className = 'text-ui-sm text-foreground-subtle';
+          desc.textContent = def.description;
+          labelBox.appendChild(desc);
+        }
+        row.appendChild(labelBox);
+
         const value = activeSettings?.[key] ?? def.default;
-        const inputStyle =
-          'padding:6px 10px;background:var(--zmod-bg-input,rgba(128,128,128,.12));border:1px solid var(--zmod-border,rgba(128,128,128,.25));border-radius:6px;color:var(--zmod-fg,#eee);font-size:13px;outline:none;';
 
         if (def.type === 'switch') {
-          const toggle = document.createElement('input');
-          toggle.type = 'checkbox';
-          toggle.style.cssText = 'cursor:pointer;accent-color:#3b82f6;width:18px;height:18px;';
-          toggle.checked = Boolean(value);
-          toggle.addEventListener('change', () => onChange(key, toggle.checked));
-          label.appendChild(toggle);
+          row.appendChild(makeFormSwitch(Boolean(value), (next) => onChange(key, next)));
         } else if (def.type === 'slider') {
           const wrap = document.createElement('div');
-          wrap.style.cssText = 'display:flex;align-items:center;gap:12px;';
+          wrap.className = 'mt-1 flex items-center gap-3';
           const slider = document.createElement('input');
           slider.type = 'range';
           slider.min = def.min ?? 0;
           slider.max = def.max ?? 100;
           slider.step = def.step ?? 1;
           slider.value = value ?? 0;
-          slider.style.cssText = 'flex:1;cursor:pointer;accent-color:#3b82f6;';
+          slider.className = 'h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-surface-hover accent-foreground';
           const val = document.createElement('span');
-          val.style.cssText =
-            'font-size:12px;font-family:monospace;color:var(--zmod-fg-dim,#888);min-width:36px;text-align:right;';
+          val.className = 'min-w-10 text-right text-ui-sm tabular-nums text-foreground-subtle';
           val.textContent = slider.value;
           slider.addEventListener('input', () => {
             val.textContent = slider.value;
@@ -204,19 +245,30 @@ function main() {
           wrap.appendChild(slider);
           wrap.appendChild(val);
           row.appendChild(wrap);
-        } else if (def.type === 'text' || def.type === 'number' || def.type === 'secret') {
+        } else if (def.type === 'secret') {
           const input = document.createElement('input');
-          input.type = def.type === 'number' ? 'number' : def.type === 'secret' ? 'password' : 'text';
+          input.type = 'password';
+          input.autocomplete = 'off';
+          input.placeholder =
+            typeof value === 'string' && value ? '已加密保存 — 留空保持不变' : def.placeholder || '';
+          input.className = INPUT_CLS;
+          input.addEventListener('change', () => {
+            if (input.value) onChange(key, input.value);
+          });
+          row.appendChild(input);
+        } else if (def.type === 'text' || def.type === 'number') {
+          const input = document.createElement('input');
+          input.type = def.type === 'number' ? 'number' : 'text';
           input.placeholder = def.placeholder || '';
           input.value = value ?? '';
-          input.style.cssText = inputStyle;
+          input.className = INPUT_CLS;
           input.addEventListener('change', () => {
             onChange(key, def.type === 'number' ? Number(input.value) : input.value);
           });
           row.appendChild(input);
         } else if (def.type === 'select') {
           const select = document.createElement('select');
-          select.style.cssText = inputStyle + 'cursor:pointer;';
+          select.className = INPUT_CLS + ' cursor-pointer';
           for (const opt of def.options || []) {
             const optEl = document.createElement('option');
             optEl.value = opt.value;
@@ -230,7 +282,7 @@ function main() {
           const input = document.createElement('input');
           input.type = 'color';
           input.value = /^#[0-9a-fA-F]{6}$/.test(value ?? '') ? value : '#888888';
-          input.style.cssText = 'width:42px;height:26px;cursor:pointer;background:none;border:none;';
+          input.className = 'size-7 cursor-pointer border-none bg-transparent p-0';
           input.addEventListener('change', () => onChange(key, input.value));
           row.appendChild(input);
         }
@@ -238,6 +290,33 @@ function main() {
       }
       return form;
     }
+  }
+
+  function makeFormSwitch(checked, onChange) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute('role', 'switch');
+    btn.setAttribute('aria-checked', String(Boolean(checked)));
+    btn.className =
+      'peer inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors ' +
+      (checked ? 'border-transparent bg-foreground' : 'border-border bg-transparent');
+    const knob = document.createElement('span');
+    knob.className =
+      'pointer-events-none block size-4 rounded-full transition-transform ' +
+      (checked ? 'translate-x-4 bg-background' : 'translate-x-0 bg-foreground-subtle');
+    btn.appendChild(knob);
+    btn.addEventListener('click', () => {
+      const next = btn.getAttribute('aria-checked') !== 'true';
+      btn.setAttribute('aria-checked', String(next));
+      btn.className =
+        'peer inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors ' +
+        (next ? 'border-transparent bg-foreground' : 'border-border bg-transparent');
+      knob.className =
+        'pointer-events-none block size-4 rounded-full transition-transform ' +
+        (next ? 'translate-x-4 bg-background' : 'translate-x-0 bg-foreground-subtle');
+      onChange(next);
+    });
+    return btn;
   }
 
   /* ------------------------------------------------------------------ *
@@ -300,6 +379,14 @@ function main() {
         console.error(`[ZMod:Renderer] config fetch failed for "${id}":`, err?.message || err);
       }
       def._activeSettings = cfg.settings || {};
+      // Secret-typed settings live in the encrypted vault, never config.json.
+      for (const [key, schema] of Object.entries(def.settings || {})) {
+        if (schema?.type !== 'secret') continue;
+        try {
+          const v = await api.invoke('vault.get', { key: `secret:${id}:${key}` });
+          if (typeof v === 'string' && v) def._activeSettings[key] = v;
+        } catch {}
+      }
 
       const patcher = new Patcher();
       const cleanups = [];
@@ -323,8 +410,13 @@ function main() {
           get: (key, fallback) => def._activeSettings[key] ?? def.settings?.[key]?.default ?? fallback,
           set: async (key, val) => {
             def._activeSettings[key] = val;
+            const isSecret = def.settings?.[key]?.type === 'secret';
             try {
-              await api.invoke('config.setPluginSetting', { pluginId: id, key, value: val });
+              if (isSecret) {
+                await api.invoke('vault.set', { key: `secret:${id}:${key}`, value: val });
+              } else {
+                await api.invoke('config.setPluginSetting', { pluginId: id, key, value: val });
+              }
             } catch (err) {
               console.error(`[ZMod:Renderer] setting persist failed (${id}.${key}):`, err);
             }
@@ -336,7 +428,9 @@ function main() {
             offs.push(off);
             return off;
           }
-        }
+        },
+        /** Shared data source registry (providers, instances, cached status). */
+        datasources: dataSourceRegistry ? dataSourceRegistry.forPlugin(id) : null
       };
 
       try {
@@ -622,6 +716,22 @@ function main() {
           } else {
             await api.invoke('config.setPluginSetting', { pluginId: id, key, value });
           }
+        },
+        async (actionKey) => {
+          const action = def.actions?.[actionKey];
+          const active = this._registry._active.get(id);
+          if (!action) return;
+          if (!active) {
+            ui.showToast('请先启用该插件再执行操作', 'warn');
+            return;
+          }
+          try {
+            const res = await action.run(active.ctx);
+            if (res && res.message) ui.showToast(res.message, res.ok === false ? 'warn' : 'success');
+            else if (res?.ok) ui.showToast('完成', 'success');
+          } catch (err) {
+            ui.showToast(`执行失败：${err?.message || err}`, 'error');
+          }
         }
       );
       body.appendChild(form);
@@ -639,7 +749,19 @@ function main() {
    * ------------------------------------------------------------------ */
   const events = new EventBus();
   const ui = new UIManager();
+  const dataSourceRegistry = new DataSourceRegistry({
+    invoke: (method, params) => api.invoke(method, params),
+    emit: (event, payload) => events.emit(event, payload),
+    on: (event, fn) => events.on(event, fn)
+  });
   const plugins = new PluginRegistry(events, ui);
+  const settingsPage = createSettingsPageIntegration({
+    api,
+    events,
+    registry: plugins,
+    datasources: dataSourceRegistry,
+    ui
+  });
 
   const panel = new ManagerPanel(events, plugins, ui);
 
@@ -649,6 +771,8 @@ function main() {
     ui,
     plugins,
     api,
+    datasources: dataSourceRegistry,
+    settingsPage,
     openManager: () => panel.open()
   };
 
@@ -665,6 +789,8 @@ function main() {
 
   const boot = () => {
     console.log(`[ZMod:Renderer] microkernel v${ZMOD_VERSION} loaded (${api.transport})`);
+    dataSourceRegistry.load().catch(() => {});
+    settingsPage.start();
     plugins.loadAll();
   };
 

@@ -38,6 +38,7 @@ export function definePlugin(def) {
   }
 
   const validatedSettings = validateSettings(def.settings);
+  const validatedActions = validateActions(def.id, def.actions);
 
   return {
     id: def.id,
@@ -46,8 +47,32 @@ export function definePlugin(def) {
     version: def.version,
     author: def.author || 'Anonymous',
     settings: validatedSettings,
+    actions: validatedActions,
     styles: typeof def.styles === 'string' ? def.styles : '',
     start: typeof def.start === 'function' ? def.start : null,
     stop: typeof def.stop === 'function' ? def.stop : null
   };
+}
+
+/**
+ * Plugin actions: invocable handlers surfaced as buttons in the settings form.
+ * @param {Object.<string, {title: string, description?: string, run: Function}>} actions
+ */
+function validateActions(pluginId, actions) {
+  if (!actions) return {};
+  if (typeof actions !== 'object' || Array.isArray(actions)) {
+    throw new Error(`Plugin "${pluginId}" "actions" must be an object map of key => definition`);
+  }
+  for (const [key, action] of Object.entries(actions)) {
+    if (!action || typeof action !== 'object') {
+      throw new Error(`Plugin "${pluginId}" action "${key}" must be an object definition`);
+    }
+    if (typeof action.title !== 'string' || !action.title) {
+      throw new Error(`Plugin "${pluginId}" action "${key}" requires a string "title"`);
+    }
+    if (typeof action.run !== 'function') {
+      throw new Error(`Plugin "${pluginId}" action "${key}" requires a "run" function`);
+    }
+  }
+  return actions;
 }

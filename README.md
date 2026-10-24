@@ -61,7 +61,30 @@ npm test                            # 运行测试套件
 
 宿主目录探测顺序：`--path` > `config.json installPath` > `ZCODE_PATH` 环境变量 > 平台默认路径。
 
-启动 ZCode 后按 **Ctrl+Shift+M** 唤起管理面板：启停插件、实时编辑声明式设置。
+启动 ZCode 后有两种管理入口：
+
+- **官方设置页（推荐）**：打开设置，侧边栏出现原生外观的 **ZMod** 分组（「扩展插件」「数据源」两个条目）。全部 UI 使用宿主自身的主题 token 与类名，跟随明暗主题，观感与官方一致；
+- **兜底面板**：**Ctrl+Shift+M** 唤起独立管理面板——官方大版本更新导致设置页结构变化时的保险入口。
+
+## 🔌 数据源系统（datasources）
+
+余额/额度类插件不写死任何接口地址或账号，统一走「类型适配器 + 用户实例」模型：
+
+```text
+Provider（类型适配器，插件注册）        Instance（用户实例，设置页配置）
+┌──────────────────────────┐         ┌────────────────────────────┐
+│ type: custom-http        │◀──类型──│ name: 我的网关              │
+│ settings: url/token/路径 │         │ settings: {url, token, …}  │
+│ fetchStatus(settings)    │◀─查询───┤ token 等凭据加密存 Vault    │
+└──────────────────────────┘         └────────────────────────────┘
+```
+
+- **官方适配器插件** `official-providers`：`custom-http`（任意 JSON 接口：地址 + Bearer 令牌 + 取值路径）、`openai-compatible`（反代网关）、`console-web`（Cookie 控制台接口）；全部出厂零预配；
+- **凭据永不落明文**：`secret` 类型设置写入系统加密保险库（Windows DPAPI / `safeStorage`），`config.json` 只保留非敏感字段；
+- **共享缓存**：多个插件消费同一数据源时共享一次上游请求（60s TTL，可强制刷新）；
+- **主进程 HTTP 代理** `net.fetch`：渲染端经 RPC 走主进程网络栈绕开 CORS；仅允许 http(s) 与常规方法。
+
+插件侧消费 API：`ctx.datasources.getInstances()` / `getStatus(id)` / `subscribe(fn)` / `onStatus(id, fn)`、`ctx.datasources.registerProvider(def)` 注册新类型；`window.ZMod.settingsPage.contribute({ id, title, render })` 可向设置页「扩展插件」页贡献自定义区块（余额总览等）。
 
 ## 🛠️ 插件开发（1 分钟上手）
 
@@ -109,8 +132,10 @@ export default definePlugin({
 | `acrylic-window` | Windows 11 亚克力/云母背板（主进程 `setBackgroundMaterial`）+ 全局老板键 |
 | `qcard-fade` | 提问卡与输入框离底自动淡出/折叠，悬停毛玻璃唤醒 |
 | `prompt-snippets` | 常驻悬浮球片段库：搜索、插入、`{{变量}}` 填充、Ctrl+/ 开关 |
+| `official-providers` | 数据源类型适配器（custom-http / openai-compatible / console-web），凭据全加密、出厂零预配 |
+| `balance-cards` | 余额卡片（数据源消费样板）：设置页 ZMod 分区汇总展示各数据源余额 |
 
-> Roadmap（未随 v2 首发）：小鲸鱼桌宠与角色换装、多源 Token 配额监控。欢迎 PR。
+> Roadmap（未随 v2 首发）：小鲸鱼桌宠与角色换装、多源 Token 配额监控弹窗增强。欢迎 PR。
 
 ## 📄 许可证
 

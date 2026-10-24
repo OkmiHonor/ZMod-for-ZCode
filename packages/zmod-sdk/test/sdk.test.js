@@ -85,4 +85,52 @@ test('ZMod SDK definePlugin & Schema Suite', async (t) => {
     assert.equal(typeof plugin._cleanup, 'function');
     assert.equal(Object.isFrozen(plugin), false);
   });
+
+  await t.test('group and action setting types are accepted', () => {
+    const plugin = definePlugin({
+      id: 'layout-types',
+      name: 'Layout Types',
+      version: '1.0.0',
+      settings: {
+        sectionA: { type: 'group', title: '分组标题' },
+        apiKey: { type: 'secret', title: 'API Key' },
+        probe: { type: 'action', title: '测试连接', action: 'testConnection' }
+      },
+      actions: {
+        testConnection: {
+          title: '测试连接',
+          async run() {
+            return { ok: true, message: 'ok' };
+          }
+        }
+      }
+    });
+    assert.equal(plugin.settings.sectionA.type, 'group');
+    assert.equal(plugin.settings.probe.action, 'testConnection');
+    assert.equal(typeof plugin.actions.testConnection.run, 'function');
+  });
+
+  await t.test('action setting without action key throws', () => {
+    assert.throws(() => {
+      definePlugin({
+        id: 'bad-action',
+        name: 'Bad Action',
+        version: '1.0.0',
+        settings: {
+          probe: { type: 'action', title: '测试' }
+        }
+      });
+    }, /must reference a plugin action key/);
+  });
+
+  await t.test('malformed actions map throws', () => {
+    assert.throws(() => {
+      definePlugin({
+        id: 'bad-actions-map',
+        name: 'Bad Actions',
+        version: '1.0.0',
+        actions: { broken: { title: '无 run' } }
+      });
+    }, /requires a "run" function/);
+  });
 });
