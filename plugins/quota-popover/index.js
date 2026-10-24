@@ -114,7 +114,15 @@ function instanceCardBody(status) {
   }
   let html = '';
   if (status.balance != null) html += bigTile('账户余额', `${status.currency || ''}${status.balance}`);
-  for (const r of rows.slice(0, 4)) html += bigTile(r.label, r.value);
+  for (const r of rows.slice(0, 6)) {
+    const pct = pctFromValue(r.value);
+    if (pct != null) {
+      const reset = /(\d{1,2}月\d{1,2}日)/.exec(r.value)?.[1] || '';
+      html += bigTile(r.label, pct + '%', reset, pct);
+    } else {
+      html += bigTile(r.label, r.value);
+    }
+  }
   return `<div class="grid grid-cols-2 gap-2">${html}</div>`;
 }
 
