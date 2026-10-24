@@ -14,8 +14,102 @@ const electronIpcMain = electron?.ipcMain ?? electron?.default?.ipcMain;
 const electronShell = electron?.shell ?? electron?.default?.shell;
 const electronBrowserWindow = electron?.BrowserWindow ?? electron?.default?.BrowserWindow;
 const electronGlobalShortcut = electron?.globalShortcut ?? electron?.default?.globalShortcut;
+const electronApp = electron?.app ?? electron?.default?.app;
 
 export const RPC_CHANNEL = 'zmod:rpc:invoke';
+
+/**
+ * DWM window material (acrylic/mica), v1 __zmodAcrylic recipe:
+ * - ORDER MATTERS: setBackgroundMaterial FIRST, then the (translucent)
+ *   background color as a fallback wash. The reverse order gets overridden.
+ * - TIMING MATTERS: an early call (renderer kernel boot) is clobbered by the
+ *   official startup sequence, so the desired state is stored here and
+ *   re-applied on every main-window did-finish-load, plus one delayed retry.
+ */
+const materialState = { material: null, tint: '#00000000' };
+let materialWatchInstalled = false;
+
+function isMainWindow(win) {
+  try {
+    if (!win || win.isDestroyed()) return false;
+    const url = win.webContents?.getURL() || '';
+    return url.includes('out/renderer/index.html') && !url.includes('windowKind=');
+  } catch {
+    return false;
+  }
+}
+
+function windowsBuild() {
+  const parts = String(process.getSystemVersion?.() || '').split('.').map(Number);
+  return parts[2] || 0;
+}
+
+function applyMaterialToWindow(win) {
+  if (!isMainWindow(win)) return { success: true, supported: true, skipped: true };
+  if (materialState.material === 'none' || !materialState.material) {
+    try {
+      win.setBackgroundMaterial('auto');
+      win.setBackgroundColor('#ffffff');
+    } catch {}
+    return { success: true, supported: true };
+  }
+  if (windowsBuild() < 22621) {
+    return { success: true, supported: false, error: 'Windows build < 22621' };
+  }
+  try {
+    win.setBackgroundMaterial(materialState.material); // material first…
+    if (typeof materialState.tint === 'string' && /^#[0-9a-fA-F]{6,8}$/.test(materialState.tint)) {
+      try { win.setBackgroundColor(materialState.tint); } catch {} // …color wash second
+    }
+    console.log(`[ZMod:RPC] DWM material "${materialState.material}" applied to main window`);
+    return { success: true, supported: true };
+  } catch (err) {
+    return { success: true, supported: false, error: String(err?.message || err) };
+  }
+}
+
+export function setWindowMaterial(material, tint) {
+  if (typeof material !== 'string' || !material) return { success: false, error: 'Invalid material' };
+  materialState.material = material;
+  if (typeof tint === 'string' && /^#[0-9a-fA-F]{6,8}$/.test(tint)) materialState.tint = tint;
+
+  installMaterialWatch();
+
+  let result = { success: true, supported: true };
+  if (electronBrowserWindow) {
+    for (const w of electronBrowserWindow.getAllWindows()) {
+      const r = applyMaterialToWindow(w);
+      if (r.supported === false) result = r;
+      else if (r.skipped !== true) result = r;
+    }
+    // one delayed retry: the official startup may still touch the window
+    setTimeout(() => {
+      try {
+        for (const w of electronBrowserWindow.getAllWindows()) applyMaterialToWindow(w);
+      } catch {}
+    }, 5000).unref?.();
+  }
+  return result;
+}
+
+function installMaterialWatch() {
+  if (materialWatchInstalled || !electronApp || !electronBrowserWindow) return;
+  materialWatchInstalled = true;
+  const watchWindow = (w) => {
+    try {
+      w.webContents.on('did-finish-load', () => {
+        if (!materialState.material || materialState.material === 'none') return;
+        applyMaterialToWindow(w);
+      });
+    } catch {}
+  };
+  const hookExisting = () => {
+    for (const w of electronBrowserWindow.getAllWindows()) watchWindow(w);
+  };
+  if (electronApp.isReady()) hookExisting();
+  else electronApp.once('ready', hookExisting);
+  electronApp.on('browser-window-created', (_e, w) => watchWindow(w));
+}
 
 const NET_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']);
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
@@ -152,26 +246,7 @@ class RpcGateway {
 
     // ---- Window host features (acrylic backplate, boss key) ----
     this.register('window.setMaterial', async ({ material, tint }) => {
-      const win = getMainWindow();
-      if (!win) return { success: false, error: 'Main window not found' };
-      if (material === 'none' || !material) {
-        try {
-          win.setBackgroundMaterial('auto');
-          win.setBackgroundColor('#ffffff');
-          return { success: true, supported: true };
-        } catch {
-          return { success: true, supported: false };
-        }
-      }
-      try {
-        if (typeof tint === 'string' && /^#[0-9a-fA-F]{6,8}$/.test(tint)) {
-          win.setBackgroundColor(tint);
-        }
-        win.setBackgroundMaterial(material);
-        return { success: true, supported: true };
-      } catch (err) {
-        return { success: true, supported: false, error: String(err?.message || err) };
-      }
+      return setWindowMaterial(material, tint);
     });
 
     this.register('window.registerBossKey', async ({ accelerator }) => {

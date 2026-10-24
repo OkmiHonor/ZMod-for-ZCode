@@ -188,6 +188,25 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
    * dialog — no stale-overlay states. Above z-50 (Radix dialog layers),
    * below ZMod toasts.
    */
+  /** Resolve a (possibly translucent) theme token to its opaque rgb() form. */
+  function opaqueToken(name, fallback) {
+    try {
+      const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+      const probe = document.createElement('div');
+      probe.style.color = v;
+      document.body.appendChild(probe);
+      const c = getComputedStyle(probe).color; // browsers normalize to rgb()/color()
+      probe.remove();
+      const nums = c.match(/[\d.]+/g);
+      if (nums && nums.length >= 3) {
+        // rgb() gives 0-255, color(srgb ...) gives 0-1 — normalize
+        const ch = (v) => (Number(v) <= 1 ? Math.round(Number(v) * 255) : Math.round(Number(v)));
+        return `rgb(${ch(nums[0])} ${ch(nums[1])} ${ch(nums[2])})`;
+      }
+    } catch {}
+    return fallback;
+  }
+
   function ensureOverlay() {
     const frame = document.querySelector('[data-settings-panel-frame]');
     const col = contentColumn();
@@ -195,7 +214,21 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     if (overlay && overlay.isConnected) return;
     overlay = document.createElement('div');
     overlay.setAttribute('data-zmod-settings-overlay', 'true');
-    overlay.style.cssText = `position:absolute;z-index:60;display:flex;flex-direction:column;background:var(--color-background,#17171a);left:0;right:0;bottom:0;top:${col.offsetTop}px;`;
+    // Opaque background (strip the alpha from the translucency-themed token,
+    // otherwise the ZMod page shows the official page beneath it).
+    // no-drag: the window's top strip is a system drag region that swallows
+    // physical clicks (v1 learned this the hard way with its floating ball).
+    overlay.style.cssText =
+      'position:absolute;z-index:60;display:flex;flex-direction:column;' +
+      `background:${opaqueToken('--color-background', 'rgb(22 22 22)')};` +
+      'left:0;right:0;bottom:0;top:0;-webkit-app-region:no-drag;';
+    // Spacer covering the official breadcrumb row area: that row is a system
+    // drag region — anything interactive placed there is unclickable with a
+    // real mouse, so our interactive breadcrumb starts BELOW it.
+    const spacer = document.createElement('div');
+    spacer.className = 'h-12 shrink-0';
+    spacer.setAttribute('data-zmod-drag-spacer', 'true');
+    overlay.appendChild(spacer);
     frame.appendChild(overlay);
   }
 
@@ -215,17 +248,32 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   function renderContent() {
     if (!overlay || !activeItem) return;
     overlay.innerHTML = '';
+    // drag-safe spacer first (see ensureOverlay)
+    const spacer = document.createElement('div');
+    spacer.className = 'h-12 shrink-0';
+    spacer.setAttribute('data-zmod-drag-spacer', 'true');
+    overlay.appendChild(spacer);
     const item = NAV_ITEMS.find((i) => i.id === activeItem);
 
     // Breadcrumb row — official height/typography; every ancestor level is
-    // clickable, matching the official breadcrumb behavior.
+    // clickable, matching the official breadcrumb behavior. Rendered BELOW
+    // the h-12 spacer so it never sits inside the system drag region.
     const crumb = document.createElement('div');
     crumb.className = 'flex h-12 shrink-0 items-center gap-1.5 px-6 text-ui-sm text-foreground-subtle';
-    crumb.innerHTML =
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className =
+      'mr-2 inline-flex h-7 cursor-pointer items-center gap-1 rounded-lg border border-border px-2 text-ui-sm text-foreground-subtle transition-colors hover:bg-surface-hover hover:text-foreground';
+    backBtn.innerHTML = `${iconHtml('left', 'size-3.5')}<span>返回设置</span>`;
+    backBtn.addEventListener('click', () => deactivate());
+    crumb.appendChild(backBtn);
+    const crumbText = document.createElement('span');
+    crumbText.innerHTML =
       `<span class="cursor-pointer hover:text-foreground transition-colors" data-zmod-crumb-root="1">设置</span>` +
       `<span class="text-foreground-subtle/60">/</span>` +
       `<span class="${detail ? 'cursor-pointer hover:text-foreground transition-colors' : 'text-foreground'}" data-zmod-crumb-back="1">ZMod · ${esc(item.label)}</span>` +
       (detail ? `<span class="text-foreground-subtle/60">/</span><span class="text-foreground">${esc(detail.title || '')}</span>` : '');
+    crumb.appendChild(crumbText);
     crumb.querySelector('[data-zmod-crumb-root]')?.addEventListener('click', () => {
       deactivate(); // back to the official sections view
     });
