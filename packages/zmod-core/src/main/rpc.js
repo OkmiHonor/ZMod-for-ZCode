@@ -276,6 +276,30 @@ class RpcGateway {
       return { success: true };
     });
 
+    // ---- Plugin asset access (fetch() cannot read zmod-local:// URLs) ----
+    this.register('plugin.readAsset', async ({ pluginId, relPath }) => {
+      if (!/^[a-zA-Z0-9_-]+$/.test(String(pluginId || ''))) {
+        return { ok: false, error: 'Invalid plugin id' };
+      }
+      const clean = String(relPath || '')
+        .replace(/\\/g, '/')
+        .replace(/\.\.+/g, '')
+        .replace(/^\/+/, '');
+      if (!clean || /[\0:<>"|?*]/.test(clean)) return { ok: false, error: 'Invalid path' };
+      const file = path.join(getPluginsDir(), pluginId, clean);
+      const root = path.resolve(path.join(getPluginsDir(), pluginId));
+      if (!path.resolve(file).startsWith(root + path.sep)) {
+        return { ok: false, error: 'Path escapes plugin dir' };
+      }
+      try {
+        if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return { ok: false, error: 'Not found' };
+        const buf = fs.readFileSync(file);
+        return { ok: true, base64: buf.toString('base64'), size: buf.length };
+      } catch (err) {
+        return { ok: false, error: String(err?.message || err) };
+      }
+    });
+
     // ---- Telemetry tap (v1 __zmodTelemetryTap recipe) ----
     // Wraps the official "zcode:report-telemetry-event" invoke handler once,
     // forwarding message_completion payloads to the renderer over
