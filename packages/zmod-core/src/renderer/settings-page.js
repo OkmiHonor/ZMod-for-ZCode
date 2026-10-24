@@ -219,14 +219,20 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     overlay.innerHTML = '';
     const item = NAV_ITEMS.find((i) => i.id === activeItem);
 
-    // Breadcrumb row — official height/typography.
+    // Breadcrumb row — official height/typography; every ancestor level is
+    // clickable, matching the official breadcrumb behavior.
     const crumb = document.createElement('div');
     crumb.className = 'flex h-12 shrink-0 items-center gap-1.5 px-6 text-ui-sm text-foreground-subtle';
     crumb.innerHTML =
-      `<span>设置</span><span class="text-foreground-subtle/60">/</span>` +
-      `<span class="${detail ? 'cursor-pointer hover:text-foreground' : 'text-foreground'}" data-zmod-crumb-back="1">ZMod · ${esc(item.label)}</span>` +
+      `<span class="cursor-pointer hover:text-foreground transition-colors" data-zmod-crumb-root="1">设置</span>` +
+      `<span class="text-foreground-subtle/60">/</span>` +
+      `<span class="${detail ? 'cursor-pointer hover:text-foreground transition-colors' : 'text-foreground'}" data-zmod-crumb-back="1">ZMod · ${esc(item.label)}</span>` +
       (detail ? `<span class="text-foreground-subtle/60">/</span><span class="text-foreground">${esc(detail.title || '')}</span>` : '');
+    crumb.querySelector('[data-zmod-crumb-root]')?.addEventListener('click', () => {
+      deactivate(); // back to the official sections view
+    });
     crumb.querySelector('[data-zmod-crumb-back]')?.addEventListener('click', () => {
+      if (!detail) return;
       detail = null;
       renderContent();
     });
