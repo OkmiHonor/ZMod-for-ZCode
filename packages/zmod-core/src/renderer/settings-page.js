@@ -193,15 +193,15 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     if (overlay && overlay.isConnected) return;
     overlay = document.createElement('div');
     overlay.setAttribute('data-zmod-settings-overlay', 'true');
-    // Native-section feel: use the theme background token AS-IS. When the
-    // acrylic plugin translucifies it (color-mix), the window material shows
-    // through exactly like official sections; with material 'none' the token
-    // is already opaque and behaves like a plain page. The heavy backdrop
-    // blur hides the official page painted beneath either way.
+    // Native-section feel: use the theme background token AS-IS — the acrylic
+    // plugin's color-mix translucency shows the window material exactly like
+    // official sections (with material 'none' the token is opaque, same look).
+    // The official page beneath is NOT washed over: the injected stylesheet
+    // (see start) unpaints it via :has() while the overlay exists, so the
+    // overlay sits directly on the window material — nothing can ghost through.
     overlay.style.cssText =
       'position:absolute;z-index:60;display:flex;flex-direction:column;' +
       'background:var(--color-background);' +
-      'backdrop-filter:blur(28px) saturate(1.1);-webkit-backdrop-filter:blur(28px) saturate(1.1);' +
       'left:0;right:0;bottom:0;top:0;';
     // Spacer covering the official breadcrumb row area: that row is a system
     // drag region. We paint over it, so re-declare the drag region on our own
@@ -627,6 +627,18 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
    * Public surface
    * ------------------------------------------------------------ */
   function start() {
+    // Unpaint the official settings content while a ZMod view is active.
+    // A stylesheet rule (not a DOM mutation): React neither sees nor fights
+    // it, and :has() makes it self-cleaning — the moment the overlay is
+    // removed the official main paints again. visibility (not display) keeps
+    // the official layout intact underneath.
+    if (!document.getElementById('zmod-settings-overlay-style')) {
+      const st = document.createElement('style');
+      st.id = 'zmod-settings-overlay-style';
+      st.textContent =
+        '[data-settings-panel-frame]:has(> [data-zmod-settings-overlay]) main{visibility:hidden !important}';
+      document.head.appendChild(st);
+    }
     observer = new MutationObserver(() => scan());
     observer.observe(document.body, { childList: true, subtree: true });
     scan();
