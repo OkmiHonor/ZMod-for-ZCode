@@ -435,12 +435,32 @@ const REFRESH_MARK = 'zmod-quota-refresh';
 export default definePlugin({
   id: 'quota-popover',
   name: '余量弹窗与模型页余量',
-  version: '2.1.0',
+  version: '2.2.0',
   description: '官方「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1）+ 官方设置模型页供应商详情注入 v1 Bento 账户额度卡（数据源驱动，不改官方文件）',
   author: 'ZMod Team',
 
+  settings: {
+    refresh: {
+      type: 'group',
+      title: '刷新'
+    },
+    popoverRefresh: {
+      type: 'switch',
+      title: '弹出余量卡时实时刷新',
+      description: '鼠标移入输入框小圆圈、余量卡弹出的瞬间强制造一次实时刷新（绕过数据源 TTL 缓存），只刷新当前匹配的实例',
+      default: true
+    },
+    refreshCooldown: {
+      type: 'number',
+      title: '实时刷新冷却（秒）',
+      description: '两次弹出刷新之间的最小间隔，默认 8 秒',
+      default: 8
+    }
+  },
+
     async start(ctx) {
     const { cleanup } = ctx;
+    const s = ctx.settings;
     const ds = ctx.datasources;
     if (!ds) {
       console.warn('[quota-popover] datasource API unavailable — plugin idle');
@@ -568,6 +588,28 @@ export default definePlugin({
        the popover opens through several React re-renders that drop injected
        nodes, and concurrent cycles would each see it unmarked and double-append */
     let enhancing = false;
+    /* hover-triggered real-time refresh: the moment the capacity hover-card
+       opens (Radix data-state flips to "open"), force-refresh the matched
+       instance past the datasource TTL. Gated by a cooldown so repeated
+       hovers can't hammer provider APIs; off via settings. */
+    let popWasOpen = false;
+    let lastHoverRefresh = 0;
+    async function hoverOpenRefresh(pops) {
+      const openNow = pops.some((p) => p.getAttribute('data-state') === 'open');
+      const justOpened = openNow && !popWasOpen;
+      popWasOpen = openNow;
+      if (!justOpened || !s.get('popoverRefresh', true)) return;
+      const cooldown = Math.max(0, Number(s.get('refreshCooldown', 8)) || 0) * 1000;
+      if (Date.now() - lastHoverRefresh < cooldown) return;
+      const inst = matchSelection(currentSelection());
+      if (!inst) return;
+      lastHoverRefresh = Date.now();
+      const st = await ds.getStatus(inst.id, { force: true }).catch(() => null);
+      const entry = snapshot.find((x) => x.inst.id === inst.id);
+      if (entry) entry.status = st;
+      else snapshot.push({ inst, status: st });
+      console.log('[quota-popover] hover-triggered forced refresh:', inst.id);
+    }
     async function enhancePopovers() {
       if (enhancing) return;
       enhancing = true;
@@ -579,6 +621,7 @@ export default definePlugin({
           (p) => p.isConnected && !p.querySelector(`[data-${POPOVER_MARK}]`) && /上下文|今日余额|命中率/.test(p.textContent || '')
         );
         if (pops.length === 0) return;
+        await hoverOpenRefresh(pops);
         await snapAfter(15000);
         for (const pop of pops) {
           if (!pop.isConnected || pop.querySelector(`[data-${POPOVER_MARK}]`)) continue;
