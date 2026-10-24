@@ -1091,6 +1091,12 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
             }
           });
           main.appendChild(cfgBtn);
+          main.appendChild(
+            textButton('去配置', 'plus', () => {
+              detail = { kind: 'ds-edit', editing: null, title: `配置 ${p.name}`, presetType: p.type };
+              renderContent();
+            })
+          );
           card.appendChild(main);
         } else {
           main.appendChild(
