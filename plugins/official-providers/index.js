@@ -99,15 +99,23 @@ async function antigravityQuotaStatus(settings, ctx) {
   if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
   const groups = Array.isArray(json.quota_groups) ? json.quota_groups : [];
   if (groups.length === 0) return { ok: false, message: '响应无 quota_groups（账号 ID 是否正确）' };
+  const fmtReset = (t) => {
+    try {
+      const d = new Date(t);
+      if (isNaN(d.getTime())) return '';
+      return `${d.getMonth() + 1}月${d.getDate()}日`;
+    } catch { return ''; }
+  };
   const rows = [];
   for (const g of groups) {
     for (const b of Array.isArray(g.buckets) ? g.buckets : []) {
       const frac = Number(b.remaining_fraction);
       if (!isFinite(frac)) continue;
       const win = b.window === 'weekly' ? '每周' : b.window === '5h' ? '5 小时' : b.window || '';
+      const reset = fmtReset(b.reset_time);
       rows.push({
         label: `${g.display_name || g.name || '配额'} · ${win}`,
-        value: `${(frac * 100).toFixed(1)}% 剩余`
+        value: `${(frac * 100).toFixed(1)}% 剩余${reset ? ` · ${reset}重置` : ''}`
       });
     }
   }
