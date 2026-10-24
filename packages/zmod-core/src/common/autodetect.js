@@ -118,11 +118,7 @@ export function autodetectDatasources({ homeDir, existingTypes = [] }) {
       guide: {
         url: 'https://ram.console.aliyun.com/manage/ak',
         text: '打开阿里云 RAM 控制台创建 AccessKey（建议子账号仅授 AliyunBSSReadOnlyAccess）'
-      },
-      quickFields: [
-        { key: 'accessKeyId', title: 'AccessKey ID', type: 'text', placeholder: '粘贴 AccessKey ID' },
-        { key: 'accessKeySecret', title: 'AccessKey Secret', type: 'secret', placeholder: '粘贴 AccessKey Secret' }
-      ]
+      }
     });
   }
 

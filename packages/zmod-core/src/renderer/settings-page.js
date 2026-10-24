@@ -1034,13 +1034,9 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
           })
         );
       } else {
-        // Inline quick-config: paste credentials straight into the placeholder
-        // card (guide link tells the user where to get them) — no detour
-        // through the generic provider editor.
-        const hasQuick = Array.isArray(p.quickFields) && p.quickFields.length > 0;
-        const main = document.createElement('div');
-        main.className = hasQuick ? 'flex flex-wrap items-center gap-2' : 'flex items-center gap-2';
-
+        // Placeholder: reason + credential guide link + a single editor
+        // entry with the provider type preselected — the editor's preset
+        // defaults keep it to "name + the keys this provider needs".
         if (p.guide?.url) {
           const link = document.createElement('a');
           link.href = p.guide.url;
@@ -1055,58 +1051,15 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
           info.appendChild(link);
         }
 
-        const values = {};
-        if (hasQuick) {
-          const fields = document.createElement('div');
-          fields.className = 'flex w-full flex-col gap-2';
-          fields.setAttribute('data-zmod-ds-quick', '1');
-          for (const f of p.quickFields) {
-            const input = document.createElement('input');
-            input.type = f.type === 'secret' ? 'password' : 'text';
-            input.placeholder = f.placeholder || f.title;
-            input.autocomplete = 'off';
-            input.className = FORM_INPUT_CLS;
-            input.addEventListener('input', () => { values[f.key] = input.value.trim(); });
-            fields.appendChild(input);
-          }
-          const row = document.createElement('div');
-          row.className = 'flex w-full flex-wrap items-center gap-2';
-          row.appendChild(fields);
-          const cfgBtn = primaryButton('自动配置', async () => {
-            const missing = p.quickFields.filter((f) => !values[f.key]);
-            if (missing.length) {
-              ui.showToast(`请先填写：${missing.map((f) => f.title).join('、')}`, 'warn');
-              return;
-            }
-            try {
-              await datasources.saveInstance({
-                type: p.type,
-                name: p.name,
-                settings: { ...(p.settings || {}), ...values }
-              });
-              ui.showToast(`已配置「${p.name}」，正在查询余额…`, 'success');
-              renderContent();
-            } catch (err) {
-              ui.showToast(`配置失败：${err?.message || err}`, 'error');
-            }
-          });
-          main.appendChild(cfgBtn);
-          main.appendChild(
-            textButton('去配置', 'plus', () => {
-              detail = { kind: 'ds-edit', editing: null, title: `配置 ${p.name}`, presetType: p.type };
-              renderContent();
-            })
-          );
-          card.appendChild(main);
-        } else {
-          main.appendChild(
-            textButton('去配置', 'plus', () => {
-              detail = { kind: 'ds-edit', editing: null, title: `配置 ${p.name}`, presetType: p.type };
-              renderContent();
-            })
-          );
-          card.appendChild(main);
-        }
+        const main = document.createElement('div');
+        main.className = 'flex items-center gap-2';
+        main.appendChild(
+          textButton('去配置', 'plus', () => {
+            detail = { kind: 'ds-edit', editing: null, title: `配置 ${p.name}`, presetType: p.type };
+            renderContent();
+          })
+        );
+        card.appendChild(main);
       }
       root.appendChild(card);
     }
