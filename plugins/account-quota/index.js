@@ -134,6 +134,40 @@ export default definePlugin({
     };
     publish();
 
+    /* ---- datasource type: the passive snapshot as a first-class source ----
+       Collection stays here (this plugin owns official-account observation);
+       registering it as a provider lets any datasource consumer (浮窗/设置页)
+       use it like any other source — zero credentials, zero requests. */
+    const ds = ctx.datasources;
+    if (ds) {
+      ds.registerProvider({
+        type: 'official-account',
+        label: '官方账号额度（零凭据）',
+        description: '被动读取官方登录账号的今日余额/配额（悬停输入框「上下文容量」打开官方弹窗即刷新），无需任何 API Key',
+        settings: {
+          modelKeywords: {
+            title: '供应商/模型匹配关键字（可选）',
+            description: '逗号分隔。当前选中的供应商名或模型名含任一关键字时，用量浮窗显示此源；留空则按实例名称相似度自动匹配',
+            placeholder: 'glm, zai'
+          }
+        },
+        fetchStatus: async () => {
+          const q = window.__zmod_account_quota__;
+          if (q && Array.isArray(q.rows) && q.rows.length > 0) {
+            return { ok: true, rows: q.rows, ts: q.observedAt };
+          }
+          return { ok: false, message: '暂无采集数据 — 悬停输入框「上下文容量」打开官方弹窗即可采集（零凭据，不发任何请求）' };
+        },
+        test: async () => {
+          const q = window.__zmod_account_quota__;
+          return q && Array.isArray(q.rows) && q.rows.length > 0
+            ? { ok: true, message: `已有 ${q.rows.length} 条采集数据` }
+            : { ok: false, message: '暂无采集数据 — 打开一次官方用量弹窗后重试' };
+        }
+      });
+      console.log('[account-quota] registered official-account datasource provider');
+    }
+
     /* ---- channel 2 (primary): official popover DOM ---- */
     const popObserver = new MutationObserver(() => {
       for (const pop of document.querySelectorAll('[data-slot="hover-card-content"]')) {
