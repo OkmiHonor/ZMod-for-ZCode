@@ -124,7 +124,17 @@ async function antigravityQuotaStatus(settings, ctx) {
     ok: true,
     rows: json.subscription_tier
       ? [{ label: '订阅档位', value: String(json.subscription_tier) }, ...rows]
-      : rows
+      : rows,
+    // structured raw data for model-level matching (quota-popover)
+    models: (Array.isArray(json.models) ? json.models : [])
+      .filter((m) => m && m.name && isFinite(Number(m.percentage)))
+      .map((m) => ({ name: String(m.name).toLowerCase(), percentage: Number(m.percentage), reset: m.reset_time || '' })),
+    groups: groups.map((g) => ({
+      name: String(g.display_name || g.name || ''),
+      buckets: (Array.isArray(g.buckets) ? g.buckets : [])
+        .filter((b) => isFinite(Number(b.remaining_fraction)))
+        .map((b) => ({ window: b.window, frac: Number(b.remaining_fraction), reset: b.reset_time || '' }))
+    }))
   };
 }
 
@@ -134,6 +144,12 @@ const COMMON_ENGINE_SETTINGS = {
     title: '请求地址',
     description: '完整 http(s) 接口地址，GET 请求直接返回 JSON 的接口最简单',
     placeholder: 'https://example.com/api/balance'
+  },
+  modelKeywords: {
+    type: 'text',
+    title: '供应商/模型匹配关键字（可选）',
+    description: '逗号分隔。当前选中的供应商名或模型名含任一关键字时，用量浮窗显示此源；留空则按实例名称相似度自动匹配',
+    placeholder: '百炼, qwen'
   },
   method: {
     type: 'select',

@@ -81,10 +81,15 @@ function matchInstance(providerName, providerBaseUrl, instances) {
 
 /* ---- card builders (official token classes, v1 Bento layout) ---- */
 
-function bigTile(label, value, hint) {
-  return `<div class="flex min-w-0 flex-col gap-0.5 rounded-lg border border-border bg-background/60 px-3.5 py-3">` +
+function bigTile(label, value, hint, pct) {
+  const lv = levelOf(pct);
+  const bar = lv
+    ? `<div class="h-1 w-full overflow-hidden rounded-full bg-surface-hover/80"><div class="h-full rounded-full ${lv.dot}" style="width:${pct}%"></div></div>`
+    : '';
+  return `<div class="flex min-w-0 flex-col gap-1 rounded-lg border border-border bg-background/60 px-3.5 py-3">` +
     `<span class="truncate text-ui-sm text-foreground-subtle">${esc(label)}</span>` +
     `<span class="truncate text-lg font-semibold tabular-nums text-foreground">${esc(value)}</span>` +
+    bar +
     (hint ? `<span class="truncate text-ui-xs text-foreground-subtle">${esc(hint)}</span>` : '') +
     `</div>`;
 }
@@ -152,50 +157,86 @@ export default definePlugin({
        (dropdowns, settings popovers containing the word 用量) must not receive cards */
     const POPOVER_SELECTOR = '[data-slot="hover-card-content"]';
 
+    /* Current composer selection: the toolbar model-selector button carries
+       "供应商名/模型名  effort" in its aria-label — the same display name the
+       settings detail header shows, so instance matching stays consistent. */
+    function currentSelection() {
+      for (const gauge of document.querySelectorAll('[data-slot="hover-card-trigger"]')) {
+        if (!/上下文/.test(gauge.getAttribute('aria-label') || '')) continue;
+        let bar = gauge;
+        for (let i = 0; i < 6 && bar.parentElement; i++) {
+          bar = bar.parentElement;
+          if (bar.querySelectorAll('button').length > 3) break;
+        }
+        for (const btn of bar.querySelectorAll('button')) {
+          const label = (btn.getAttribute('aria-label') || '').trim();
+          // the gauge's own label ("上下文已用 12,345 / 总量 …") also contains a
+          // slash — only the model selector has "provider/model effort" shape;
+          // the preset-provider case drops the prefix ("GLM-5.3-Flash 低")
+          if (/上下文已用|^添加上下文$|^切换模式$|^电脑操作$|^发送$/.test(label)) continue;
+          const m = /^(.+)\/(.+?)\s*(?:极高|高|中|低)?$/.exec(label);
+          if (m) return { provider: m[1].trim(), model: m[2].trim() };
+          if (/.+\s(?:极高|高|中|低)$/.test(label)) {
+            return { provider: '', model: label.replace(/\s+(极高|高|中|低)$/, '').trim() };
+          }
+        }
+      }
+      return null;
+    }
+
+    /** Which instance follows the current selection: explicit keywords →
+        provider-name overlap → model-name match in antigravity status data. */
+    function matchSelection(sel) {
+      if (!sel) return null;
+      const kw = (i) => String(i.settings?.modelKeywords || '').split(/[,，]/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+      const hay = (sel.provider + ' ' + sel.model).toLowerCase();
+      for (const { inst } of snapshot) {
+        if (kw(inst).some((k) => hay.includes(k))) return inst;
+      }
+      const byName = matchInstance(sel.provider, '', snapshot.map((s) => s.inst));
+      if (byName) return byName;
+      for (const { inst, status } of snapshot) {
+        if ((status?.models || []).some((m) => m.name === sel.model.toLowerCase() || sel.model.toLowerCase().includes(m.name))) return inst;
+      }
+      return null;
+    }
+
     function buildPopoverBlock(hasOfficialBalance) {
       /* v1 whitelist parity: when the official GLM 今日余额 card renders,
          v1's patch returned early — no ZMod balance section alongside it */
       if (hasOfficialBalance) return null;
+      /* v1 behavior: only the source matching the current provider/model is
+         shown; unmatched selections render no balance section at all */
+      const sel = currentSelection();
+      const inst = matchSelection(sel);
+      if (!inst) return null;
+      const status = snapshot.find((s) => s.inst.id === inst.id)?.status;
       const wrap = document.createElement('div');
       wrap.className = 'flex flex-col gap-2.5 border-t border-border pt-2.5 mt-2.5';
       wrap.setAttribute('data-' + POPOVER_MARK, '1');
-      if (snapshot.length === 0) {
-        wrap.innerHTML =
-          `<div class="text-ui-xs text-foreground-subtle">ZMod 数据源未配置 — 在 设置 → ZMod → 数据源 添加余额/配额源后，这里会显示今日余额。</div>`;
-        return wrap;
-      }
-      /* v1 layout: one section per source — name header + 2-col big-number
-         tiles (现金余额 ¥9.54 / 可用代金券 ¥265.36 shape). Pure info sources
-         (no balance, no percentage — e.g. repo stats) don't belong in a
-         今日余额 section and are skipped. */
-      wrap.innerHTML = snapshot.filter(({ status }) => {
-        if (!status || !status.ok) return true; // keep error states visible
-        return status.balance != null || (status.rows || []).some((r) => pctFromValue(r.value) != null);
-      }).map(({ inst, status }) => {
-        const head =
-          `<div class="flex items-center justify-between gap-3">` +
-          `<span class="text-ui-sm font-medium text-foreground">${esc(inst.name)}</span>` +
-          `<span class="text-ui-xs text-foreground-subtle">${esc(inst.type)}</span></div>`;
-        let body;
-        if (!status) body = `<div class="text-ui-sm text-foreground-subtle">状态查询中…</div>`;
-        else if (!status.ok) body = `<div class="text-ui-sm text-foreground-subtle">${esc(status.message || '查询失败')}</div>`;
-        else {
-          const tiles = [];
-          if (status.balance != null) tiles.push(bigTile('账户余额', `${status.currency || ''}${status.balance}`));
-          for (const r of (status.rows || []).slice(0, 6)) {
-            const pct = pctFromValue(r.value);
-            if (pct != null) {
-              // "98.9% 剩余 · 10月31日重置" → big "98.9%" + hint "10月31日重置"
-              const reset = /(\d{1,2}月\d{1,2}日)/.exec(r.value)?.[1] || '';
-              tiles.push(bigTile(r.label, pct + '%', reset));
-            } else {
-              tiles.push(bigTile(r.label, r.value));
-            }
+      const head =
+        `<div class="flex items-center justify-between gap-3">` +
+        `<span class="text-ui-sm font-medium text-foreground">${esc(inst.name)}</span>` +
+        `<span class="text-ui-xs text-foreground-subtle">${esc(sel ? sel.provider : inst.type)}</span></div>`;
+      let body;
+      if (!status) body = `<div class="text-ui-sm text-foreground-subtle">状态查询中…</div>`;
+      else if (!status.ok) body = `<div class="text-ui-sm text-foreground-subtle">${esc(status.message || '查询失败')}</div>`;
+      else {
+        const tiles = [];
+        if (status.balance != null) tiles.push(bigTile('账户余额', `${status.currency || ''}${status.balance}`));
+        for (const r of (status.rows || []).slice(0, 6)) {
+          const pct = pctFromValue(r.value);
+          if (pct != null) {
+            // "98.9% 剩余 · 10月31日重置" → big "98.9%" + progress bar + hint
+            const reset = /(\d{1,2}月\d{1,2}日)/.exec(r.value)?.[1] || '';
+            tiles.push(bigTile(r.label, pct + '%', reset, pct));
+          } else {
+            tiles.push(bigTile(r.label, r.value));
           }
-          body = `<div class="grid grid-cols-2 gap-2">${tiles.join('')}</div>`;
         }
-        return `<div class="flex flex-col gap-2">${head}${body}</div>`;
-      }).join('');
+        body = `<div class="grid grid-cols-2 gap-2">${tiles.join('')}</div>`;
+      }
+      wrap.innerHTML = head + body;
       return wrap;
     }
 
