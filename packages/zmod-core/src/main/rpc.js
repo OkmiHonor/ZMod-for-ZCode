@@ -366,15 +366,22 @@ export function installTelemetryTap() {
       return false;
     }
     electronIpcMain.removeHandler(TELEMETRY_CH);
-    electronIpcMain.handle(TELEMETRY_CH, async (event, payload) => {
+    electronIpcMain.handle(TELEMETRY_CH, async (event, ...args) => {
       try {
+        // The official preload API is variadic: reportTelemetryEvent(name, data)
+        // arrives here as args[0]=name(string), args[1]=data — while some callers
+        // pass a single object. Normalize before filtering.
+        const payload =
+          args[0] && typeof args[0] === 'object'
+            ? args[0]
+            : { elementName: args[0], eventExtraDetail: args[1] };
         const elem = payload?.elementName ?? payload?.eventName;
         if (elem === 'message_completion' || elem === 'agent_step') {
           const win = getMainWindow();
           win?.webContents?.send?.(TELEMETRY_FWD, payload);
         }
       } catch {}
-      return orig(event, payload);
+      return orig(event, ...args);
     });
     telemetryTapInstalled = true;
     console.log(`[ZMod:RPC] telemetry tap ready → ${TELEMETRY_FWD}`);
