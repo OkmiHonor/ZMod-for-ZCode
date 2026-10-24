@@ -31,9 +31,7 @@ const ICONS = {
   pencil:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path><path d="m15 5 4 4"></path></svg>',
   trash:
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>',
-  left:
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg>'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>'
 };
 
 function iconHtml(name, cls = 'size-4') {
@@ -214,20 +212,26 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     if (overlay && overlay.isConnected) return;
     overlay = document.createElement('div');
     overlay.setAttribute('data-zmod-settings-overlay', 'true');
-    // Opaque background (strip the alpha from the translucency-themed token,
-    // otherwise the ZMod page shows the official page beneath it).
-    // no-drag: the window's top strip is a system drag region that swallows
-    // physical clicks (v1 learned this the hard way with its floating ball).
+    // Native-section feel: the official pages sit on the window's acrylic
+    // material, so a fully opaque slab reads as a sticker pasted over the UI.
+    // A mostly-opaque wash of the theme background + a heavy backdrop blur
+    // still fully hides the official page beneath while letting the acrylic
+    // luminance through (same trick the official modals use).
+    const base = opaqueToken('--color-background', 'rgb(22 22 22)');
+    const m = base.match(/rgb\(([\d.]+) ([\d.]+) ([\d.]+)\)/);
+    const wash = m ? `rgb(${m[1]} ${m[2]} ${m[3]} / 0.86)` : base;
     overlay.style.cssText =
       'position:absolute;z-index:60;display:flex;flex-direction:column;' +
-      `background:${opaqueToken('--color-background', 'rgb(22 22 22)')};` +
-      'left:0;right:0;bottom:0;top:0;-webkit-app-region:no-drag;';
+      `background:${wash};backdrop-filter:blur(28px) saturate(1.1);-webkit-backdrop-filter:blur(28px) saturate(1.1);` +
+      'left:0;right:0;bottom:0;top:0;';
     // Spacer covering the official breadcrumb row area: that row is a system
-    // drag region — anything interactive placed there is unclickable with a
-    // real mouse, so our interactive breadcrumb starts BELOW it.
+    // drag region. We paint over it, so re-declare the drag region on our own
+    // spacer — the window stays draggable from the top strip like on official
+    // sections (app-region is resolved from the topmost painted element).
     const spacer = document.createElement('div');
     spacer.className = 'h-12 shrink-0';
     spacer.setAttribute('data-zmod-drag-spacer', 'true');
+    spacer.style.cssText = '-webkit-app-region:drag;';
     overlay.appendChild(spacer);
     frame.appendChild(overlay);
   }
@@ -252,31 +256,21 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     const spacer = document.createElement('div');
     spacer.className = 'h-12 shrink-0';
     spacer.setAttribute('data-zmod-drag-spacer', 'true');
+    spacer.style.cssText = '-webkit-app-region:drag;';
     overlay.appendChild(spacer);
     const item = NAV_ITEMS.find((i) => i.id === activeItem);
 
-    // Breadcrumb row — official height/typography; every ancestor level is
-    // clickable, matching the official breadcrumb behavior. Rendered BELOW
-    // the h-12 spacer so it never sits inside the system drag region.
+    // Breadcrumb — ZMod hierarchy only. No "返回设置"/设置 root: clicking those
+    // used to bounce to the official sections view and broke the back flow
+    // (user ruling 2026-10-25); leaving the ZMod view happens via the official
+    // sidebar nav, and the ZMod level itself is the in-ZMod back affordance.
     const crumb = document.createElement('div');
     crumb.className = 'flex h-12 shrink-0 items-center gap-1.5 px-6 text-ui-sm text-foreground-subtle';
-    const backBtn = document.createElement('button');
-    backBtn.type = 'button';
-    backBtn.className =
-      'mr-2 inline-flex h-7 cursor-pointer items-center gap-1 rounded-lg border border-border px-2 text-ui-sm text-foreground-subtle transition-colors hover:bg-surface-hover hover:text-foreground';
-    backBtn.innerHTML = `${iconHtml('left', 'size-3.5')}<span>返回设置</span>`;
-    backBtn.addEventListener('click', () => deactivate());
-    crumb.appendChild(backBtn);
     const crumbText = document.createElement('span');
     crumbText.innerHTML =
-      `<span class="cursor-pointer hover:text-foreground transition-colors" data-zmod-crumb-root="1">设置</span>` +
-      `<span class="text-foreground-subtle/60">/</span>` +
       `<span class="${detail ? 'cursor-pointer hover:text-foreground transition-colors' : 'text-foreground'}" data-zmod-crumb-back="1">ZMod · ${esc(item.label)}</span>` +
       (detail ? `<span class="text-foreground-subtle/60">/</span><span class="text-foreground">${esc(detail.title || '')}</span>` : '');
     crumb.appendChild(crumbText);
-    crumb.querySelector('[data-zmod-crumb-root]')?.addEventListener('click', () => {
-      deactivate(); // back to the official sections view
-    });
     crumb.querySelector('[data-zmod-crumb-back]')?.addEventListener('click', () => {
       if (!detail) return;
       detail = null;

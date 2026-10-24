@@ -134,10 +134,6 @@ export default definePlugin({
     };
     publish();
 
-    const refreshCard = () => {
-      try { globalThis.ZMod?.settingsPage?.rerender?.('account-quota'); } catch {}
-    };
-
     /* ---- channel 2 (primary): official popover DOM ---- */
     const popObserver = new MutationObserver(() => {
       for (const pop of document.querySelectorAll('[data-slot="hover-card-content"]')) {
@@ -147,7 +143,6 @@ export default definePlugin({
         if (rows.length > 0) {
           latest = { rows, source: 'official-popover', at: Date.now() };
           publish();
-          refreshCard();
           console.log('[account-quota] captured 今日余额 rows from official popover:', rows.map((r) => r.label + ' ' + r.value).join(' | '));
         }
       }
@@ -186,46 +181,7 @@ export default definePlugin({
     window.addEventListener('message', onMessage);
     cleanup(() => window.removeEventListener('message', onMessage));
 
-    /* ---- settings page contribution ---- */
-    const settingsPage = globalThis.ZMod?.settingsPage;
-    settingsPage?.contribute({
-      id: 'account-quota',
-      title: '账号额度（零凭据）',
-      render: (el) => {
-        const q = window.__zmod_account_quota__;
-        el.innerHTML = '';
-        if (!q || !q.rows || q.rows.length === 0) {
-          const hint = document.createElement('div');
-          hint.className = 'text-ui-sm text-foreground-subtle';
-          hint.textContent = '暂无数据。在输入框右下角悬停"上下文容量"打开官方弹窗即可刷新（数据零凭据，读取自官方界面）。';
-          el.appendChild(hint);
-          return;
-        }
-        const grid = document.createElement('div');
-        grid.className = 'grid grid-cols-2 gap-3 md:grid-cols-4';
-        for (const row of q.rows) {
-          const card = document.createElement('div');
-          card.className = 'flex flex-col gap-0.5 rounded-xl border border-border bg-surface px-4 py-3';
-          const label = document.createElement('span');
-          label.className = 'text-ui-sm text-foreground-subtle';
-          label.textContent = row.label;
-          const value = document.createElement('span');
-          value.className = 'text-ui-base font-semibold tabular-nums text-foreground';
-          value.textContent = row.value;
-          card.appendChild(label);
-          card.appendChild(value);
-          grid.appendChild(card);
-        }
-        el.appendChild(grid);
-        const updated = document.createElement('div');
-        updated.className = 'text-ui-xs text-foreground-subtle/70';
-        updated.textContent = '捕获于 ' + new Date(q.observedAt).toLocaleString() + ' · 来源：' + (q.source === 'official-popover' ? '官方用量弹窗' : '官方服务推送');
-        el.appendChild(updated);
-      }
-    });
-
     cleanup(() => {
-      settingsPage?.uncontribute?.('account-quota');
       try { delete window.__zmod_account_quota__; } catch {}
     });
     console.log('[account-quota] passive account-quota reader armed');
