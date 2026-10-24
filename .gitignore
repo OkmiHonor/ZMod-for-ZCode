@@ -10,3 +10,13 @@ _selftest/
 *.asar
 *.asar.unpacked/
 HANDOFF.md
+
+# 本地私产/无关项目/第三方 vendored 源：磁盘保留，不入库（官方 asar 备份与上游源码不可再分发）
+facewinunlock-focus-fix/
+zcode-asset-archive-*/
+upstream/
+backups/
+dsh-port/
+.dsh-acl-out/
+.serena/
+README-迁移清单.md
