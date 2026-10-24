@@ -152,30 +152,49 @@ export default definePlugin({
        (dropdowns, settings popovers containing the word 用量) must not receive cards */
     const POPOVER_SELECTOR = '[data-slot="hover-card-content"]';
 
-    function buildPopoverBlock() {
+    function buildPopoverBlock(hasOfficialBalance) {
+      /* v1 whitelist parity: when the official GLM 今日余额 card renders,
+         v1's patch returned early — no ZMod balance section alongside it */
+      if (hasOfficialBalance) return null;
       const wrap = document.createElement('div');
-      wrap.className = 'flex flex-col gap-1.5 border-t border-border pt-2 mt-2';
+      wrap.className = 'flex flex-col gap-2.5 border-t border-border pt-2.5 mt-2.5';
       wrap.setAttribute('data-' + POPOVER_MARK, '1');
       if (snapshot.length === 0) {
         wrap.innerHTML =
           `<div class="text-ui-xs text-foreground-subtle">ZMod 数据源未配置 — 在 设置 → ZMod → 数据源 添加余额/配额源后，这里会显示今日余额。</div>`;
         return wrap;
       }
-      wrap.innerHTML = snapshot.map(({ inst, status }) => {
+      /* v1 layout: one section per source — name header + 2-col big-number
+         tiles (现金余额 ¥9.54 / 可用代金券 ¥265.36 shape). Pure info sources
+         (no balance, no percentage — e.g. repo stats) don't belong in a
+         今日余额 section and are skipped. */
+      wrap.innerHTML = snapshot.filter(({ status }) => {
+        if (!status || !status.ok) return true; // keep error states visible
+        return status.balance != null || (status.rows || []).some((r) => pctFromValue(r.value) != null);
+      }).map(({ inst, status }) => {
         const head =
           `<div class="flex items-center justify-between gap-3">` +
           `<span class="text-ui-sm font-medium text-foreground">${esc(inst.name)}</span>` +
           `<span class="text-ui-xs text-foreground-subtle">${esc(inst.type)}</span></div>`;
-        /* compact single-row layout: the capacity popover is viewport-clamped,
-           tile grids (kept for the settings detail card) would overflow it */
-        let pills = '';
-        if (status && status.ok) {
-          if (status.balance != null) pills += pillFor({ label: '账户余额', value: `${status.currency || ''}${status.balance}` });
-          for (const r of status.rows || []) pills += pillFor(r);
-        } else {
-          pills = `<span class="text-ui-xs text-foreground-subtle">${esc(status?.message || '查询失败')}</span>`;
+        let body;
+        if (!status) body = `<div class="text-ui-sm text-foreground-subtle">状态查询中…</div>`;
+        else if (!status.ok) body = `<div class="text-ui-sm text-foreground-subtle">${esc(status.message || '查询失败')}</div>`;
+        else {
+          const tiles = [];
+          if (status.balance != null) tiles.push(bigTile('账户余额', `${status.currency || ''}${status.balance}`));
+          for (const r of (status.rows || []).slice(0, 6)) {
+            const pct = pctFromValue(r.value);
+            if (pct != null) {
+              // "98.9% 剩余 · 10月31日重置" → big "98.9%" + hint "10月31日重置"
+              const reset = /(\d{1,2}月\d{1,2}日)/.exec(r.value)?.[1] || '';
+              tiles.push(bigTile(r.label, pct + '%', reset));
+            } else {
+              tiles.push(bigTile(r.label, r.value));
+            }
+          }
+          body = `<div class="grid grid-cols-2 gap-2">${tiles.join('')}</div>`;
         }
-        return `<div class="flex flex-col gap-1">${head}<div class="flex flex-wrap items-center gap-1.5">${pills}</div></div>`;
+        return `<div class="flex flex-col gap-2">${head}${body}</div>`;
       }).join('');
       return wrap;
     }
@@ -187,8 +206,12 @@ export default definePlugin({
       if (pops.length === 0) return;
       await snapAfter(15000);
       for (const pop of pops) {
+        const text = pop.textContent || '';
+        const hasOfficialBalance = /今日余额/.test(text) && /\d{1,2}月\d{1,2}日/.test(text);
+        const block = buildPopoverBlock(hasOfficialBalance);
+        if (!block) continue;
         const host = pop.querySelector('[class*="flex-col"]')?.lastElementChild?.parentElement || pop;
-        host.appendChild(buildPopoverBlock());
+        host.appendChild(block);
         console.log('[quota-popover] appended balance cards to official popover');
       }
     }
