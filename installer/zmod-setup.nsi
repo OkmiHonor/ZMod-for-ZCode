@@ -39,7 +39,11 @@ close_zcode:
   DetailPrint "正在安装 ZMod 到 ZCode ..."
   ExecWait '"$INSTDIR\run-install.cmd" install' $0
   ${If} $0 != 0
-    MessageBox MB_OK|MB_ICONSTOP "安装失败（退出码 $0）。$\r$\n请把刚才命令行窗口中的错误信息反馈给开发者。"
+    ${If} $0 == 2
+      MessageBox MB_OK|MB_ICONSTOP "安装未完成：app.asar 被占用（ZCode 可能在安装期间被重新打开，或杀毒软件正在扫描）。$\r$\n$\r$\n请完全退出 ZCode 后，到安装目录重新运行 run-install.cmd 即可，无需重装。$\r$\n详细日志: $APPDATA\ZMod\logs\install-latest.log"
+    ${Else}
+      MessageBox MB_OK|MB_ICONSTOP "安装失败（退出码 $0）。$\r$\n详细日志: $APPDATA\ZMod\logs\install-latest.log$\r$\n请把日志内容反馈给开发者。"
+    ${EndIf}
     DetailPrint "install exit code: $0"
   ${Else}
     MessageBox MB_OK|MB_ICONINFORMATION "ZMod 安装成功！$\r$\n$\r$\n启动 ZCode 后按 Ctrl+Shift+M 打开 ZMod 管理面板。"

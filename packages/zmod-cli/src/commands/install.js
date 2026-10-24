@@ -23,6 +23,44 @@ function copyDir(src, dest) {
   fs.cpSync(src, dest, { recursive: true });
 }
 
+/**
+ * Mirror all installer console output to logs/install-latest.log. The NSIS
+ * setup exe shows only a transient console; without this, failed installs
+ * leave zero trace (tmp is wiped by the finally block).
+ */
+export function teeConsoleTo(logPath) {
+  try {
+    fs.writeFileSync(logPath, '', 'utf8'); // fresh log each run
+  } catch {}
+  const write = (args) => {
+    try {
+      fs.appendFileSync(logPath, args.map(String).join(' ') + '\n', 'utf8');
+    } catch {} // logging must never break the install itself
+  };
+  const origLog = console.log.bind(console);
+  const origErr = console.error.bind(console);
+  console.log = (...a) => { origLog(...a); write(a); };
+  console.error = (...a) => { origErr(...a); write(a); };
+}
+
+/** Remove leftover tmp/install-* from earlier runs whose cleanup failed. */
+export function cleanStaleTmp() {
+  const tmpRoot = getTmpDir();
+  let entries;
+  try {
+    entries = fs.readdirSync(tmpRoot);
+  } catch {
+    return;
+  }
+  for (const ent of entries) {
+    if (ent.startsWith('install-')) {
+      try {
+        fs.rmSync(path.join(tmpRoot, ent), { recursive: true, force: true });
+      } catch {}
+    }
+  }
+}
+
 /** Deploy the runtime (main/core/sdk) and official plugins into the user data dir. */
 function deployRuntimeAndPlugins() {
   const userData = getUserDataDir();
@@ -61,7 +99,9 @@ function deployRuntimeAndPlugins() {
 }
 
 export async function install(opts = {}) {
-  console.log(`\n🚀 [ZMod Installer] v${VERSION}\n`);
+  ensureDirectories();
+  teeConsoleTo(path.join(getLogsDir(), 'install-latest.log'));
+  console.log(`\n🚀 [ZMod Installer] v${VERSION} — ${new Date().toISOString()}\n`);
 
   const hostDir = locateZCode({ explicit: opts.path });
   if (!hostDir) {
@@ -73,6 +113,7 @@ export async function install(opts = {}) {
 
   ensureDirectories();
   const baseSnapshot = getBaseSnapshotPath();
+  cleanStaleTmp();
   const tmpRoot = path.join(getTmpDir(), `install-${Date.now()}`);
   fs.mkdirSync(tmpRoot, { recursive: true });
 
@@ -152,13 +193,15 @@ export async function install(opts = {}) {
     fs.copyFileSync(newAsar, swapTmp);
     let swapped = false;
     let lockErr = null;
-    for (let i = 0; i < 3 && !swapped; i++) {
+    // Generous retry window: after a taskkill the OS may take seconds to
+    // release asar handles, and the client may have been relaunched mid-install.
+    for (let i = 0; i < 6 && !swapped; i++) {
       try {
         fs.renameSync(swapTmp, asarPath);
         swapped = true;
       } catch (err) {
         lockErr = err;
-        if (i < 2) await sleep(1500);
+        if (i < 5) await sleep(2000);
       }
     }
     if (!swapped) {
@@ -168,7 +211,9 @@ export async function install(opts = {}) {
       console.error('\n✖ app.asar 被占用，宿主补丁未应用（运行时与插件已就位）。');
       console.error(`  rename 失败: ${lockErr?.code || ''} ${lockErr?.message || lockErr}`);
       if (isZcodeRunning()) {
-        console.error('  ZCode 正在运行：请完全退出后重跑 zmod install，或使用 --force 自动结束进程并重启。');
+        console.error('  ZCode 正在运行（可能在安装期间被重新打开）：请完全退出后重跑 zmod install，或使用 --force 自动结束进程并重启。');
+      } else {
+        console.error('  未检测到 ZCode 进程，asar 仍被占用——可能是杀毒/索引扫描；稍等片刻后重跑 zmod install。');
       }
       process.exitCode = 2;
       return;
