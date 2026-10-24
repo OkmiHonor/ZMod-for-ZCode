@@ -80,6 +80,46 @@ function summarize(json) {
   return s.length > 60 ? s.slice(0, 57) + '…' : s;
 }
 
+/* Antigravity Tools 网关配额（v1 quota 桥的 antigravity 源等价）：GET
+   {网关}/api/accounts/{id}/quota → quota_groups[].buckets[]（window=weekly/5h，
+   remaining_fraction 剩余比例）。文件快照回退通道不再保留——渲染层无文件权限，
+   网关未启动时直接报错提示。 */
+async function antigravityQuotaStatus(settings, ctx) {
+  const base = String(settings.url || 'http://127.0.0.1:8045').replace(/\/+$/, '');
+  const id = String(settings.accountId || '').trim();
+  if (!id) return { ok: false, message: '未配置账号 ID' };
+  const res = await ctx.net.fetch({
+    url: `${base}/api/accounts/${encodeURIComponent(id)}/quota`,
+    method: 'GET',
+    headers: settings.token ? { Authorization: `Bearer ${settings.token}` } : {}
+  });
+  if (!res.ok && res.status === 0) return { ok: false, message: (res.error || '网络请求失败') + '（网关未启动？）' };
+  let json = null;
+  try { json = JSON.parse(res.text); } catch { return { ok: false, message: `响应不是 JSON（HTTP ${res.status}）` }; }
+  if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
+  const groups = Array.isArray(json.quota_groups) ? json.quota_groups : [];
+  if (groups.length === 0) return { ok: false, message: '响应无 quota_groups（账号 ID 是否正确）' };
+  const rows = [];
+  for (const g of groups) {
+    for (const b of Array.isArray(g.buckets) ? g.buckets : []) {
+      const frac = Number(b.remaining_fraction);
+      if (!isFinite(frac)) continue;
+      const win = b.window === 'weekly' ? '每周' : b.window === '5h' ? '5 小时' : b.window || '';
+      rows.push({
+        label: `${g.display_name || g.name || '配额'} · ${win}`,
+        value: `${(frac * 100).toFixed(1)}% 剩余`
+      });
+    }
+  }
+  if (rows.length === 0) return { ok: false, message: '配额组里没有可用桶' };
+  return {
+    ok: true,
+    rows: json.subscription_tier
+      ? [{ label: '订阅档位', value: String(json.subscription_tier) }, ...rows]
+      : rows
+  };
+}
+
 const COMMON_ENGINE_SETTINGS = {
   url: {
     type: 'text',
@@ -130,8 +170,9 @@ function preset(overrides) {
         key in COMMON_ENGINE_SETTINGS ? { ...COMMON_ENGINE_SETTINGS[key], ...def } : def
       ])
     ),
-    fetchStatus: jsonEngineStatus,
-    test: jsonEngineStatus
+    // per-preset overrides win; the generic JSON engine is only the fallback
+    fetchStatus: overrides.fetchStatus || jsonEngineStatus,
+    test: overrides.test || jsonEngineStatus
   };
 }
 
@@ -238,6 +279,36 @@ export default definePlugin({
         }
       })
     );
-    console.log('[official-providers] registered 4 data source providers');
+    ds.registerProvider(
+      preset({
+        type: 'antigravity',
+        label: 'Antigravity 配额（反代网关）',
+        description: 'Antigravity Tools 本地网关的账号分组配额（Gemini/Claude/GPT 周额与 5h 额），密钥加密保存',
+        settings: {
+          url: {
+            title: '网关地址',
+            default: 'http://127.0.0.1:8045',
+            placeholder: 'http://127.0.0.1:8045'
+          },
+          accountId: {
+            type: 'text',
+            title: '账号 ID',
+            description: '网关账号的 id，见 ~/.antigravity_tools/accounts.json 的 current_account_id（或列表首项）',
+            placeholder: '9af6d73c-…'
+          },
+          token: {
+            title: 'API Key',
+            description: '网关 API Key（Antigravity Tools 设置里查看），以 Bearer 头发送，加密保存'
+          },
+          pathsJson: { default: '' }
+        },
+        fetchStatus: antigravityQuotaStatus,
+        test: async (settings, ctx2) => {
+          const r = await antigravityQuotaStatus(settings, ctx2);
+          return r.ok ? { ok: true, message: `连接成功，${(r.rows || []).length} 条配额` } : r;
+        }
+      })
+    );
+    console.log('[official-providers] registered 5 data source providers');
   }
 });
