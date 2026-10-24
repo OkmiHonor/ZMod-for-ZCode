@@ -48,6 +48,12 @@ packages/
 
 ## 🚀 快速上手
 
+### 方式一：一键安装（推荐，无需 Node.js）
+
+从 [Releases](https://github.com/OkmiHonor/ZMod-for-ZCode/releases) 下载 `ZMod-Setup-x.y.z.exe` 双击运行即可。安装器不到 10MB，无需预装 Node.js——没有系统 Node 时会自动借用 ZCode 客户端自带的运行时（`ELECTRON_RUN_AS_NODE`）完成安装。
+
+### 方式二：源码安装
+
 ```bash
 git clone https://github.com/OkmiHonor/ZMod-for-ZCode.git zmod && cd zmod
 npm install
@@ -59,7 +65,16 @@ npm run zmod restore                # 一键还原官方纯净客户端
 npm test                            # 运行测试套件
 ```
 
-宿主目录探测顺序：`--path` > `config.json installPath` > `ZCODE_PATH` 环境变量 > 平台默认路径。
+宿主目录探测顺序：`--path` > `config.json installPath` > `ZCODE_PATH` 环境变量 > 平台默认路径 > 运行中进程反推（自定义安装目录也能自动找到）。
+
+### 插件管理
+
+```bash
+npm run zmod plugin list                                 # 查看已装插件
+npm run zmod plugin install <目录|xxx.zip|git-url>       # 安装第三方插件
+npm run zmod plugin enable <id>                          # 启用（重启客户端生效）
+npm run zmod plugin disable <id>                         # 禁用
+```
 
 启动 ZCode 后有两种管理入口：
 
