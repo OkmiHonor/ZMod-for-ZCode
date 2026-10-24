@@ -46,6 +46,12 @@ class ConfigManager {
     this._notify(this._cache);
   }
 
+  set(key, value) {
+    const config = structuredClone(this.get());
+    config[key] = value;
+    this.save(config);
+  }
+
   getPluginConfig(pluginId) {
     const config = this.get();
     return config.plugins[pluginId] || { enabled: true, settings: {} };

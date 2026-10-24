@@ -1,49 +1,52 @@
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { registerPrivileges, registerProtocolHandler } from './protocol.js';
 import { rpcGateway } from './rpc.js';
-import { configManager } from '../common/config.js';
 import { ensureDirectories } from '../common/paths.js';
 
 let electronApp = null;
 try {
   const electron = await import('electron');
-  electronApp = electron.app || electron.default?.app;
+  electronApp = electron.app ?? electron.default?.app;
 } catch {
-  // Not in Electron
+  // Not in Electron (unit tests)
 }
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const coreRootDir = path.resolve(__dirname, '..', '..');
 
 let initialized = false;
 
+/**
+ * Main runtime entry. Loaded dynamically from the patched host main process
+ * (see packages/zmod-cli/src/patches/main-tail.js); the host head patch has
+ * already registered scheme privileges synchronously before app ready.
+ */
 export function bootstrap() {
   if (initialized) return;
   initialized = true;
+  console.log('[ZMod:Core] main runtime bootstrap');
 
-  console.log('[ZMod:Core] Main process bootstrap started');
-  ensureDirectories();
-
-  // 1. Privileged scheme must register synchronously before ready
-  registerPrivileges();
-
-  // 2. Attach unified RPC
-  rpcGateway.attach();
-
-  // 3. Register protocol handler when app ready
-  if (electronApp) {
-    if (electronApp.isReady()) {
-      registerProtocolHandler(coreRootDir);
-    } else {
-      electronApp.whenReady().then(() => {
-        registerProtocolHandler(coreRootDir);
-      });
-    }
+  try {
+    ensureDirectories();
+    registerPrivileges(); // safety net; normally a no-op (head patch did it pre-ready)
+    rpcGateway.attach();
+  } catch (err) {
+    console.error('[ZMod:Core] bootstrap failed:', err);
+    return;
   }
 
-  console.log('[ZMod:Core] Main process bootstrap ready');
+  const whenReady = electronApp
+    ? electronApp.isReady()
+      ? Promise.resolve()
+      : electronApp.whenReady()
+    : Promise.resolve();
+
+  whenReady
+    .then(() => {
+      registerProtocolHandler();
+      console.log('[ZMod:Core] main runtime ready');
+    })
+    .catch((err) => console.error('[ZMod:Core] ready hook failed:', err));
 }
 
-export { rpcGateway, configManager };
+bootstrap();
+
+export { configManager } from '../common/config.js';
+export { secretVault } from './vault.js';
+export { rpcGateway };

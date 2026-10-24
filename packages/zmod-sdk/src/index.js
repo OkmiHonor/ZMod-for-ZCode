@@ -12,9 +12,13 @@ export * from './schema.js';
  * @param {string} def.version - Semver version string
  * @param {string} def.author - Author name
  * @param {Object} [def.settings] - Declarative settings schema
- * @param {Function} [def.start] - Start lifecycle hook
+ * @param {Function} [def.start] - Start lifecycle hook, receives the plugin ctx
  * @param {Function} [def.stop] - Stop lifecycle hook
  * @param {string} [def.styles] - Optional raw CSS string to inject
+ *
+ * The returned object is intentionally NOT frozen: plugins may attach their own
+ * lifecycle state (e.g. `this._cleanup = ...` inside start()). Use ctx.cleanup(fn)
+ * for teardown instead whenever possible — it runs LIFO on disable.
  */
 export function definePlugin(def) {
   if (!def || typeof def !== 'object') {
@@ -33,10 +37,9 @@ export function definePlugin(def) {
     throw new Error(`Plugin "${def.id}" missing required string "version"`);
   }
 
-  // Validate settings schema if provided
   const validatedSettings = validateSettings(def.settings);
 
-  return Object.freeze({
+  return {
     id: def.id,
     name: def.name,
     description: def.description || '',
@@ -46,5 +49,5 @@ export function definePlugin(def) {
     styles: typeof def.styles === 'string' ? def.styles : '',
     start: typeof def.start === 'function' ? def.start : null,
     stop: typeof def.stop === 'function' ? def.stop : null
-  });
+  };
 }

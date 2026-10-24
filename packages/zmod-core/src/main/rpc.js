@@ -2,23 +2,35 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { configManager } from '../common/config.js';
 import { secretVault } from './vault.js';
-import { getPluginsDir, getUserDataDir } from '../common/paths.js';
+import { getPluginsDir } from '../common/paths.js';
 
-let electronIpcMain = null;
-let electronShell = null;
+let electron = null;
 try {
-  const electron = await import('electron');
-  electronIpcMain = electron.ipcMain || electron.default?.ipcMain;
-  electronShell = electron.shell || electron.default?.shell;
+  electron = await import('electron');
 } catch {
-  // Not in Electron
+  // Not in Electron (unit tests)
 }
+const electronIpcMain = electron?.ipcMain ?? electron?.default?.ipcMain;
+const electronShell = electron?.shell ?? electron?.default?.shell;
+const electronBrowserWindow = electron?.BrowserWindow ?? electron?.default?.BrowserWindow;
+const electronGlobalShortcut = electron?.globalShortcut ?? electron?.default?.globalShortcut;
 
 export const RPC_CHANNEL = 'zmod:rpc:invoke';
+
+function getMainWindow() {
+  if (!electronBrowserWindow) return null;
+  const windows = electronBrowserWindow.getAllWindows();
+  return (
+    windows.find((w) => (w.webContents?.getURL() || '').includes('out/renderer/index.html')) ||
+    windows[0] ||
+    null
+  );
+}
 
 class RpcGateway {
   constructor() {
     this._handlers = new Map();
+    this._bossKeyAccelerator = null;
     this._registerBuiltInHandlers();
   }
 
@@ -26,15 +38,22 @@ class RpcGateway {
     this._handlers.set(method, handler);
   }
 
-  _registerBuiltInHandlers() {
-    // Config Handlers
-    this.register('config.get', async () => {
-      return configManager.get();
-    });
+  /** Single entry point shared by the IPC bridge and the zmod-local://rpc fetch channel. */
+  async dispatch(method, params) {
+    const handler = this._handlers.get(method);
+    if (!handler) {
+      throw new Error(`[ZMod:RPC] Unknown method: "${method}"`);
+    }
+    return handler(params || {});
+  }
 
-    this.register('config.getPluginConfig', async ({ pluginId }) => {
-      return configManager.getPluginConfig(pluginId);
-    });
+  _registerBuiltInHandlers() {
+    // ---- Config ----
+    this.register('config.get', async () => configManager.get());
+
+    this.register('config.getPluginConfig', async ({ pluginId }) =>
+      configManager.getPluginConfig(pluginId)
+    );
 
     this.register('config.setPluginSetting', async ({ pluginId, key, value }) => {
       configManager.setPluginSetting(pluginId, key, value);
@@ -46,21 +65,20 @@ class RpcGateway {
       return { success: true };
     });
 
-    // Vault Handlers
-    this.register('vault.get', async ({ key }) => {
-      return secretVault.get(key);
-    });
-
+    // ---- Secret vault (safeStorage / DPAPI) ----
+    this.register('vault.get', async ({ key }) => secretVault.get(key));
     this.register('vault.set', async ({ key, value }) => {
       secretVault.set(key, value);
       return { success: true };
     });
-
-    this.register('vault.has', async ({ key }) => {
-      return secretVault.has(key);
+    this.register('vault.has', async ({ key }) => secretVault.has(key));
+    this.register('vault.delete', async ({ key }) => {
+      secretVault.delete(key);
+      return { success: true };
     });
+    this.register('vault.keys', async () => secretVault.keys());
 
-    // System Handlers
+    // ---- System ----
     this.register('system.openExternal', async ({ url }) => {
       if (electronShell && typeof url === 'string' && /^https?:\/\//i.test(url)) {
         await electronShell.openExternal(url);
@@ -69,61 +87,111 @@ class RpcGateway {
       return { success: false, error: 'Invalid URL' };
     });
 
-    // Plugin Discovery
-    this.register('plugins.discover', async ({ rootDir }) => {
-      const results = [];
-      const scanDir = (dir, isBuiltIn) => {
-        if (!fs.existsSync(dir)) return;
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isDirectory()) {
-            const pluginId = entry.name;
-            const manifestPath = path.join(dir, pluginId, 'manifest.json');
-            const entryPath = path.join(dir, pluginId, 'index.js');
-            if (fs.existsSync(entryPath)) {
-              let manifest = { id: pluginId, name: pluginId, version: '1.0.0' };
-              if (fs.existsSync(manifestPath)) {
-                try {
-                  manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-                } catch {}
-              }
-              results.push({
-                ...manifest,
-                id: pluginId,
-                isBuiltIn,
-                entryUrl: `zmod-local://plugins/${pluginId}/index.js`,
-                styleUrl: fs.existsSync(path.join(dir, pluginId, 'style.css'))
-                  ? `zmod-local://plugins/${pluginId}/style.css`
-                  : null
-              });
-            }
-          }
+    // ---- Window host features (acrylic backplate, boss key) ----
+    this.register('window.setMaterial', async ({ material, tint }) => {
+      const win = getMainWindow();
+      if (!win) return { success: false, error: 'Main window not found' };
+      if (material === 'none' || !material) {
+        try {
+          win.setBackgroundMaterial('auto');
+          win.setBackgroundColor('#ffffff');
+          return { success: true, supported: true };
+        } catch {
+          return { success: true, supported: false };
         }
-      };
-
-      // 1. Built-in plugins
-      if (rootDir) {
-        scanDir(path.resolve(rootDir, '..', '..', 'plugins'), true);
       }
-      // 2. User plugins
-      scanDir(getPluginsDir(), false);
+      try {
+        if (typeof tint === 'string' && /^#[0-9a-fA-F]{6,8}$/.test(tint)) {
+          win.setBackgroundColor(tint);
+        }
+        win.setBackgroundMaterial(material);
+        return { success: true, supported: true };
+      } catch (err) {
+        return { success: true, supported: false, error: String(err?.message || err) };
+      }
+    });
 
+    this.register('window.registerBossKey', async ({ accelerator }) => {
+      if (!electronGlobalShortcut) return { success: false, error: 'globalShortcut unavailable' };
+      if (typeof accelerator !== 'string' || !accelerator.trim()) {
+        return { success: false, error: 'Invalid accelerator' };
+      }
+      try {
+        if (this._bossKeyAccelerator && this._bossKeyAccelerator !== accelerator) {
+          electronGlobalShortcut.unregister(this._bossKeyAccelerator);
+        }
+        const ok = electronGlobalShortcut.register(accelerator, () => this._toggleMainWindow());
+        if (ok) this._bossKeyAccelerator = accelerator;
+        return { success: ok, accelerator };
+      } catch (err) {
+        return { success: false, error: String(err?.message || err) };
+      }
+    });
+
+    this.register('window.unregisterBossKey', async () => {
+      if (electronGlobalShortcut && this._bossKeyAccelerator) {
+        try {
+          electronGlobalShortcut.unregister(this._bossKeyAccelerator);
+        } catch {}
+        this._bossKeyAccelerator = null;
+      }
+      return { success: true };
+    });
+
+    // ---- Plugin discovery ----
+    this.register('plugins.discover', async () => {
+      const results = [];
+      const pluginsDir = getPluginsDir();
+      if (!fs.existsSync(pluginsDir)) return results;
+      for (const entry of fs.readdirSync(pluginsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const pluginId = entry.name;
+        const entryPath = path.join(pluginsDir, pluginId, 'index.js');
+        if (!fs.existsSync(entryPath)) continue;
+        let manifest = { id: pluginId, name: pluginId, version: '1.0.0' };
+        const manifestPath = path.join(pluginsDir, pluginId, 'manifest.json');
+        if (fs.existsSync(manifestPath)) {
+          try {
+            manifest = { ...manifest, ...JSON.parse(fs.readFileSync(manifestPath, 'utf8')) };
+          } catch {}
+        }
+        results.push({
+          ...manifest,
+          id: pluginId,
+          entryUrl: `zmod-local://plugins/${pluginId}/index.js`,
+          styleUrl: fs.existsSync(path.join(pluginsDir, pluginId, 'style.css'))
+            ? `zmod-local://plugins/${pluginId}/style.css`
+            : null
+        });
+      }
       return results;
     });
   }
 
+  _toggleMainWindow() {
+    const win = getMainWindow();
+    if (!win) return;
+    try {
+      if (win.isVisible() && win.isFocused()) {
+        win.hide();
+      } else {
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+      }
+    } catch (err) {
+      console.error('[ZMod:RPC] boss key toggle failed:', err);
+    }
+  }
+
   attach() {
     if (!electronIpcMain) return;
-    electronIpcMain.handle(RPC_CHANNEL, async (event, payload) => {
+    electronIpcMain.handle(RPC_CHANNEL, async (_event, payload) => {
       const { method, params } = payload || {};
-      const handler = this._handlers.get(method);
-      if (!handler) {
-        throw new Error(`[ZMod:RPC] Unknown method: "${method}"`);
-      }
       try {
-        return await handler(params || {}, event);
+        return await this.dispatch(method, params);
       } catch (err) {
-        console.error(`[ZMod:RPC] Error executing "${method}":`, err);
+        console.error(`[ZMod:RPC] "${method}" failed:`, err?.message || err);
         throw err;
       }
     });

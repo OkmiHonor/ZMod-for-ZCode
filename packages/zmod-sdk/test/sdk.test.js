@@ -69,4 +69,20 @@ test('ZMod SDK definePlugin & Schema Suite', async (t) => {
       });
     }, /has invalid type/);
   });
+
+  await t.test('definitions are extensible — start() may attach lifecycle state', () => {
+    // regression: v2.0.0-alpha froze the definition object, and plugins that
+    // wrote `this._cleanup = ...` inside start() crashed with a TypeError
+    const plugin = definePlugin({
+      id: 'lifecycle-state',
+      name: 'Lifecycle State',
+      version: '1.0.0',
+      start() {
+        this._cleanup = () => {};
+      }
+    });
+    assert.doesNotThrow(() => plugin.start({}));
+    assert.equal(typeof plugin._cleanup, 'function');
+    assert.equal(Object.isFrozen(plugin), false);
+  });
 });

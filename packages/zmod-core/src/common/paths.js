@@ -39,12 +39,31 @@ export function getLogsDir() {
   return path.join(getUserDataDir(), 'logs');
 }
 
+export function getRuntimeDir() {
+  return path.join(getUserDataDir(), 'runtime');
+}
+
+export function getBaseDir() {
+  return path.join(getUserDataDir(), 'base');
+}
+
+export function getBaseSnapshotPath() {
+  return path.join(getBaseDir(), 'app.asar');
+}
+
+export function getTmpDir() {
+  return path.join(getUserDataDir(), 'tmp');
+}
+
 export function ensureDirectories() {
   const dirs = [
     getUserDataDir(),
     getPluginsDir(),
     getThemesDir(),
-    getLogsDir()
+    getLogsDir(),
+    getRuntimeDir(),
+    getBaseDir(),
+    getTmpDir()
   ];
   for (const dir of dirs) {
     if (!fs.existsSync(dir)) {

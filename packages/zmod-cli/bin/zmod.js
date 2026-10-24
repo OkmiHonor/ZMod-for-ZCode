@@ -8,45 +8,61 @@ import { restore } from '../src/commands/restore.js';
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
 
-async function main() {
-  switch (command) {
-    case 'doctor':
-      await doctor();
-      break;
-    case 'plugin':
-      await pluginCommand(args[1], args[2]);
-      break;
-    case 'install':
-      await install();
-      break;
-    case 'restore':
-      await restore();
-      break;
-    case 'help':
-    case '--help':
-    case '-h':
-    default:
-      console.log(`
-ZMod CLI v2.0.0 - Next-generation modular mod loader for ZCode
+// Shared flags: --path <dir> (host directory), --force (kill running client)
+function readFlags(rest) {
+  const flags = {};
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '--path') flags.path = rest[++i];
+    else if (rest[i] === '--force') flags.force = true;
+  }
+  return flags;
+}
+
+const HELP = `
+ZMod CLI v2.0.0 — Next-generation modular mod loader for ZCode
 
 使用方法:
   zmod <command> [options]
 
 常用命令:
-  zmod doctor               诊断环境、客户端路径与已安装插件
-  zmod install              一键将 ZMod 微内核安装到 ZCode 客户端
-  zmod restore              一键还原官方纯净客户端
-  zmod plugin list          查看所有可用插件及其启用状态
-  zmod plugin enable <id>   启用指定插件
-  zmod plugin disable <id>  禁用指定插件
+  zmod doctor               诊断宿主、补丁标记、熔断哨兵、运行时与插件
+  zmod install              将 ZMod 微内核安装到 ZCode 客户端（外置运行时 + asar 四通道补丁）
+      [--path <dir>]          指定 ZCode 安装目录（默认自动探测）
+      [--force]               客户端运行中时自动结束进程并在完成后重启
+  zmod restore              还原官方纯净客户端
+  zmod plugin list          查看已安装插件
+  zmod plugin enable <id>   启用插件（重启客户端生效）
+  zmod plugin disable <id>  禁用插件
+`;
 
-更多信息请访问: https://github.com/zmod-dev/zmod
-`);
+async function main() {
+  const flags = readFlags(args.slice(1));
+  switch (command) {
+    case 'doctor':
+      await doctor(flags);
       break;
+    case 'plugin':
+      await pluginCommand(args[1], args[2]);
+      break;
+    case 'install':
+      await install(flags);
+      break;
+    case 'restore':
+      await restore(flags);
+      break;
+    case 'help':
+    case '--help':
+    case '-h':
+      console.log(HELP);
+      break;
+    default:
+      console.log(HELP);
+      console.error(`\n未知命令: ${command}`);
+      process.exitCode = 1;
   }
 }
 
 main().catch((err) => {
-  console.error('\n[ZMod CLI Error]:', err.message);
+  console.error('\n[ZMod CLI Error]:', err?.stack || err?.message || err);
   process.exit(1);
 });

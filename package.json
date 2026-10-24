@@ -5,12 +5,23 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/*",
-    "plugins/*"
+    "packages/*"
   ],
+  "bin": {
+    "zmod": "packages/zmod-cli/bin/zmod.js"
+  },
   "scripts": {
-    "test": "node --test packages/*/test/*.test.js test/*.test.js",
-    "doctor": "node packages/zmod-cli/bin/zmod.js doctor"
+    "test": "node --test packages/*/test/*.test.js",
+    "zmod": "node packages/zmod-cli/bin/zmod.js",
+    "doctor": "node packages/zmod-cli/bin/zmod.js doctor",
+    "install-mod": "node packages/zmod-cli/bin/zmod.js install",
+    "restore": "node packages/zmod-cli/bin/zmod.js restore"
+  },
+  "dependencies": {
+    "@electron/asar": "^3.4.1"
+  },
+  "engines": {
+    "node": ">=18.17"
   },
   "keywords": [
     "zcode",
