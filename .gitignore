@@ -9,3 +9,4 @@ _verify/
 _selftest/
 *.asar
 *.asar.unpacked/
+HANDOFF.md
