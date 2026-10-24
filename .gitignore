@@ -20,3 +20,7 @@ dsh-port/
 .dsh-acl-out/
 .serena/
 README-迁移清单.md
+
+# 备份文件与皮肤源料：磁盘保留，不入库
+*.backup1
+whale-skins/_source/
