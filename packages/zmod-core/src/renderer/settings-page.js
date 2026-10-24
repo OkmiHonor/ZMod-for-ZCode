@@ -77,7 +77,16 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     const nav = document.querySelector('nav [data-settings-section-nav]')?.closest('nav');
     if (nav && !navEl) attachNav(nav);
     if (!nav && navEl) detachNav();
-    if (navEl && activeItem) realign();
+    // Self-heal: if React remounted the settings dialog while a ZMod view was
+    // active, our overlay went down with the old frame — rebuild it.
+    if (navEl && activeItem) {
+      if (!document.querySelector('[data-settings-panel-frame]')) {
+        deactivate();
+      } else if (!overlay || !overlay.isConnected) {
+        ensureOverlay();
+        renderContent();
+      }
+    }
   }
 
   function attachNav(nav) {
@@ -171,34 +180,23 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     return col && col !== frame ? col : null;
   }
 
+  /**
+   * The overlay lives INSIDE the official panel frame as an absolutely
+   * positioned child (the frame is `position:relative`). This beats a
+   * body-level fixed overlay: it aligns itself for free, follows resizes
+   * without observers, and dies with the frame when React unmounts the
+   * dialog — no stale-overlay states. Above z-50 (Radix dialog layers),
+   * below ZMod toasts.
+   */
   function ensureOverlay() {
+    const frame = document.querySelector('[data-settings-panel-frame]');
     const col = contentColumn();
-    if (!col) return;
-    overlayHostCol = col;
-    if (!overlay) {
-      overlay = document.createElement('div');
-      overlay.setAttribute('data-zmod-settings-overlay', 'true');
-      // The official settings dialog renders above z-50 (Radix); our overlay
-      // must sit above it while staying below ZMod toasts (2147483000).
-      overlay.style.cssText = 'position:fixed;z-index:60;display:flex;flex-direction:column;';
-      overlay.className = 'bg-background';
-      document.body.appendChild(overlay);
-    }
-    realign();
-  }
-
-  function realign() {
-    if (!overlay || !overlayHostCol || !overlayHostCol.isConnected) return;
-    if (realignRaf) return;
-    realignRaf = requestAnimationFrame(() => {
-      realignRaf = 0;
-      if (!overlay || !overlayHostCol?.isConnected) return;
-      const r = overlayHostCol.getBoundingClientRect();
-      overlay.style.left = `${r.left}px`;
-      overlay.style.top = `${r.top}px`;
-      overlay.style.width = `${r.width}px`;
-      overlay.style.height = `${r.height}px`;
-    });
+    if (!frame || !col) return;
+    if (overlay && overlay.isConnected) return;
+    overlay = document.createElement('div');
+    overlay.setAttribute('data-zmod-settings-overlay', 'true');
+    overlay.style.cssText = `position:absolute;z-index:60;display:flex;flex-direction:column;background:var(--color-background,#17171a);left:0;right:0;bottom:0;top:${col.offsetTop}px;`;
+    frame.appendChild(overlay);
   }
 
   function removeOverlay() {
