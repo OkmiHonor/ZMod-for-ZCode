@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { execSync, spawn } from 'node:child_process';
 
 /** Best-effort detection of a running ZCode client (locks the asar on Windows). */
@@ -11,6 +12,30 @@ export function isZcodeRunning() {
     return out.trim().length > 0;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Executable path of a running ZCode client, used to infer custom install dirs
+ * that no default-path candidate covers. Null when not running / unavailable.
+ */
+export function runningZcodeExePath() {
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync(
+        'powershell -NoProfile -Command "(Get-Process ZCode -ErrorAction SilentlyContinue | Select-Object -First 1).Path"',
+        { encoding: 'utf8' }
+      );
+      const p = out.trim();
+      return p && fs.existsSync(p) ? p : null;
+    }
+    const out = execSync('pgrep -x ZCode || pgrep -x zcode || true', { encoding: 'utf8' });
+    const pid = out.trim().split('\n')[0];
+    if (!pid) return null;
+    const p = fs.realpathSync(`/proc/${pid}/exe`);
+    return fs.existsSync(p) ? p : null;
+  } catch {
+    return null;
   }
 }
 

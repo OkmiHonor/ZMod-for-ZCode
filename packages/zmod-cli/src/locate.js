@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { configManager } from '../../zmod-core/src/common/config.js';
+import { runningZcodeExePath } from './lib/process.js';
 
 /** Find the app.asar inside a host directory (handles win/linux and macOS layouts). */
 export function findAsarInHost(hostDir) {
@@ -48,6 +49,13 @@ export function locateZCode(opts = {}) {
 
   for (const c of candidates) {
     if (c && fs.existsSync(c) && findAsarInHost(c)) return c;
+  }
+  // Last resort: infer the install dir from a running client's executable —
+  // covers custom install locations no default candidate knows about.
+  const exe = runningZcodeExePath();
+  if (exe) {
+    const hostDir = path.dirname(exe);
+    if (findAsarInHost(hostDir)) return hostDir;
   }
   return null;
 }
