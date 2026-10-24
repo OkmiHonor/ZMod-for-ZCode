@@ -1,19 +1,30 @@
 /**
- * ZMod → official Settings page integration (native look).
+ * ZMod → official Settings page integration.
  *
- * Adds a "ZMod" group to the official settings sidebar and renders content
- * as an overlay aligned to the official content column. Every class name
- * below is the host's own Tailwind token vocabulary (extracted from the
- * official settings components), so the result is indistinguishable from
- * first-party UI and follows theme changes for free.
+ * Two modes, picked per settings-dialog mount:
+ *
+ *  NATIVE (preferred) — we register real sections in the host's own settings
+ *  registry, so the sidebar item, its selection highlight, the page title, the
+ *  scroll container and the content column are all the host's own React output.
+ *  The host renders nothing for unknown section ids, which is exactly where we
+ *  mount our content. Discovery is structural (React internals reached through
+ *  the DOM's fiber pointer, never minified identifiers), and every registration
+ *  is verified — on any doubt we undo and fall back to the overlay.
+ *
+ *  OVERLAY (fallback) — our own nav group is appended to the official sidebar
+ *  and our content is painted over the official content column, with the host's
+ *  own selection highlight neutralised by CSS so only one item ever reads as
+ *  selected.
  *
  * Hard rules learned from the v1 era:
  *  - NEVER mutate the official React-managed DOM (no insertBefore into
  *    React-owned containers, no hiding official nodes) — the reconciler
  *    re-renders forever. We only append our own subtree and overlay.
  *  - Nav discovery is locale-independent: official nav items carry
- *    [data-settings-section-nav]; content column is inside
- *    [data-settings-panel-frame].
+ *    [data-settings-section-nav]; the content column sits in
+ *    [data-settings-panel-frame]; the settings root carries [data-active-section].
+ *  - Class names below are the host's own Tailwind token vocabulary, so the
+ *    result follows theme changes for free.
  */
 
 /* ---- lucide icons, 16px stroke=currentColor to match host icon set ---- */
@@ -31,7 +42,9 @@ const ICONS = {
   pencil:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path><path d="m15 5 4 4"></path></svg>',
   trash:
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>',
+  chevronRight:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>'
 };
 
 function iconHtml(name, cls = 'size-4') {
@@ -56,38 +69,124 @@ const NAV_ITEMS = [
   { id: 'datasources', label: '数据源', icon: 'database' }
 ];
 
+/* ------------------------------------------------------------------ *
+ * Native mode constants
+ *
+ * The host keeps its section registry in module scope with no extension
+ * point, and its section-id whitelist (for the "last section" memory) does
+ * not know our ids — so we restore our own last-visited section ourselves.
+ * ------------------------------------------------------------------ */
+const NATIVE_GROUP_ID = 'zmod';
+const NATIVE_GROUP_TITLE_ID = 'zmod.settings.group.title';
+const NATIVE_MESSAGES = {
+  [NATIVE_GROUP_TITLE_ID]: 'ZMod',
+  'zmod.settings.plugins.title': '扩展插件',
+  'zmod.settings.datasources.title': '数据源'
+};
+const NATIVE_SECTIONS = [
+  { id: 'zmod', itemId: 'plugins', label: '扩展插件', icon: 'puzzle', titleId: 'zmod.settings.plugins.title' },
+  { id: 'zmod-datasources', itemId: 'datasources', label: '数据源', icon: 'database', titleId: 'zmod.settings.datasources.title' }
+];
+
 export function createSettingsPageIntegration({ api, events, registry, datasources, ui }) {
   let observer = null;
+  let dialogOpen = false;
+  let mode = 'overlay';
   let navEl = null;
   let groupEl = null;
   let navClickHandler = null;
   let overlay = null;
-  let overlayHostCol = null;
   let activeItem = null;
-  let detail = null; // { kind: 'plugin-settings' } etc. per active item
-  let realignRaf = 0;
+  let detail = null; // { kind: 'plugin-settings' | 'ds-edit', ... }
   const contributions = new Map(); // id -> { id, title, render(el) }
 
+  // Native mode bookkeeping
+  let nativeSupported = null; // null = untried, true = verified, false = give up this session
+  let nativeAttempts = 0;
+  let nativeReg = null; // { value, intl, sections, undo }
+  let nativeMount = null;
+  let nativeCrumb = null;
+  let nativeCrumbKey = null;
+  let nativeRendered = null; // { itemId, detailKey } — what the mount currently shows
+  let nativeObserver = null;
+  let intentNative = null; // section id left selected when the dialog was last closed
+
   /* ------------------------------------------------------------ *
-   * Sidebar group injection
+   * Sidebar group injection (overlay mode)
    * ------------------------------------------------------------ */
   function scan() {
     const nav = document.querySelector('nav [data-settings-section-nav]')?.closest('nav');
-    if (nav && !navEl) attachNav(nav);
-    if (!nav && navEl) detachNav();
-    // Self-heal: if React remounted the settings dialog while a ZMod view was
-    // active, our overlay went down with the old frame — rebuild it.
-    if (navEl && activeItem) {
-      if (!document.querySelector('[data-settings-panel-frame]')) {
-        deactivate();
-      } else if (!overlay || !overlay.isConnected) {
+    const frame = document.querySelector('[data-settings-panel-frame]');
+    const open = Boolean(nav && frame);
+    if (open && !dialogOpen) {
+      dialogOpen = true;
+      openDialog(nav).catch((err) =>
+        console.warn('[ZMod:SettingsPage] settings integration failed:', err?.message || err)
+      );
+    } else if (!open && dialogOpen) closeDialog();
+
+    if (!dialogOpen) return;
+    if (mode === 'native') {
+      ensureNativeObserver();
+      nativeSync();
+    } else if (navEl && activeItem) {
+      // Self-heal: if React remounted the dialog while a ZMod view was active,
+      // our overlay went down with the old frame — rebuild it.
+      if (!overlay || !overlay.isConnected) {
         ensureOverlay();
         renderContent();
       }
     }
   }
 
-  function attachNav(nav) {
+  async function openDialog(nav) {
+    mode = 'overlay';
+    if (nativeSupported !== false && nativeAttempts < 3) {
+      if (nativeRegAlive()) {
+        mode = 'native';
+        ensureNativeMessages();
+      } else {
+        nativeAttempts += 1;
+        const rec = await registerNativeSections();
+        if (!dialogOpen) return;
+        if (rec) {
+          nativeSupported = true;
+          nativeReg = rec;
+          mode = 'native';
+        } else {
+          if (nativeAttempts >= 3) nativeSupported = false;
+          console.warn(
+            `[ZMod:SettingsPage] native section registration unavailable (attempt ${nativeAttempts}/3) — using overlay`
+          );
+        }
+      }
+    }
+    if (!dialogOpen) return;
+    if (mode === 'native') {
+      ensureNativeObserver();
+      restoreNativeIntent();
+      nativeSync();
+    } else {
+      attachNav(nav);
+    }
+  }
+
+  function closeDialog() {
+    dialogOpen = false;
+    nativeObserver?.disconnect();
+    nativeObserver = null;
+    teardownNativeDom();
+    detachNav();
+    activeItem = null;
+    detail = null;
+    nativeRendered = null;
+  }
+
+  function attachNav(navArg) {
+    if (navEl) return;
+    // Registration is awaited, so the dialog may have remounted meanwhile.
+    const nav = navArg?.isConnected ? navArg : document.querySelector('nav [data-settings-section-nav]')?.closest('nav');
+    if (!nav) return;
     navEl = nav;
     const holder = nav.querySelector('.space-y-4') || nav;
 
@@ -123,7 +222,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       if (activeItem && e.target.closest('[data-settings-section-nav]')) deactivate();
     };
     nav.addEventListener('click', navClickHandler, true);
-    console.log('[ZMod:SettingsPage] ZMod group injected into official settings sidebar');
+    console.log('[ZMod:SettingsPage] ZMod group injected into official settings sidebar (overlay mode)');
   }
 
   function detachNav() {
@@ -135,12 +234,10 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     groupEl = null;
     navEl = null;
     removeOverlay();
-    activeItem = null;
-    detail = null;
   }
 
   /* ------------------------------------------------------------ *
-   * Content overlay (aligned to official content column)
+   * Overlay mode — content painted over the official content column
    * ------------------------------------------------------------ */
   function activate(itemId) {
     activeItem = itemId;
@@ -170,14 +267,6 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     removeOverlay();
   }
 
-  function contentColumn() {
-    const frame = document.querySelector('[data-settings-panel-frame]');
-    if (!frame) return null;
-    const main = frame.querySelector('main');
-    const col = main?.parentElement;
-    return col && col !== frame ? col : null;
-  }
-
   /**
    * The overlay lives INSIDE the official panel frame as an absolutely
    * positioned child (the frame is `position:relative`). This beats a
@@ -188,85 +277,494 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
    */
   function ensureOverlay() {
     const frame = document.querySelector('[data-settings-panel-frame]');
-    const col = contentColumn();
-    if (!frame || !col) return;
+    if (!frame) return;
     if (overlay && overlay.isConnected) return;
     overlay = document.createElement('div');
     overlay.setAttribute('data-zmod-settings-overlay', 'true');
     // Native-section feel: use the theme background token AS-IS — the acrylic
     // plugin's color-mix translucency shows the window material exactly like
-    // official sections (with material 'none' the token is opaque, same look).
-    // The official page beneath is NOT washed over: the injected stylesheet
-    // (see start) unpaints it via :has() while the overlay exists, so the
-    // overlay sits directly on the window material — nothing can ghost through.
+    // official sections. The official page beneath is not washed over: the
+    // injected stylesheet unpaints it via :has() while the overlay exists.
     overlay.style.cssText =
       'position:absolute;z-index:60;display:flex;flex-direction:column;' +
       'background:var(--color-background);' +
       'left:0;right:0;bottom:0;top:0;';
-    // Spacer covering the official breadcrumb row area: that row is a system
-    // drag region. We paint over it, so re-declare the drag region on our own
-    // spacer — the window stays draggable from the top strip like on official
-    // sections (app-region is resolved from the topmost painted element).
-    const spacer = document.createElement('div');
-    spacer.className = 'h-12 shrink-0';
-    spacer.setAttribute('data-zmod-drag-spacer', 'true');
-    spacer.style.cssText = '-webkit-app-region:drag;';
-    overlay.appendChild(spacer);
     frame.appendChild(overlay);
   }
 
   function removeOverlay() {
     overlay?.remove();
     overlay = null;
-    overlayHostCol = null;
-    if (realignRaf) {
-      cancelAnimationFrame(realignRaf);
-      realignRaf = 0;
-    }
+  }
+
+  /* ------------------------------------------------------------ *
+   * Shared page chrome
+   * ------------------------------------------------------------ */
+
+  /** Official settings page title (h2) — rendered by the host in native mode. */
+  function pageTitleBlock(text) {
+    const wrap = document.createElement('div');
+    wrap.className = 'flex flex-wrap items-center justify-between gap-3';
+    const h2 = document.createElement('h2');
+    h2.className =
+      'text-ui-settings-title font-semibold tracking-tight text-foreground lg:text-ui-settings-title-lg';
+    h2.textContent = text;
+    wrap.appendChild(h2);
+    return wrap;
+  }
+
+  /** Page body: same vertical rhythm the official lists use. */
+  function contentList() {
+    const el = document.createElement('div');
+    el.className = 'flex flex-col gap-4';
+    return el;
+  }
+
+  /** Official content column: centred, width-capped, token paddings. */
+  function contentColumn() {
+    const el = document.createElement('div');
+    el.className =
+      'mx-auto flex w-full max-w-4xl flex-col gap-8 px-4 pb-8 pt-0 lg:px-8 lg:pb-10';
+    return el;
+  }
+
+  /**
+   * The 48px strip above the content column. Official top-level sections show
+   * nothing there; drilled-in views show the breadcrumb. It stays a system
+   * drag region, like the host's own row, and only the interactive crumb
+   * opts out of it.
+   */
+  function topStrip() {
+    const row = document.createElement('div');
+    row.className = 'flex h-12 shrink-0';
+    row.setAttribute('data-zmod-top-strip', 'true');
+    row.style.cssText = '-webkit-app-region:drag;';
+    const holder = document.createElement('div');
+    holder.className = 'min-w-0 flex-1';
+    row.appendChild(holder);
+    if (detail) holder.appendChild(crumbEl());
+    return row;
+  }
+
+  /** Official breadcrumb markup, reduced to the ZMod hierarchy. */
+  function crumbEl() {
+    const item = NAV_ITEMS.find((i) => i.id === activeItem);
+    const nav = document.createElement('nav');
+    nav.className = 'pointer-events-none flex h-full min-w-0 items-center overflow-hidden px-2.5';
+    nav.setAttribute('data-zmod-crumb', 'true');
+    const ol = document.createElement('ol');
+    ol.className = 'flex min-w-0 items-center gap-0 overflow-hidden text-ui-base/relaxed';
+
+    const li1 = document.createElement('li');
+    li1.className = 'flex min-w-0 items-center';
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className =
+      'pointer-events-auto min-w-0 shrink cursor-pointer text-foreground-subtle transition-colors hover:text-foreground';
+    back.style.cssText = '-webkit-app-region:no-drag;';
+    back.textContent = `ZMod · ${item?.label || ''}`;
+    back.addEventListener('click', () => {
+      detail = null;
+      renderContent();
+    });
+    li1.appendChild(back);
+    ol.appendChild(li1);
+
+    const sep = document.createElement('li');
+    sep.setAttribute('aria-hidden', 'true');
+    sep.className = 'flex items-center';
+    sep.innerHTML = `<span class="text-foreground-subtlest">${iconHtml('chevronRight', 'size-3.5')}</span>`;
+    ol.appendChild(sep);
+
+    const li2 = document.createElement('li');
+    li2.className = 'flex min-w-0 items-center px-2';
+    const cur = document.createElement('span');
+    cur.setAttribute('aria-current', 'page');
+    cur.className = 'truncate text-foreground';
+    cur.textContent = detail?.title || '';
+    li2.appendChild(cur);
+    ol.appendChild(li2);
+
+    nav.appendChild(ol);
+    return nav;
   }
 
   /* ------------------------------------------------------------ *
    * Content rendering
    * ------------------------------------------------------------ */
   function renderContent() {
+    if (mode === 'native') {
+      renderNative();
+      return;
+    }
     if (!overlay || !activeItem) return;
     overlay.innerHTML = '';
-    // drag-safe spacer first (see ensureOverlay)
-    const spacer = document.createElement('div');
-    spacer.className = 'h-12 shrink-0';
-    spacer.setAttribute('data-zmod-drag-spacer', 'true');
-    spacer.style.cssText = '-webkit-app-region:drag;';
-    overlay.appendChild(spacer);
-    const item = NAV_ITEMS.find((i) => i.id === activeItem);
-
-    // Breadcrumb — ZMod hierarchy only. No "返回设置"/设置 root: clicking those
-    // used to bounce to the official sections view and broke the back flow
-    // (user ruling 2026-10-25); leaving the ZMod view happens via the official
-    // sidebar nav, and the ZMod level itself is the in-ZMod back affordance.
-    const crumb = document.createElement('div');
-    crumb.className = 'flex h-12 shrink-0 items-center gap-1.5 px-6 text-ui-sm text-foreground-subtle';
-    const crumbText = document.createElement('span');
-    crumbText.innerHTML =
-      `<span class="${detail ? 'cursor-pointer hover:text-foreground transition-colors' : 'text-foreground'}" data-zmod-crumb-back="1">ZMod · ${esc(item.label)}</span>` +
-      (detail ? `<span class="text-foreground-subtle/60">/</span><span class="text-foreground">${esc(detail.title || '')}</span>` : '');
-    crumb.appendChild(crumbText);
-    crumb.querySelector('[data-zmod-crumb-back]')?.addEventListener('click', () => {
-      if (!detail) return;
-      detail = null;
-      renderContent();
-    });
-    overlay.appendChild(crumb);
+    overlay.appendChild(topStrip());
 
     const scroll = document.createElement('div');
-    scroll.className = 'flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-8';
+    scroll.className = 'flex min-h-0 flex-1 flex-col overflow-y-auto [scrollbar-gutter:stable]';
+    const col = contentColumn();
+    const item = NAV_ITEMS.find((i) => i.id === activeItem);
+    if (!detail) col.appendChild(pageTitleBlock(item?.label || ''));
+    const body = contentList();
+    col.appendChild(body);
+    scroll.appendChild(col);
     overlay.appendChild(scroll);
 
+    renderPage(body);
+  }
+
+  /** Page bodies are identical in both modes; only the chrome differs. */
+  function renderPage(root) {
     if (activeItem === 'plugins') {
-      if (detail?.kind === 'plugin-settings') renderPluginDetail(scroll);
-      else renderPluginsPage(scroll);
+      if (detail?.kind === 'plugin-settings') renderPluginDetail(root);
+      else renderPluginsPage(root);
     } else {
-      renderDatasourcesPage(scroll);
+      renderDatasourcesPage(root);
     }
+  }
+
+  /* ------------------------------------------------------------ *
+   * Native mode
+   * ------------------------------------------------------------ */
+
+  /**
+   * React attaches its fiber to every host node; walking up from a sidebar
+   * button finds the settings component, whose hook list holds the section
+   * registry (a useMemo value) and the host's i18n handle.
+   */
+  function fiberOf(node) {
+    if (!node) return null;
+    for (const key in node) {
+      if (key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')) return node[key];
+    }
+    return null;
+  }
+
+  function hookChain(fiber) {
+    const out = [];
+    let hook = fiber?.memoizedState;
+    let guard = 0;
+    while (hook && guard++ < 300) {
+      out.push(hook);
+      hook = hook.next;
+    }
+    return out;
+  }
+
+  function hookValues(fiber) {
+    return hookChain(fiber).map((hook) => hook.memoizedState);
+  }
+
+  /**
+   * Mutating the registry is invisible to React until it renders again. Bump
+   * the first numeric state (the settings view's own render counter) through
+   * its dispatch queue: no section switch, no navigation intent consumed, no
+   * synthetic click — just a scheduled re-render.
+   */
+  function nudgeRender(fiber) {
+    for (const hook of hookChain(fiber)) {
+      if (typeof hook?.memoizedState === 'number' && typeof hook.queue?.dispatch === 'function') {
+        hook.queue.dispatch((n) => n + 1);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  const nextPaint = () =>
+    new Promise((resolve) =>
+      requestAnimationFrame(() => setTimeout(resolve, 0))
+    );
+
+  function isRegistry(value) {
+    return Boolean(
+      value &&
+        Array.isArray(value.settingsSectionGroups) &&
+        Array.isArray(value.settingsSections) &&
+        value.settingsSections.some((s) => s && typeof s.id === 'string' && s.groupId)
+    );
+  }
+
+  /** Newer React stores useMemo as [value, deps]; accept both shapes. */
+  function candidates(value) {
+    const out = [value];
+    if (Array.isArray(value) && value.length === 2) out.push(value[0]);
+    return out;
+  }
+
+  function findRegistry(startFiber) {
+    let fiber = startFiber;
+    let guard = 0;
+    while (fiber && guard++ < 80) {
+      for (const value of hookValues(fiber)) {
+        for (const cand of candidates(value)) {
+          if (isRegistry(cand)) return { fiber, value: cand };
+        }
+      }
+      fiber = fiber.return;
+    }
+    return null;
+  }
+
+  /** The host's useIntl result: { intl, localePreference, … }. */
+  function findIntl(fiber) {
+    for (const value of hookValues(fiber)) {
+      if (!value || typeof value !== 'object') continue;
+      const intl = value.intl;
+      if (intl && typeof intl.formatMessage === 'function' && intl.messages) return intl;
+    }
+    return null;
+  }
+
+  /** Any live React element works as a shape template for synthesised icons. */
+  function findElementTemplate(startFiber) {
+    let fiber = startFiber;
+    let guard = 0;
+    while (fiber && guard++ < 60) {
+      const found = searchElement(fiber.pendingProps ?? fiber.memoizedProps, 0);
+      if (found) return found;
+      fiber = fiber.return;
+    }
+    return null;
+  }
+
+  function searchElement(node, depth) {
+    if (!node || typeof node !== 'object' || depth > 8) return null;
+    if (node.$$typeof) return node;
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const found = searchElement(child, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+    return searchElement(node.children, depth + 1);
+  }
+
+  /** SVG markup uses DOM attribute names; React wants the camelCase prop names. */
+  const KEEP_HYPHEN = /^(data-|aria-|xmlns)/;
+  function toReactProp(name) {
+    if (KEEP_HYPHEN.test(name) || !name.includes('-')) return name;
+    return name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+  }
+
+  /** Build a component that renders one of our SVGs through the host runtime. */
+  function makeIcon(template, name) {
+    const doc = new DOMParser().parseFromString(ICONS[name], 'image/svg+xml');
+    const convert = (node) => {
+      const props = {};
+      for (const attr of node.attributes) props[toReactProp(attr.name)] = attr.value;
+      const kids = [...node.children].map((child, i) => Object.assign(convert(child), { key: `k${i}` }));
+      if (kids.length) props.children = kids;
+      return Object.assign({}, template, { type: node.nodeName, props });
+    };
+    const base = convert(doc.documentElement);
+    return function ZModSettingsIcon(incoming) {
+      return Object.assign({}, base, {
+        props: Object.assign({}, base.props, { className: incoming?.className || base.props.className })
+      });
+    };
+  }
+
+  async function registerNativeSections() {
+    let undo = null;
+    try {
+      const navBtn = document.querySelector('nav [data-settings-section-nav]');
+      const startFiber = fiberOf(navBtn);
+      if (!startFiber) return null;
+      const reg = findRegistry(startFiber);
+      if (!reg) return null;
+      const intl = findIntl(reg.fiber);
+      if (!intl || !intl.messages || typeof intl.messages !== 'object') return null;
+      const template = findElementTemplate(startFiber);
+      if (!template) return null;
+
+      const addedMessages = [];
+      for (const [key, value] of Object.entries(NATIVE_MESSAGES)) {
+        if (!(key in intl.messages)) addedMessages.push(key);
+        intl.messages[key] = value;
+      }
+      // A missing catalogue entry makes formatMessage echo the id — refuse to
+      // register rather than render "zmod.settings.plugins.title" in the nav.
+      if (intl.formatMessage({ id: NATIVE_SECTIONS[0].titleId }) === NATIVE_SECTIONS[0].titleId) {
+        for (const key of addedMessages) delete intl.messages[key];
+        return null;
+      }
+
+      const group = { id: NATIVE_GROUP_ID, titleId: NATIVE_GROUP_TITLE_ID, sections: [] };
+      const sections = NATIVE_SECTIONS.map((s) => ({
+        id: s.id,
+        icon: makeIcon(template, s.icon),
+        titleId: s.titleId,
+        groupId: group.id
+      }));
+      group.sections = sections.slice();
+      reg.value.settingsSectionGroups.push(group);
+      reg.value.settingsSections.push(...sections);
+
+      undo = () => {
+        const gi = reg.value.settingsSectionGroups.indexOf(group);
+        if (gi >= 0) reg.value.settingsSectionGroups.splice(gi, 1);
+        for (const s of sections) {
+          const i = reg.value.settingsSections.indexOf(s);
+          if (i >= 0) reg.value.settingsSections.splice(i, 1);
+        }
+        for (const key of addedMessages) delete intl.messages[key];
+      };
+
+      if (!nudgeRender(reg.fiber)) {
+        undo();
+        return null;
+      }
+      await nextPaint();
+      if (!document.querySelector(`nav [data-settings-section-nav="${NATIVE_SECTIONS[0].id}"]`)) {
+        // One extra frame: the scheduler may have deferred the re-render.
+        await nextPaint();
+        if (!document.querySelector(`nav [data-settings-section-nav="${NATIVE_SECTIONS[0].id}"]`)) {
+          undo();
+          return null;
+        }
+      }
+      console.log('[ZMod:SettingsPage] native settings sections registered');
+      return { value: reg.value, intl, sections, undo };
+    } catch (err) {
+      try {
+        undo?.();
+      } catch {}
+      console.warn('[ZMod:SettingsPage] native registration failed:', err?.message || err);
+      return null;
+    }
+  }
+
+  /** True when the live dialog still holds our registration. */
+  function nativeRegAlive() {
+    if (!nativeReg) return false;
+    if (!nativeReg.value.settingsSections.includes(nativeReg.sections[0])) return false;
+    return Boolean(document.querySelector(`nav [data-settings-section-nav="${NATIVE_SECTIONS[0].id}"]`));
+  }
+
+  /** The host rebuilds its i18n object on provider remounts. */
+  function ensureNativeMessages() {
+    if (!nativeReg?.intl?.messages) return;
+    if (nativeReg.intl.formatMessage({ id: NATIVE_SECTIONS[0].titleId }) === NATIVE_SECTIONS[0].titleId) {
+      Object.assign(nativeReg.intl.messages, NATIVE_MESSAGES);
+    }
+  }
+
+  /**
+   * Section ids outside the host's whitelist are dropped from its own
+   * "last section" memory, so the selected ZMod section is remembered here and
+   * re-applied the next time the dialog opens.
+   */
+  function restoreNativeIntent() {
+    if (!intentNative) return;
+    const current = document.querySelector('[data-active-section]')?.getAttribute('data-active-section');
+    if (current === intentNative) return;
+    document.querySelector(`nav [data-settings-section-nav="${intentNative}"]`)?.click();
+  }
+
+  function ensureNativeObserver() {
+    const root = document.querySelector('[data-active-section]');
+    if (!root || !nativeObserver) {
+      nativeObserver?.disconnect();
+      nativeObserver = new MutationObserver(() => nativeSync());
+    }
+    if (root) nativeObserver.observe(root, { attributes: true, attributeFilter: ['data-active-section'] });
+  }
+
+  function ensureNativeMount() {
+    const host = nativeHost();
+    if (!host) return null;
+    if (nativeMount && host.contains(nativeMount)) return nativeMount;
+    teardownNativeDom();
+    nativeMount = document.createElement('div');
+    nativeMount.setAttribute('data-zmod-native-mount', 'true');
+    host.appendChild(nativeMount);
+    nativeRendered = null;
+    return nativeMount;
+  }
+
+  /** Official content column wrapper: main > mL div > section body div. */
+  function nativeHost() {
+    const main = document.querySelector('[data-settings-panel-frame] main');
+    const body = main?.lastElementChild?.lastElementChild;
+    if (!body || !String(body.className || '').includes('space-y-8')) return null;
+    return body;
+  }
+
+  /** Official breadcrumb holder: frame > column > h-12 row > drag holder. */
+  function nativeCrumbHolder() {
+    const main = document.querySelector('[data-settings-panel-frame] main');
+    const row = main?.parentElement?.firstElementChild;
+    if (!row || !String(row.className || '').includes('h-12')) return null;
+    return row.firstElementChild || null;
+  }
+
+  function detailKey() {
+    if (!detail) return '';
+    return `${detail.kind}:${detail.id || detail.editing || ''}:${detail.title || ''}`;
+  }
+
+  function nativeSync() {
+    const root = document.querySelector('[data-active-section]');
+    if (!root) return;
+    const id = root.getAttribute('data-active-section');
+    const section = NATIVE_SECTIONS.find((s) => s.id === id);
+    if (!section) {
+      intentNative = null;
+      teardownNativeDom();
+      if (activeItem !== null) {
+        activeItem = null;
+        detail = null;
+      }
+      return;
+    }
+    intentNative = id;
+    if (activeItem !== section.itemId) {
+      activeItem = section.itemId;
+      detail = null;
+      nativeRendered = null;
+    }
+    if (!ensureNativeMount()) return;
+    ensureNativeMessages();
+    syncNativeCrumb();
+    if (nativeRendered?.itemId !== activeItem || nativeRendered?.detailKey !== detailKey()) renderNative();
+  }
+
+  function syncNativeCrumb() {
+    const key = detail ? detailKey() : '';
+    // Rebuild only on change: scan() runs on every DOM mutation, and rebuilding
+    // unconditionally would feed itself through the observer.
+    if (nativeCrumbKey === key && (!key || nativeCrumb?.isConnected)) return;
+    nativeCrumb?.remove();
+    nativeCrumb = null;
+    nativeCrumbKey = key;
+    if (!key) return;
+    const holder = nativeCrumbHolder();
+    if (!holder) return;
+    nativeCrumb = crumbEl();
+    nativeCrumb.setAttribute('data-zmod-native-crumb', 'true');
+    holder.appendChild(nativeCrumb);
+  }
+
+  function renderNative() {
+    if (!ensureNativeMount()) return;
+    nativeMount.innerHTML = '';
+    const body = contentList();
+    nativeMount.appendChild(body);
+    renderPage(body);
+    syncNativeCrumb();
+    nativeRendered = { itemId: activeItem, detailKey: detailKey() };
+  }
+
+  function teardownNativeDom() {
+    nativeMount?.remove();
+    nativeMount = null;
+    nativeCrumb?.remove();
+    nativeCrumb = null;
+    nativeCrumbKey = null;
+    nativeRendered = null;
   }
 
   /* ---------------- extensions page ---------------- */
@@ -489,8 +987,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     // firstElementChild, not firstChild: the innerHTML template starts with a
     // newline, so firstChild would be a text node (no appendChild).
     card.firstElementChild.appendChild(toolbar);
-    toolbar.appendChild(iconButton('refresh', '刷新状态', async (e) => {
-      const btn = e?.currentTarget || e?.target;
+    toolbar.appendChild(iconButton('refresh', '刷新状态', async () => {
       await refreshStatusInto(inst.id, card, { force: true });
     }));
     toolbar.appendChild(iconButton('pencil', '编辑', () => {
@@ -535,9 +1032,9 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       `<div class="text-ui-xs text-foreground-subtle/70">更新于 ${esc(time)}</div>`;
   }
 
-  async function renderDatasourceEditor(root, d) {
+  async function renderDatasourceEditor(root) {
     const providers = datasources.getProviders();
-    const editing = d.editing ? datasources.getInstance(d.editing) : null;
+    const editing = detail.editing ? datasources.getInstance(detail.editing) : null;
 
     const card = document.createElement('div');
     card.className = 'flex flex-col gap-3 rounded-xl border border-border bg-surface px-4 py-4';
@@ -590,7 +1087,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       const actions = document.createElement('div');
       actions.className = 'mt-2 flex items-center gap-2';
       actions.setAttribute('data-zmod-ds-form', '1');
-      const testBtn = primaryButton('测试连接', async (btn) => {
+      const testBtn = primaryButton('测试连接', async () => {
         const res = await datasources.testInstance({ id: instance?.id, type, settings: values, name: nameInput.value });
         ui.showToast(res.ok ? res.message || '连接成功' : `失败：${res.message || '未知错误'}`, res.ok ? 'success' : 'warn');
       });
@@ -644,16 +1141,25 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
    * Public surface
    * ------------------------------------------------------------ */
   function start() {
-    // Unpaint the official settings content while a ZMod view is active.
-    // A stylesheet rule (not a DOM mutation): React neither sees nor fights
-    // it, and :has() makes it self-cleaning — the moment the overlay is
-    // removed the official main paints again. visibility (not display) keeps
-    // the official layout intact underneath.
+    // Injected rules, all self-cleaning via :has() so nothing lingers when the
+    // condition (our overlay / our crumb) disappears:
+    //  1. overlay mode paints over the official content column — keep the
+    //     official content invisible underneath instead of relying on stacking.
+    //  2. overlay mode leaves the host's own section selected in React state,
+    //     so neutralise its highlight: official active styling is nothing but
+    //     the button background (label and icon keep text-foreground either
+    //     way), which keeps exactly one item reading as selected.
+    //  3. native mode drilled into a sub-page: the host shows a page title for
+    //     single-level sections, official drilled-in views show a breadcrumb
+    //     instead — match the host's own rule.
     if (!document.getElementById('zmod-settings-overlay-style')) {
       const st = document.createElement('style');
       st.id = 'zmod-settings-overlay-style';
-      st.textContent =
-        '[data-settings-panel-frame]:has(> [data-zmod-settings-overlay]) main{visibility:hidden !important}';
+      st.textContent = [
+        '[data-settings-panel-frame]:has(> [data-zmod-settings-overlay]) main{visibility:hidden !important}',
+        '[data-active-section]:has([data-zmod-settings-overlay]) nav [data-settings-section-nav][aria-current="page"]{background-color:transparent !important}',
+        '[data-settings-panel-frame]:has([data-zmod-native-crumb]) main h2{display:none !important}'
+      ].join('\n');
       document.head.appendChild(st);
     }
     observer = new MutationObserver(() => scan());
@@ -664,6 +1170,15 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   function destroy() {
     observer?.disconnect();
     observer = null;
+    nativeObserver?.disconnect();
+    nativeObserver = null;
+    // Leaving our sections registered without the code that fills them would
+    // show an empty ZMod section, so take them back out.
+    try {
+      nativeReg?.undo();
+    } catch {}
+    nativeReg = null;
+    teardownNativeDom();
     detachNav();
   }
 
@@ -682,6 +1197,11 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       if (activeItem === 'plugins') renderContent();
     },
     open() {
+      const first = NATIVE_SECTIONS[0];
+      if (mode === 'native') {
+        document.querySelector(`nav [data-settings-section-nav="${first.id}"]`)?.click();
+        return;
+      }
       activate('plugins');
     }
   };
