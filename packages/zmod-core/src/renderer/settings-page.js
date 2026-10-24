@@ -186,25 +186,6 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
    * dialog — no stale-overlay states. Above z-50 (Radix dialog layers),
    * below ZMod toasts.
    */
-  /** Resolve a (possibly translucent) theme token to its opaque rgb() form. */
-  function opaqueToken(name, fallback) {
-    try {
-      const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
-      const probe = document.createElement('div');
-      probe.style.color = v;
-      document.body.appendChild(probe);
-      const c = getComputedStyle(probe).color; // browsers normalize to rgb()/color()
-      probe.remove();
-      const nums = c.match(/[\d.]+/g);
-      if (nums && nums.length >= 3) {
-        // rgb() gives 0-255, color(srgb ...) gives 0-1 — normalize
-        const ch = (v) => (Number(v) <= 1 ? Math.round(Number(v) * 255) : Math.round(Number(v)));
-        return `rgb(${ch(nums[0])} ${ch(nums[1])} ${ch(nums[2])})`;
-      }
-    } catch {}
-    return fallback;
-  }
-
   function ensureOverlay() {
     const frame = document.querySelector('[data-settings-panel-frame]');
     const col = contentColumn();
@@ -212,17 +193,15 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     if (overlay && overlay.isConnected) return;
     overlay = document.createElement('div');
     overlay.setAttribute('data-zmod-settings-overlay', 'true');
-    // Native-section feel: the official pages sit on the window's acrylic
-    // material, so a fully opaque slab reads as a sticker pasted over the UI.
-    // A mostly-opaque wash of the theme background + a heavy backdrop blur
-    // still fully hides the official page beneath while letting the acrylic
-    // luminance through (same trick the official modals use).
-    const base = opaqueToken('--color-background', 'rgb(22 22 22)');
-    const m = base.match(/rgb\(([\d.]+) ([\d.]+) ([\d.]+)\)/);
-    const wash = m ? `rgb(${m[1]} ${m[2]} ${m[3]} / 0.86)` : base;
+    // Native-section feel: use the theme background token AS-IS. When the
+    // acrylic plugin translucifies it (color-mix), the window material shows
+    // through exactly like official sections; with material 'none' the token
+    // is already opaque and behaves like a plain page. The heavy backdrop
+    // blur hides the official page painted beneath either way.
     overlay.style.cssText =
       'position:absolute;z-index:60;display:flex;flex-direction:column;' +
-      `background:${wash};backdrop-filter:blur(28px) saturate(1.1);-webkit-backdrop-filter:blur(28px) saturate(1.1);` +
+      'background:var(--color-background);' +
+      'backdrop-filter:blur(28px) saturate(1.1);-webkit-backdrop-filter:blur(28px) saturate(1.1);' +
       'left:0;right:0;bottom:0;top:0;';
     // Spacer covering the official breadcrumb row area: that row is a system
     // drag region. We paint over it, so re-declare the drag region on our own
