@@ -221,8 +221,9 @@ class RpcGateway {
     }));
 
     this.register('datasource.autodetect', async () => {
+      // %APPDATA% = <home>/AppData/Roaming → two levels up is the home dir
       const home = process.env.APPDATA
-        ? path.dirname(process.env.APPDATA) // %APPDATA% = <home>/AppData/Roaming
+        ? path.resolve(process.env.APPDATA, '..', '..')
         : (electronApp?.getPath?.('home') || process.env.USERPROFILE || process.env.HOME || '');
       const existing = configManager.getDatasources().map((d) => d.type);
       const proposals = autodetectDatasources({ homeDir: home, existingTypes: existing });

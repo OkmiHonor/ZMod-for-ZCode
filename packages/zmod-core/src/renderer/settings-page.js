@@ -999,7 +999,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     const title = document.createElement('div');
     title.className = 'mt-4 flex items-center justify-between';
     title.innerHTML = '<h3 class="text-ui-sm font-medium text-foreground-subtle">检测到的账号</h3>';
-    title.appendChild(textButton('重新检测', 'search', () => renderContent()));
+    title.appendChild(textButton('重新检测', 'refresh', () => renderContent()));
     root.appendChild(title);
 
     for (const p of proposals) {
