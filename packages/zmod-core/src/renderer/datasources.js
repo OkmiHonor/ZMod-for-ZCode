@@ -68,6 +68,18 @@ export class DataSourceRegistry {
     return this._instances;
   }
 
+  /**
+   * Hot path for "zmod:config-changed": refetch instances and fan the change
+   * out to subscribers (settings page, balance cards) without a reload.
+   */
+  async reload() {
+    const before = JSON.stringify(this.getInstances());
+    await this.load({ force: true });
+    if (JSON.stringify(this.getInstances()) !== before) this._notify();
+    this._emit('datasource:changed');
+    return this._instances;
+  }
+
   getInstances() {
     return [...this._instances];
   }

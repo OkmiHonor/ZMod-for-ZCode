@@ -166,6 +166,41 @@ class ConfigManager {
   reset() {
     this._cache = null;
   }
+
+  /**
+   * Watch config.json for external edits (CLI, scripts, user hand-editing)
+   * and hot-apply them: reload the cache and notify listeners. Our own
+   * save() writes the identical serialization the watcher would re-read, so
+   * self-writes are naturally no-ops; parse failures keep the current cache.
+   */
+  startHotReload() {
+    if (this._watcher) return;
+    ensureDirectories();
+    const dir = path.dirname(getConfigPath());
+    let timer = null;
+    const reload = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        try {
+          const raw = fs.readFileSync(getConfigPath(), 'utf8');
+          const next = { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+          if (JSON.stringify(next) === JSON.stringify(this.get())) return;
+          this._cache = next;
+          console.log('[ZMod:Config] external change detected, hot-reloaded');
+          this._notify(this._cache);
+        } catch {
+          // mid-write or malformed JSON: keep serving the last good cache
+        }
+      }, 150);
+    };
+    try {
+      this._watcher = fs.watch(dir, { persistent: false }, (event, filename) => {
+        if (!filename || filename.startsWith('config.json')) reload();
+      });
+    } catch (err) {
+      console.error('[ZMod:Config] hot-reload watcher failed:', err?.message || err);
+    }
+  }
 }
 
 export const configManager = new ConfigManager();

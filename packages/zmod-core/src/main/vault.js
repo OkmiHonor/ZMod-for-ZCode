@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { getVaultPath, ensureDirectories } from '../common/paths.js';
 
 let electronSafeStorage = null;
@@ -110,6 +111,37 @@ class SecretVault {
 
   reset() {
     this._cache = null;
+  }
+
+  /**
+   * Watch secure.vault for external edits (scripts pre-provisioning entries
+   * via the base64 unencrypted wrapper). Just drop the cache — next get/set
+   * re-reads from disk; self-writes repopulate the same content anyway.
+   */
+  startExternalWatch(onChange) {
+    if (this._watcher) return;
+    ensureDirectories();
+    const dir = path.dirname(getVaultPath());
+    let timer = null;
+    const reload = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const before = JSON.stringify(this._cache ?? null);
+        this._cache = null;
+        const raw = this._readVault();
+        if (JSON.stringify(raw) !== before) {
+          console.log('[ZMod:Vault] external change detected, cache dropped');
+          try { onChange?.(); } catch {}
+        }
+      }, 150);
+    };
+    try {
+      this._watcher = fs.watch(dir, { persistent: false }, (event, filename) => {
+        if (!filename || filename.startsWith('secure.vault')) reload();
+      });
+    } catch (err) {
+      console.error('[ZMod:Vault] external watch failed:', err?.message || err);
+    }
   }
 }
 

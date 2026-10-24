@@ -754,6 +754,15 @@ function main() {
     emit: (event, payload) => events.emit(event, payload),
     on: (event, fn) => events.on(event, fn)
   });
+  // Config/vault hot reload pushed by the main process: refresh datasource
+  // instances and let the settings page re-render if it is open.
+  if (typeof api.on === 'function') {
+    api.on('zmod:config-changed', () => {
+      dataSourceRegistry.reload().catch(() => {});
+      events.emit('zmod:config-changed');
+    });
+  }
+
   const plugins = new PluginRegistry(events, ui);
   const settingsPage = createSettingsPageIntegration({
     api,

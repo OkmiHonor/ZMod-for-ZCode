@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { configManager } from '../common/config.js';
+import { autodetectDatasources } from '../common/autodetect.js';
 import { secretVault } from './vault.js';
 import { getPluginsDir } from '../common/paths.js';
 
@@ -219,6 +220,15 @@ class RpcGateway {
       success: configManager.deleteDatasource(id)
     }));
 
+    this.register('datasource.autodetect', async () => {
+      const home = process.env.APPDATA
+        ? path.dirname(process.env.APPDATA) // %APPDATA% = <home>/AppData/Roaming
+        : (electronApp?.getPath?.('home') || process.env.USERPROFILE || process.env.HOME || '');
+      const existing = configManager.getDatasources().map((d) => d.type);
+      const proposals = autodetectDatasources({ homeDir: home, existingTypes: existing });
+      return { proposals };
+    });
+
     // ---- Outbound HTTP proxy (main-process fetch: no CORS, Chromium network stack) ----
     this.register('net.fetch', async (params) => netFetch(params));
 
@@ -365,6 +375,28 @@ class RpcGateway {
         throw err;
       }
     });
+    this.startHotReloadBridge();
+  }
+
+  /**
+   * Config/vault hot reload: pick up external edits (CLI, scripts, manual
+   * JSON editing) without a client restart, and push "zmod:config-changed"
+   * to every renderer so datasource lists and settings pages live-refresh.
+   */
+  startHotReloadBridge() {
+    if (this._hotReloadBridge) return;
+    this._hotReloadBridge = true;
+    const broadcast = () => {
+      if (!electronBrowserWindow) return;
+      for (const w of electronBrowserWindow.getAllWindows()) {
+        try {
+          w.webContents?.send?.('zmod:config-changed', { ts: Date.now() });
+        } catch {}
+      }
+    };
+    configManager.startHotReload();
+    configManager.subscribe(broadcast);
+    secretVault.startExternalWatch(broadcast);
   }
 }
 

@@ -100,6 +100,14 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   let detail = null; // { kind: 'plugin-settings' | 'ds-edit', ... }
   const contributions = new Map(); // id -> { id, title, render(el) }
 
+  // Config hot reload: live-refresh an open datasources page instead of
+  // requiring the user to close and reopen the settings dialog.
+  events.on('zmod:config-changed', () => {
+    if (dialogOpen && activeItem === 'datasources' && !detail) {
+      try { renderContent(); } catch {}
+    }
+  });
+
   // Native mode bookkeeping
   let nativeSupported = null; // null = untried, true = verified, false = give up this session
   let nativeAttempts = 0;
@@ -969,6 +977,72 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     for (const inst of instances) {
       root.appendChild(await datasourceCard(inst));
     }
+
+    await renderAutodetectSection(root, providers);
+  }
+
+  /**
+   * Auto-detected sources: fully-derivable ones offer one-click adoption,
+   * known-but-unfetchable ones show as dashed placeholder cards.
+   */
+  async function renderAutodetectSection(root, providers) {
+    let detect;
+    try {
+      detect = await api.invoke('datasource.autodetect', {});
+    } catch {
+      return; // main runtime too old / RPC unavailable — stay silent
+    }
+    const proposals = (detect?.proposals || []).filter((p) => p.status !== 'configured');
+    if (!proposals.length) return;
+
+    const labelByType = new Map(providers.map((p) => [p.type, p.label]));
+    const title = document.createElement('div');
+    title.className = 'mt-4 flex items-center justify-between';
+    title.innerHTML = '<h3 class="text-ui-sm font-medium text-foreground-subtle">检测到的账号</h3>';
+    title.appendChild(textButton('重新检测', 'search', () => renderContent()));
+    root.appendChild(title);
+
+    for (const p of proposals) {
+      const card = document.createElement('div');
+      card.className =
+        p.status === 'ready'
+          ? 'mt-2 flex items-center gap-3 rounded-xl border border-border bg-surface px-4 py-3'
+          : 'mt-2 flex items-center gap-3 rounded-xl border border-dashed border-border px-4 py-3';
+      const info = document.createElement('div');
+      info.className = 'min-w-0 flex-1';
+      info.innerHTML = `
+        <div class="truncate text-ui-base font-medium text-foreground">${esc(p.name)}</div>
+        <div class="text-ui-sm text-foreground-subtle">${esc(labelByType.get(p.type) || p.type)}</div>
+        <div class="text-ui-xs text-foreground-subtle/80">${esc(p.reason || '')}</div>`;
+      card.appendChild(info);
+      if (p.status === 'ready') {
+        card.appendChild(
+          primaryButton('一键接入', async () => {
+            try {
+              // secret-typed fields ride along in settings; the registry
+              // splits them into the vault on save
+              await datasources.saveInstance({
+                type: p.type,
+                name: p.name,
+                settings: { ...(p.settings || {}), ...(p.secrets || {}) }
+              });
+              ui.showToast(`已接入「${p.name}」`, 'success');
+              renderContent();
+            } catch (err) {
+              ui.showToast(`接入失败：${err?.message || err}`, 'error');
+            }
+          })
+        );
+      } else {
+        card.appendChild(
+          textButton('去配置', 'plus', () => {
+            detail = { kind: 'ds-edit', editing: null, title: `配置 ${p.name}`, presetType: p.type };
+            renderContent();
+          })
+        );
+      }
+      root.appendChild(card);
+    }
   }
 
   async function datasourceCard(inst) {
@@ -1054,8 +1128,11 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       }
       typeRow.appendChild(select);
       card.appendChild(typeRow);
+      if (detail?.presetType && providers.some((p) => p.type === detail.presetType)) {
+        select.value = detail.presetType;
+      }
       select.addEventListener('change', () => buildProviderForm(card, select.value, null));
-      buildProviderForm(card, providers[0]?.type, null);
+      buildProviderForm(card, select.value || providers[0]?.type, null);
     } else {
       buildProviderForm(card, editing.type, editing);
     }
