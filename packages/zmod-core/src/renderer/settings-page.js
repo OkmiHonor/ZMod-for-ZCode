@@ -348,31 +348,49 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     return btn;
   }
 
+  /* Official Switch/primary-button classes, verbatim from the host bundle —
+     injected classes only have CSS if the official bundle generated it, so
+     these must stay byte-identical to the captured strings (with data-size
+     and data-state attributes driving the variants). Our earlier hand-rolled
+     bg-foreground/text-background pair turned invisible under acrylic because
+     text-background is translucent. */
+  const OFFICIAL_SWITCH_TRACK =
+    'p-px peer group/switch relative inline-flex shrink-0 items-center cursor-pointer rounded-full transition-all outline-none ' +
+    'after:absolute after:-inset-x-3 after:-inset-y-2 focus-visible:ring-2 focus-visible:ring-input-border-focused/30 ' +
+    'data-[size=default]:h-[18px] data-[size=default]:w-[32px] data-[size=sm]:h-[16px] data-[size=sm]:w-[28px] ' +
+    'dark:aria-invalid:ring-destructive/40 data-checked:bg-primary data-unchecked:bg-primary/30 ' +
+    'data-disabled:cursor-not-allowed data-disabled:opacity-50';
+  const OFFICIAL_SWITCH_KNOB =
+    'pointer-events-none block rounded-full bg-primary-foreground ring-0 transition-transform ' +
+    'group-data-[size=default]/switch:size-4 group-data-[size=sm]/switch:size-3.5 ' +
+    'group-data-[size=default]/switch:data-checked:translate-x-[calc(100%-2px)] group-data-[size=sm]/switch:data-checked:translate-x-[calc(100%-2px)] ' +
+    'group-data-[size=default]/switch:data-unchecked:translate-x-0 group-data-[size=sm]/switch:data-unchecked:translate-x-0';
+  const OFFICIAL_PRIMARY_BTN =
+    'group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding whitespace-nowrap ' +
+    'transition-colors outline-none select-none disabled:pointer-events-none disabled:opacity-50 ' +
+    'bg-primary text-primary-foreground hover:bg-primary/80 h-7 gap-1 px-2 text-ui-base rounded-lg';
+
   function makeSwitch(checked, onChange) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.setAttribute('role', 'switch');
-    btn.setAttribute('aria-checked', String(Boolean(checked)));
-    btn.className =
-      'peer inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors ' +
-      (checked ? 'border-transparent bg-foreground' : 'border-border bg-transparent');
+    btn.setAttribute('data-size', 'default');
+    const render = (on) => {
+      btn.setAttribute('data-state', on ? 'checked' : 'unchecked');
+      btn.setAttribute('aria-checked', String(on));
+      btn.className = OFFICIAL_SWITCH_TRACK;
+    };
+    render(checked);
     const knob = document.createElement('span');
-    knob.className =
-      'pointer-events-none block size-4 rounded-full transition-transform ' +
-      (checked ? 'translate-x-4 bg-background' : 'translate-x-0 bg-foreground-subtle');
+    knob.className = OFFICIAL_SWITCH_KNOB;
     btn.appendChild(knob);
     btn.addEventListener('click', async () => {
       const next = btn.getAttribute('aria-checked') !== 'true';
-      btn.setAttribute('aria-checked', String(next));
-      btn.className =
-        'peer inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors ' +
-        (next ? 'border-transparent bg-foreground' : 'border-border bg-transparent');
-      knob.className =
-        'pointer-events-none block size-4 rounded-full transition-transform ' +
-        (next ? 'translate-x-4 bg-background' : 'translate-x-0 bg-foreground-subtle');
+      render(next);
       try {
         await onChange(next);
       } catch (err) {
+        render(!next);
         ui.showToast(`操作失败：${err?.message || err}`, 'error');
       }
     });
@@ -609,8 +627,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   function primaryButton(label, onClick) {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className =
-      'inline-flex h-8 min-w-24 cursor-pointer items-center justify-center gap-1.5 rounded-lg bg-foreground px-3 text-ui-base font-medium text-background transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-50';
+    btn.className = OFFICIAL_PRIMARY_BTN;
     btn.textContent = label;
     btn.addEventListener('click', async () => {
       btn.disabled = true;
