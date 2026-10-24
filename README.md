@@ -49,7 +49,7 @@ packages/
 ## 🚀 快速上手
 
 ```bash
-git clone <this-repo> zmod && cd zmod
+git clone https://github.com/OkmiHonor/ZMod-for-ZCode.git zmod && cd zmod
 npm install
 
 npm run zmod doctor                 # 诊断环境、宿主与熔断哨兵
