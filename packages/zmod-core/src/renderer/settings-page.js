@@ -983,15 +983,19 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     btn.type = 'button';
     btn.setAttribute('role', 'switch');
     btn.setAttribute('data-size', 'default');
-    const render = (on) => {
-      btn.setAttribute('data-state', on ? 'checked' : 'unchecked');
-      btn.setAttribute('aria-checked', String(on));
-      btn.className = OFFICIAL_SWITCH_TRACK;
-    };
-    render(checked);
     const knob = document.createElement('span');
     knob.className = OFFICIAL_SWITCH_KNOB;
     btn.appendChild(knob);
+    // knob 的 translate 规则匹配滑块自身的 [data-state]（Ark/Radix thumb
+    // 协议），track 上的状态属性不会被那组选择器继承——两处都要设
+    const render = (on) => {
+      const state = on ? 'checked' : 'unchecked';
+      btn.setAttribute('data-state', state);
+      btn.setAttribute('aria-checked', String(on));
+      knob.setAttribute('data-state', state);
+      btn.className = OFFICIAL_SWITCH_TRACK;
+    };
+    render(checked);
     btn.addEventListener('click', async () => {
       const next = btn.getAttribute('aria-checked') !== 'true';
       render(next);
