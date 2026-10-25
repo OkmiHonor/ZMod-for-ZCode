@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { getPluginsDir, getUserDataDir } from '../../../zmod-core/src/common/paths.js';
-import { REGISTRY_URL } from '../../../zmod-core/src/common/constants.js';
+import { REGISTRY_URLS, REGISTRY_URL } from '../../../zmod-core/src/common/constants.js';
 import {
   readInstalled,
   getInstalledEntry,
@@ -202,16 +202,33 @@ export function filterSearch(registryJson, keyword) {
   );
 }
 
-async function fetchRegistry() {
+/** 单源一次 fetch：自管 AbortController 超时（AbortSignal.timeout 在进程退出时有 libuv 断言崩溃，禁用）。 */
+async function fetchOnce(url) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error('timeout 15000ms')), 15000);
+  timer.unref?.();
   try {
-    const res = await fetch(REGISTRY_URL, { signal: AbortSignal.timeout(15000) });
+    const res = await fetch(url, { signal: ctrl.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
-  } catch (err) {
-    console.error(`✖ 拉取插件注册表失败（网络问题）: ${REGISTRY_URL}`);
-    console.error(`  ${err?.message || err}`);
-    return null;
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+/** 双源顺序尝试（GitHub raw 主源 + jsdelivr 镜像），先成功者用；全失败返回 null。 */
+async function fetchRegistry() {
+  const errors = [];
+  for (const url of REGISTRY_URLS) {
+    try {
+      return await fetchOnce(url);
+    } catch (err) {
+      errors.push(`${url}: ${err?.message || err}`);
+    }
+  }
+  console.error('✖ 拉取插件注册表失败（双源均不可达）:');
+  for (const e of errors) console.error(`  ${e}`);
+  return null;
 }
 
 /** manifest 校验（schema + engine）：errors 非空打印并退出。 */
@@ -244,7 +261,15 @@ async function doRegistryUpdate(id, decision) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-plugin-update-'));
   try {
     const zipPath = path.join(tmp, 'plugin.zip');
-    const res = await fetch(entry.url, { signal: AbortSignal.timeout(60000) });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(new Error('timeout 60000ms')), 60000);
+    timer.unref?.();
+    let res;
+    try {
+      res = await fetch(entry.url, { signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok) {
       console.error(`✖ 下载失败（HTTP ${res.status}）: ${entry.url}`);
       process.exitCode = 1;
@@ -495,7 +520,8 @@ export async function pluginCommand(subCmd, arg) {
     const registryJson = await fetchRegistry();
     if (!registryJson) {
       console.error('✖ 无法获取插件注册表，请检查网络后重试。');
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     const hits = filterSearch(registryJson, arg);
     if (hits.length === 0) {

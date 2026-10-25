@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import { configManager } from '../common/config.js';
 import { autodetectDatasources } from '../common/autodetect.js';
 import { secretVault } from './vault.js';
-import { getPluginsDir } from '../common/paths.js';
+import { getPluginsDir, getUserDataDir } from '../common/paths.js';
+import { readInstalled } from '../common/installed.js';
+import { registerPluginHost } from './plugin-host.js';
 
 let electron = null;
 try {
@@ -140,11 +142,15 @@ export async function netFetch({ url, method = 'GET', headers = {}, body, timeou
       if (typeof k === 'string' && typeof v === 'string') safeHeaders[k] = v;
     }
   }
-  const opts = {
-    method: m,
-    headers: safeHeaders,
-    signal: AbortSignal.timeout(Math.min(Math.max(Number(timeoutMs) || 15000, 1000), 60000))
-  };
+  // 自管 AbortController 超时：AbortSignal.timeout 的底层 timer 在进程退出时
+  // 可能触发 libuv 断言崩溃，宿主常驻进程统一禁用
+  const ctrl = new AbortController();
+  const timeoutTimer = setTimeout(
+    () => ctrl.abort(new Error('timeout')),
+    Math.min(Math.max(Number(timeoutMs) || 15000, 1000), 60000)
+  );
+  timeoutTimer.unref?.();
+  const opts = { method: m, headers: safeHeaders, signal: ctrl.signal };
   if (body != null && m !== 'GET' && m !== 'HEAD') {
     opts.body = typeof body === 'string' ? body : JSON.stringify(body);
   }
@@ -160,6 +166,8 @@ export async function netFetch({ url, method = 'GET', headers = {}, body, timeou
     };
   } catch (err) {
     return { ok: false, status: 0, error: String(err?.message || err), text: '' };
+  } finally {
+    clearTimeout(timeoutTimer);
   }
 }
 
@@ -319,11 +327,14 @@ class RpcGateway {
       installed: telemetryTapInstalled
     }));
 
-    // ---- Plugin discovery ----
+    // ---- Plugin discovery + plugin host (install/remove/update/marketplace) ----
     this.register('plugins.discover', async () => {
       const results = [];
       const pluginsDir = getPluginsDir();
       if (!fs.existsSync(pluginsDir)) return results;
+      // 账本注入 installed:{source,installedAt}|null —— 面板按 installed.source
+      // 是否为 'builtin' 甄别基座随发插件（discover 本身不区分）
+      const ledger = readInstalled(getUserDataDir()).plugins;
       for (const entry of fs.readdirSync(pluginsDir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
         const pluginId = entry.name;
@@ -336,17 +347,26 @@ class RpcGateway {
             manifest = { ...manifest, ...JSON.parse(fs.readFileSync(manifestPath, 'utf8')) };
           } catch {}
         }
+        // ?v=<version>-<mtimeMs> 防渲染层 import() 模块缓存（resolveHostFile 会 strip query）
+        const mtimeMs = fs.statSync(entryPath).mtimeMs;
+        const ver = typeof manifest.version === 'string' ? manifest.version : '0';
+        const installedRec = ledger[pluginId];
         results.push({
           ...manifest,
           id: pluginId,
-          entryUrl: `zmod-local://plugins/${pluginId}/index.js`,
+          entryUrl: `zmod-local://plugins/${pluginId}/index.js?v=${ver}-${mtimeMs}`,
           styleUrl: fs.existsSync(path.join(pluginsDir, pluginId, 'style.css'))
             ? `zmod-local://plugins/${pluginId}/style.css`
+            : null,
+          installed: installedRec
+            ? { source: installedRec.source, installedAt: installedRec.installedAt }
             : null
         });
       }
       return results;
     });
+
+    registerPluginHost(this);
   }
 
   _toggleMainWindow() {

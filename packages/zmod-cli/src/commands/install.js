@@ -18,6 +18,8 @@ import {
   getLogsDir
 } from '../../../zmod-core/src/common/paths.js';
 import { configManager } from '../../../zmod-core/src/common/config.js';
+import { readInstalled, removeInstalled } from '../../../zmod-core/src/common/installed.js';
+import { writeBuiltinRecords } from '../../../zmod-core/src/main/plugin-host.js';
 
 const VERSION = createRequire(import.meta.url)('../../package.json').version;
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -125,8 +127,8 @@ function deployRuntimeAndPlugins() {
   copyDir(path.join(REPO_ROOT, 'packages', 'zmod-sdk', 'src'), path.join(runtimeDir, 'sdk'));
 
   const srcPlugins = path.join(REPO_ROOT, 'plugins');
+  const shipped = new Set();
   if (fs.existsSync(srcPlugins)) {
-    const shipped = new Set();
     for (const ent of fs.readdirSync(srcPlugins, { withFileTypes: true })) {
       if (ent.isDirectory()) {
         shipped.add(ent.name);
@@ -140,6 +142,25 @@ function deployRuntimeAndPlugins() {
         fs.rmSync(path.join(getPluginsDir(), ent.name), { recursive: true, force: true });
       }
     }
+  }
+
+  // 基座随发插件记账为 builtin（面板按 installed.source==='builtin' 识别），
+  // 并清理镜像同步已删除插件的过期 builtin 账本。记账失败不阻断安装。
+  try {
+    const dataDir = getUserDataDir();
+    const ledger = readInstalled(dataDir);
+    for (const [id, rec] of Object.entries(ledger.plugins)) {
+      if (
+        rec?.source === 'builtin' &&
+        !shipped.has(id) &&
+        !fs.existsSync(path.join(getPluginsDir(), id))
+      ) {
+        removeInstalled(dataDir, id);
+      }
+    }
+    writeBuiltinRecords(dataDir, [...shipped]);
+  } catch (err) {
+    console.warn(`⚠ builtin 插件记账失败（不影响安装）: ${err?.message || err}`);
   }
   return runtimeDir;
 }
