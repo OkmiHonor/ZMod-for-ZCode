@@ -136,6 +136,8 @@ export default definePlugin({
 ```
 
 - **生命周期**：`start(ctx)` / `stop(ctx)`；`ctx.cleanup(fn)` 注册的回收逻辑在禁用时 LIFO 执行。
+- **自定义设置区**：可选 `renderSettings(el, { onChange, onAction, toast })` 在声明式控件之下追加自绘设置 UI（文件导入、动态列表等 schema 表达不了的交互）；设置页齿轮表单与管理面板同源生效，抛错自动兜底不影响声明式控件。
+- **持久资产**：`plugin.readAsset`（`scope: 'data'`）读取 `<数据目录>/plugin-data/<id>/`，配合 `plugin.listAssets / writeAsset / deleteAsset`（音频白名单 + 单文件 2MB / 总量 20MB 上限）存放用户导入的文件——插件更新/卸载不清除该目录。
 - **RPC**：`ctx.invoke(method, params)` 调用主进程能力（`vault.get/set`、`window.setMaterial`、`window.registerBossKey`、`system.openExternal` 等）。
 - **UI 铁律**：不要向 React 主树注入 DOM，用 `fixed` 定位 + 独立 z-index；样式走 `ui.injectStyle` 命名空间。
 - **媒体**：禁 `file://`（Chromium 拦截），用内联 SVG / Base64 / WebAudio / emoji。
@@ -148,6 +150,7 @@ export default definePlugin({
 | --- | --- |
 | `quota-popover` | 输入框「上下文容量」浮窗追加今日余额卡 + 模型设置页余量总览 |
 | `acrylic-window` | Windows 11 亚克力/云母模糊背板 + 全局快捷键老板键 |
+| `notification-sounds` | 通知声音管理：接管任务通知音，音量调节 / 音色切换 / 导入自有音频 / 分事件配音 / 试听（**待真机验收后上架**） |
 
 > 曾随基座分发的 `official-providers` / `account-quota` 已并入基座（数据源 provider 内置），升级安装时会自动清理残留。
 
