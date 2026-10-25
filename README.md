@@ -145,12 +145,10 @@ export default definePlugin({
 | 插件 | 说明 |
 | --- | --- |
 | `acrylic-window` | Windows 11 亚克力/云母背板（主进程 `setBackgroundMaterial`）+ 全局老板键 |
-| `qcard-fade` | 提问卡与输入框离底自动淡出/折叠，悬停毛玻璃唤醒 |
-| `prompt-snippets` | 常驻悬浮球片段库：搜索、插入、`{{变量}}` 填充、Ctrl+/ 开关 |
 | `official-providers` | 数据源类型适配器（custom-http / openai-compatible / console-web），凭据全加密、出厂零预配 |
 | `balance-cards` | 余额卡片（数据源消费样板）：设置页 ZMod 分区汇总展示各数据源余额 |
-
-> Roadmap（未随 v2 首发）：小鲸鱼桌宠与角色换装、多源 Token 配额监控弹窗增强。欢迎 PR。
+| `quota-popover` | 输入框「上下文容量」浮窗追加今日余额卡 + 模型设置页余量总览 |
+| `account-quota` | 官方账号数据源：从客户端自身通道采集账号余量供余额卡消费 |
 
 ## 📄 许可证
 

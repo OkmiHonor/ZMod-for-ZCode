@@ -124,9 +124,18 @@ function deployRuntimeAndPlugins() {
 
   const srcPlugins = path.join(REPO_ROOT, 'plugins');
   if (fs.existsSync(srcPlugins)) {
+    const shipped = new Set();
     for (const ent of fs.readdirSync(srcPlugins, { withFileTypes: true })) {
       if (ent.isDirectory()) {
+        shipped.add(ent.name);
         copyDir(path.join(srcPlugins, ent.name), path.join(getPluginsDir(), ent.name));
+      }
+    }
+    // Mirror sync: plugins dropped from the release must not linger in
+    // existing installs, or removed features keep running after upgrade.
+    for (const ent of fs.readdirSync(getPluginsDir(), { withFileTypes: true })) {
+      if (ent.isDirectory() && !shipped.has(ent.name)) {
+        fs.rmSync(path.join(getPluginsDir(), ent.name), { recursive: true, force: true });
       }
     }
   }
