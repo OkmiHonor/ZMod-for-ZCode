@@ -42,20 +42,23 @@ try {
 }
 `;
 
-export const MAIN_TAIL = (version) => `
+export const MAIN_TAIL = (version, userDataDir) => `
 ;/*${MARKERS.tail} v${version} */
 ;(async () => {
   try {
     const zpath = await import("node:path");
     const zos = await import("node:os");
     const zurl = await import("node:url");
+    // userDataDir 在安装时由 CLI 烧入（数据目录跟随 ZMod 程序目录）；
+    // 环境变量始终可覆盖；烧入值为空时兜底旧版 %APPDATA%/ZMod。
     const ud = process.env.ZMOD_USER_DATA_DIR
       ? zpath.resolve(process.env.ZMOD_USER_DATA_DIR)
-      : process.platform === "win32"
-        ? zpath.join(process.env.APPDATA || zpath.join(zos.homedir(), "AppData", "Roaming"), "ZMod")
-        : process.platform === "darwin"
-          ? zpath.join(zos.homedir(), "Library", "Application Support", "ZMod")
-          : zpath.join(process.env.XDG_CONFIG_HOME || zpath.join(zos.homedir(), ".config"), "zmod");
+      : ${userDataDir ? JSON.stringify(userDataDir) : 'null'}
+        || (process.platform === "win32"
+          ? zpath.join(process.env.APPDATA || zpath.join(zos.homedir(), "AppData", "Roaming"), "ZMod")
+          : process.platform === "darwin"
+            ? zpath.join(zos.homedir(), "Library", "Application Support", "ZMod")
+            : zpath.join(process.env.XDG_CONFIG_HOME || zpath.join(zos.homedir(), ".config"), "zmod"));
     const bootUrl = zurl.pathToFileURL(zpath.join(ud, "runtime", "main", "index.js")).href;
     await import(bootUrl);
   } catch (err) {
@@ -96,7 +99,7 @@ export const PRELOAD_TAIL = (version) => `
 export const RENDERER_TAG = (version) =>
   `<script type="module" src="zmod-local://core/index.js"></script><!--${MARKERS.renderer} v${version} -->`;
 
-export function patchMainSource(src, version) {
+export function patchMainSource(src, version, userDataDir) {
   let out = src;
   let changed = false;
   if (!out.includes(MARKERS.head)) {
@@ -104,7 +107,7 @@ export function patchMainSource(src, version) {
     changed = true;
   }
   if (!out.includes(MARKERS.tail)) {
-    out = out.replace(/\s*$/, '\n') + MAIN_TAIL(version);
+    out = out.replace(/\s*$/, '\n') + MAIN_TAIL(version, userDataDir);
     changed = true;
   }
   return { code: out, changed };

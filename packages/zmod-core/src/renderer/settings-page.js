@@ -803,7 +803,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     if (defs.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'rounded-xl border border-dashed border-border px-4 py-6 text-center text-ui-sm text-foreground-subtle';
-      empty.textContent = '未发现任何插件。将插件放入 %APPDATA%/ZMod/plugins 后重启客户端。';
+      empty.textContent = '未发现任何插件。将插件放入 ZMod 数据目录下的 plugins 子目录后重启客户端。';
       root.appendChild(empty);
       return;
     }

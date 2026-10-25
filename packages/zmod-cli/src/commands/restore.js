@@ -67,5 +67,5 @@ export async function restore(opts = {}) {
       console.log('• 已重新拉起 ZCode（官方纯净版）');
     }
   }
-  console.log('完成。卸载残留清理：可手动删除 %APPDATA%/ZMod 目录。\n');
+  console.log('完成。卸载残留清理：可手动删除 ZMod 目录下的 data 子目录。\n');
 }

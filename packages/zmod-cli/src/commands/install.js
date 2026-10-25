@@ -8,6 +8,7 @@ import { MARKERS, V1_MARKERS, patchMainSource, patchPreloadSource, patchIndexHtm
 import {
   ensureDirectories,
   getUserDataDir,
+  getLegacyUserDataDir,
   getBaseSnapshotPath,
   getPluginsDir,
   getTmpDir,
@@ -61,6 +62,35 @@ export function cleanStaleTmp() {
   }
 }
 
+/**
+ * One-time migration: old releases kept user data in %APPDATA%/ZMod; data now
+ * lives inside the ZMod program dir (<home>/data). Rename when possible,
+ * copy+remove across drives.
+ */
+export function migrateLegacyDataDir() {
+  const legacy = getLegacyUserDataDir();
+  const target = getUserDataDir();
+  if (path.resolve(legacy) === path.resolve(target)) return;
+  if (!fs.existsSync(legacy) || fs.existsSync(target)) return;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  try {
+    fs.renameSync(legacy, target);
+    console.log(`• 用户数据已迁移: ${legacy} → ${target}`);
+  } catch (err) {
+    if (err.code !== 'EXDEV') {
+      console.error(`✖ 旧数据目录迁移失败（${err.message}），继续使用: ${legacy}`);
+      return;
+    }
+    try {
+      fs.cpSync(legacy, target, { recursive: true });
+      fs.rmSync(legacy, { recursive: true, force: true });
+      console.log(`• 用户数据已迁移（跨盘复制）: ${legacy} → ${target}`);
+    } catch (err2) {
+      console.error(`✖ 旧数据目录迁移失败（${err2.message}），继续使用: ${legacy}`);
+    }
+  }
+}
+
 /** Deploy the runtime (main/core/sdk) and official plugins into the user data dir. */
 function deployRuntimeAndPlugins() {
   const userData = getUserDataDir();
@@ -99,6 +129,7 @@ function deployRuntimeAndPlugins() {
 }
 
 export async function install(opts = {}) {
+  migrateLegacyDataDir();
   ensureDirectories();
   teeConsoleTo(path.join(getLogsDir(), 'install-latest.log'));
   console.log(`\n🚀 [ZMod Installer] v${VERSION} — ${new Date().toISOString()}\n`);
@@ -161,7 +192,7 @@ export async function install(opts = {}) {
       }
     }
 
-    const main = patchMainSource(fs.readFileSync(mainPath, 'utf8'), VERSION);
+    const main = patchMainSource(fs.readFileSync(mainPath, 'utf8'), VERSION, getUserDataDir());
     fs.writeFileSync(mainPath, main.code, 'utf8');
     const preload = patchPreloadSource(fs.readFileSync(preloadPath, 'utf8'), VERSION);
     fs.writeFileSync(preloadPath, preload.code, 'utf8');

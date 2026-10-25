@@ -637,7 +637,7 @@ function main() {
       if (defs.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'zmod-mgr-empty';
-        empty.textContent = '未发现任何插件。请检查 %APPDATA%/ZMod/plugins 目录。';
+        empty.textContent = '未发现任何插件。请检查 ZMod 数据目录下的 plugins 子目录。';
         body.appendChild(empty);
         return;
       }
