@@ -6,7 +6,7 @@ import { rpcGateway } from './rpc.js';
 
 export const SCHEME = 'zmod-local';
 
-const MIME = {
+export const MIME = {
   '.js': 'text/javascript',
   '.mjs': 'text/javascript',
   '.css': 'text/css',
@@ -22,7 +22,16 @@ const MIME = {
   '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
   '.map': 'application/json',
-  '.txt': 'text/plain; charset=utf-8'
+  '.txt': 'text/plain; charset=utf-8',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
+  '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.flac': 'audio/flac',
+  '.webm': 'audio/webm',
+  '.opus': 'audio/ogg'
 };
 
 const SDK_IMPORT_RE = /(['"])@zmod\/sdk(?:\/([a-zA-Z0-9_-]+))?\1/g;

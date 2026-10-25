@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import { configManager } from '../common/config.js';
 import { autodetectDatasources } from '../common/autodetect.js';
 import { secretVault } from './vault.js';
-import { getPluginsDir, getUserDataDir } from '../common/paths.js';
+import { getPluginsDir, getUserDataDir, getPluginDataDir } from '../common/paths.js';
 import { readInstalled } from '../common/installed.js';
 import { registerPluginHost } from './plugin-host.js';
+import { registerPluginAssetApi } from './plugin-assets.js';
+import { notificationTapStatus } from './notifications.js';
 
 let electron = null;
 try {
@@ -296,7 +298,9 @@ class RpcGateway {
     });
 
     // ---- Plugin asset access (fetch() cannot read zmod-local:// URLs) ----
-    this.register('plugin.readAsset', async ({ pluginId, relPath }) => {
+    // scope 'plugin' (default) reads <plugins>/<id>/, scope 'data' reads the
+    // update-surviving <plugin-data>/<id>/ written via plugin.writeAsset.
+    this.register('plugin.readAsset', async ({ pluginId, relPath, scope }) => {
       if (!/^[a-zA-Z0-9_-]+$/.test(String(pluginId || ''))) {
         return { ok: false, error: 'Invalid plugin id' };
       }
@@ -305,8 +309,9 @@ class RpcGateway {
         .replace(/\.\.+/g, '')
         .replace(/^\/+/, '');
       if (!clean || /[\0:<>"|?*]/.test(clean)) return { ok: false, error: 'Invalid path' };
-      const file = path.join(getPluginsDir(), pluginId, clean);
-      const root = path.resolve(path.join(getPluginsDir(), pluginId));
+      const base = scope === 'data' ? getPluginDataDir(pluginId) : path.join(getPluginsDir(), pluginId);
+      const root = path.resolve(base);
+      const file = path.join(base, clean);
       if (!path.resolve(file).startsWith(root + path.sep)) {
         return { ok: false, error: 'Path escapes plugin dir' };
       }
@@ -326,6 +331,9 @@ class RpcGateway {
     this.register('telemetry.tapStatus', async () => ({
       installed: telemetryTapInstalled
     }));
+
+    // ---- Notification tap (official send-style task notifications) ----
+    this.register('notification.tapStatus', async () => notificationTapStatus());
 
     // ---- Plugin discovery + plugin host (install/remove/update/marketplace) ----
     this.register('plugins.discover', async () => {
@@ -367,6 +375,9 @@ class RpcGateway {
     });
 
     registerPluginHost(this);
+
+    // ---- Plugin persistent data dir assets (survive plugin updates) ----
+    registerPluginAssetApi({ register: (method, handler) => this.register(method, handler) });
   }
 
   _toggleMainWindow() {

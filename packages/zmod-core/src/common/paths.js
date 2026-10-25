@@ -96,6 +96,11 @@ export function getTmpDir() {
   return path.join(getUserDataDir(), 'tmp');
 }
 
+/** 插件专属持久数据目录（插件更新/卸载均不清除），懒创建，不入 ensureDirectories。 */
+export function getPluginDataDir(pluginId) {
+  return path.join(getUserDataDir(), 'plugin-data', pluginId);
+}
+
 export function ensureDirectories() {
   const dirs = [
     getUserDataDir(),

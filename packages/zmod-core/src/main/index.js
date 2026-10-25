@@ -1,5 +1,6 @@
 import { registerPrivileges, registerProtocolHandler } from './protocol.js';
 import { rpcGateway, installTelemetryTap } from './rpc.js';
+import { installNotificationTap } from './notifications.js';
 import { ensureDirectories } from '../common/paths.js';
 
 let electronApp = null;
@@ -44,6 +45,11 @@ export function bootstrap() {
       // shortly after in case it is not there yet.
       if (!installTelemetryTap()) {
         setTimeout(() => installTelemetryTap(), 3000).unref?.();
+      }
+      // Notification tap rides a send-style channel; retry covers the case
+      // where the official renderer registers it after our first attempt.
+      if (!installNotificationTap()) {
+        setTimeout(() => installNotificationTap(), 3000).unref?.();
       }
       console.log('[ZMod:Core] main runtime ready');
     })

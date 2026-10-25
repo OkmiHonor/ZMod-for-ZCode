@@ -6,7 +6,9 @@ import os from 'node:os';
 const tempDir = path.join(os.tmpdir(), `zmod-protocol-test-${Date.now()}`);
 process.env.ZMOD_USER_DATA_DIR = tempDir;
 
-const { resolveHostFile, rewriteSdkSpecifiers, SCHEME } = await import('../src/main/protocol.js');
+const { resolveHostFile, rewriteSdkSpecifiers, SCHEME, MIME } = await import(
+  '../src/main/protocol.js'
+);
 
 test('protocol security & routing suite', async (t) => {
   await t.test('core host maps into runtime/core', () => {
@@ -46,5 +48,17 @@ test('protocol security & routing suite', async (t) => {
     assert.ok(out.includes(`from "${SCHEME}://sdk/schema.js"`), out);
     // plain strings are rewritten too — acceptable: the specifier is reserved
     assert.ok(!out.includes("'@zmod/sdk'"));
+  });
+
+  await t.test('audio MIME mappings cover notification sound assets', () => {
+    assert.equal(MIME['.mp3'], 'audio/mpeg');
+    assert.equal(MIME['.ogg'], 'audio/ogg');
+    assert.equal(MIME['.oga'], 'audio/ogg');
+    assert.equal(MIME['.wav'], 'audio/wav');
+    assert.equal(MIME['.m4a'], 'audio/mp4');
+    assert.equal(MIME['.aac'], 'audio/aac');
+    assert.equal(MIME['.flac'], 'audio/flac');
+    assert.equal(MIME['.webm'], 'audio/webm');
+    assert.equal(MIME['.opus'], 'audio/ogg');
   });
 });
