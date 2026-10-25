@@ -969,8 +969,9 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     if (instances.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'rounded-xl border border-dashed border-border px-4 py-6 text-center text-ui-sm text-foreground-subtle';
-      empty.textContent = '还没有数据源。点击右上角「添加数据源」接入第一个账号 / 网关。';
+      empty.textContent = '还没有数据源。点击右上角「添加数据源」，或接入下方检测到的账号。';
       root.appendChild(empty);
+      await renderAutodetectSection(root, providers);
       return;
     }
 
