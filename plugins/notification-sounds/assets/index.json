@@ -1,0 +1,22 @@
+{
+  "sounds": [
+    {
+      "id": "builtin:pop",
+      "name": "弹跳 Pop",
+      "file": "assets/pop.wav",
+      "durationMs": 140
+    },
+    {
+      "id": "builtin:ding",
+      "name": "清脆 Ding",
+      "file": "assets/ding.wav",
+      "durationMs": 600
+    },
+    {
+      "id": "builtin:chime",
+      "name": "柔和风铃 Chime",
+      "file": "assets/chime.wav",
+      "durationMs": 900
+    }
+  ]
+}

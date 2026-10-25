@@ -1,0 +1,9 @@
+{
+  "id": "notification-sounds",
+  "name": "通知声音管理",
+  "version": "0.1.0",
+  "description": "接管 ZCode 任务通知声音：音量调节、音色切换、导入自有音频、分事件配音、试听",
+  "author": "ZMod Team",
+  "category": "productivity",
+  "engine": { "zmod": ">=1.1.0-beta" }
+}
