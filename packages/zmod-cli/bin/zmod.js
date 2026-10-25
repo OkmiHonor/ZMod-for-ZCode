@@ -71,7 +71,13 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('\n[ZMod CLI Error]:', err?.stack || err?.message || err);
-  process.exit(1);
-});
+// 命令完成后强制退出：以 ELECTRON_RUN_AS_NODE（宿主当 Node）运行时，
+// Electron 的后台句柄（crashpad 等）可能让进程在脚本结束后仍不退出，
+// 外层 cmd / NSIS ExecWait 会一直等待，表现为"输出已完成但窗口不关"。
+main().then(
+  () => process.exit(process.exitCode || 0),
+  (err) => {
+    console.error('\n[ZMod CLI Error]:', err?.stack || err?.message || err);
+    process.exit(1);
+  }
+);
