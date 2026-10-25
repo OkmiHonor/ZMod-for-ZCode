@@ -359,6 +359,165 @@ test('install: 无效 source 形态报错', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// plugin.installUpload（设置页拖放安装管线）
+// ---------------------------------------------------------------------------
+
+test('installUpload: zip 成功 —— 默认 enabled=false + 记账 drop 来源 + 广播 installed + tmp 回收', async (t) => {
+  const srcDir = path.join(root, 'fixture-src', 'drop-zip-plugin');
+  makeFixturePlugin(srcDir, { id: 'drop-zip-plugin', version: '1.2.0' });
+  const zipBuf = makeZip(srcDir);
+  if (!zipBuf) return t.skip('系统 tar 无法创建 zip');
+
+  const { deps, broadcasts } = makeDeps();
+  moveDataDirUnderAnchor(deps);
+  const gw = makeGateway();
+  registerPluginHost(gw, { ...deps });
+
+  const r = await gw.dispatch('plugin.installUpload', {
+    kind: 'zip',
+    name: 'drop-zip-plugin.zip',
+    zipBase64: zipBuf.toString('base64')
+  });
+  assert.deepEqual({ ok: r.ok, id: r.id, version: r.version }, { ok: true, id: 'drop-zip-plugin', version: '1.2.0' });
+  assert.equal(
+    fs.readFileSync(path.join(deps.dataDir, 'plugins', 'drop-zip-plugin', 'index.js'), 'utf8'),
+    'export default {};\n'
+  );
+  const entry = getInstalledEntry(deps.dataDir, 'drop-zip-plugin');
+  assert.equal(entry.source, 'zip');
+  assert.equal(entry.sourceRef, 'drop:drop-zip-plugin.zip');
+  assert.equal(entry.shasum, sha256(zipBuf));
+  assert.equal(
+    configManager.get().plugins['drop-zip-plugin']?.enabled,
+    false,
+    '拖放安装默认未启用，必须进未启用区等用户确认'
+  );
+  assert.equal(broadcasts.length, 1);
+  assert.equal(broadcasts[0].action, 'installed');
+  assert.equal(broadcasts[0].id, 'drop-zip-plugin');
+  assert.deepEqual(fs.readdirSync(path.join(deps.dataDir, 'tmp')), [], '临时 holder 已回收');
+  fs.rmSync(deps.dataDir, { recursive: true, force: true });
+});
+
+test('installUpload: files 成功 —— 根级 manifest/index 落盘 + 记账 dir + 默认 enabled=false', async () => {
+  const { deps, broadcasts } = makeDeps();
+  moveDataDirUnderAnchor(deps);
+  const gw = makeGateway();
+  registerPluginHost(gw, { ...deps });
+
+  const manifest = {
+    id: 'drop-files-plugin',
+    name: 'Fixture drop-files-plugin',
+    version: '0.3.0',
+    description: 'fixture 插件',
+    author: 'test'
+  };
+  const r = await gw.dispatch('plugin.installUpload', {
+    kind: 'files',
+    name: 'drop-files-plugin',
+    files: [
+      { path: 'manifest.json', b64: Buffer.from(JSON.stringify(manifest)).toString('base64') },
+      { path: 'index.js', b64: Buffer.from('export default {};\n').toString('base64') },
+      { path: 'lib/util.js', b64: Buffer.from('export const x = 1;\n').toString('base64') }
+    ]
+  });
+  assert.deepEqual({ ok: r.ok, id: r.id, version: r.version }, { ok: true, id: 'drop-files-plugin', version: '0.3.0' });
+  assert.equal(
+    fs.readFileSync(path.join(deps.dataDir, 'plugins', 'drop-files-plugin', 'lib', 'util.js'), 'utf8'),
+    'export const x = 1;\n',
+    '子目录文件相对路径落盘'
+  );
+  const entry = getInstalledEntry(deps.dataDir, 'drop-files-plugin');
+  assert.equal(entry.source, 'dir');
+  assert.equal(entry.sourceRef, 'drop:drop-files-plugin');
+  assert.equal(configManager.get().plugins['drop-files-plugin']?.enabled, false, '默认未启用');
+  assert.equal(broadcasts.length, 1);
+  assert.equal(broadcasts[0].action, 'installed');
+  fs.rmSync(deps.dataDir, { recursive: true, force: true });
+});
+
+test('installUpload: files 缺根级 manifest.json → 拒绝且不落盘', async () => {
+  const { deps, broadcasts } = makeDeps();
+  moveDataDirUnderAnchor(deps);
+  const gw = makeGateway();
+  registerPluginHost(gw, { ...deps });
+
+  const r = await gw.dispatch('plugin.installUpload', {
+    kind: 'files',
+    name: 'no-manifest',
+    files: [{ path: 'index.js', b64: Buffer.from('export default {};\n').toString('base64') }]
+  });
+  assert.equal(r.ok, false);
+  assert.ok(r.error.includes('manifest'), r.error);
+  assert.equal(fs.existsSync(path.join(deps.dataDir, 'plugins', 'no-manifest')), false, '不落盘');
+  assert.deepEqual(broadcasts, []);
+  fs.rmSync(deps.dataDir, { recursive: true, force: true });
+});
+
+test('installUpload: files 路径穿越与绝对路径 → 拒绝', async () => {
+  const { deps } = makeDeps();
+  moveDataDirUnderAnchor(deps);
+  const gw = makeGateway();
+  registerPluginHost(gw, { ...deps });
+
+  const manifest = {
+    id: 'evil-plugin',
+    name: 'evil',
+    version: '1.0.0',
+    description: 'x',
+    author: 'test'
+  };
+  const mB64 = Buffer.from(JSON.stringify(manifest)).toString('base64');
+  const iB64 = Buffer.from('export default {};\n').toString('base64');
+
+  const trav = await gw.dispatch('plugin.installUpload', {
+    kind: 'files',
+    name: 'evil',
+    files: [
+      { path: 'manifest.json', b64: mB64 },
+      { path: 'index.js', b64: iB64 },
+      { path: '../evil.js', b64: iB64 }
+    ]
+  });
+  assert.equal(trav.ok, false);
+  assert.ok(trav.error.includes('..'), trav.error);
+
+  const abs = await gw.dispatch('plugin.installUpload', {
+    kind: 'files',
+    name: 'evil',
+    files: [
+      { path: 'manifest.json', b64: mB64 },
+      { path: 'index.js', b64: iB64 },
+      { path: 'C:/Windows/evil.js', b64: iB64 }
+    ]
+  });
+  assert.equal(abs.ok, false);
+  assert.ok(abs.error.includes('绝对路径'), abs.error);
+  assert.equal(fs.existsSync(path.join(deps.dataDir, 'plugins', 'evil-plugin')), false, '两种形态均不落盘');
+  fs.rmSync(deps.dataDir, { recursive: true, force: true });
+});
+
+test('installUpload: 解码后超 20MB → 拒绝', async () => {
+  const { deps } = makeDeps();
+  moveDataDirUnderAnchor(deps);
+  const gw = makeGateway();
+  registerPluginHost(gw, { ...deps });
+
+  const big = Buffer.alloc(20 * 1024 * 1024 + 1);
+  const r = await gw.dispatch('plugin.installUpload', {
+    kind: 'zip',
+    name: 'huge.zip',
+    zipBase64: big.toString('base64')
+  });
+  assert.equal(r.ok, false);
+  assert.ok(r.error.includes('过大'), r.error);
+  const tmpDir = path.join(deps.dataDir, 'tmp');
+  const tmpEmpty = !fs.existsSync(tmpDir) || fs.readdirSync(tmpDir).length === 0;
+  assert.equal(tmpEmpty, true, '拒绝路径不产生临时目录残留');
+  fs.rmSync(deps.dataDir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
 // plugin.remove
 // ---------------------------------------------------------------------------
 

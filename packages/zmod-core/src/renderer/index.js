@@ -652,7 +652,7 @@ function main() {
       this._root?.style.display === 'flex' ? this.close() : this.open();
     }
 
-    open() {
+    open(tab) {
       if (!this._root) {
         this._ui.injectStyle('zmod-v2-manager', PANEL_CSS);
         this._root = document.createElement('div');
@@ -662,6 +662,12 @@ function main() {
           if (e.target === this._root) this.close();
         });
         document.body.appendChild(this._root);
+      }
+      // tab 直达（如设置页「添加插件」→ market）：进市场且无数据时顺带拉取
+      if (tab === 'market' && this._tab !== 'market') {
+        this._tab = 'market';
+        this._settingsFor = null;
+        if (!this._marketData && !this._marketLoading && !this._marketError) this._loadMarket();
       }
       // theme variables on the panel root so host theme changes just work on reopen
       const light = this._isLightTheme();
@@ -1256,7 +1262,7 @@ function main() {
     api,
     datasources: dataSourceRegistry,
     settingsPage,
-    openManager: () => panel.open()
+    openManager: (tab) => panel.open(tab)
   };
 
   const panelKeys = (e) => {

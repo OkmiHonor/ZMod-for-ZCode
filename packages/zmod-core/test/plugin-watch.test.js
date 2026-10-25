@@ -181,7 +181,7 @@ test('suppress: 窗口内自写事件跳过（不广播不记账），窗口外�
 // 目录投放
 // ---------------------------------------------------------------------------
 
-test('新目录: 合法 manifest → installed 广播 + 记账 dir + 默认启用 + 快照更新', async () => {
+test('新目录: 合法 manifest → installed 广播 + 记账 dir + 默认未启用 + 快照更新', async () => {
   const env = setupWatch();
   const dir = path.join(env.pluginsDir, 'drop-dir');
   makeFixturePlugin(dir, { id: 'drop-dir', version: '1.0.0' });
@@ -198,7 +198,7 @@ test('新目录: 合法 manifest → installed 广播 + 记账 dir + 默认启�
   assert.equal(entry.source, 'dir');
   assert.equal(entry.sourceRef, 'watch:drop-dir');
   assert.equal(entry.version, '1.0.0');
-  assert.equal(configManager.get().plugins['drop-dir']?.enabled, true, 'watch 安装默认启用');
+  assert.equal(configManager.get().plugins['drop-dir']?.enabled, false, 'watch 安装默认未启用');
   assert.equal(hooks.state.known.has('drop-dir'), true, '快照已收录');
   cleanup(env);
 });
@@ -304,7 +304,7 @@ test('zip: 成功链路 → 落盘 + zip 被删 + 记账 zip(含 sha256) + 广�
   assert.equal(entry.source, 'zip');
   assert.equal(entry.sourceRef, 'watch:cooler.zip');
   assert.equal(entry.shasum, sha256(zipBuf));
-  assert.equal(configManager.get().plugins.cooler?.enabled, true);
+  assert.equal(configManager.get().plugins.cooler?.enabled, false, 'watch zip 安装默认未启用');
   assert.deepEqual(fs.readdirSync(path.join(env.dataDir, 'tmp')), [], 'holder 临时目录已回收');
   fs.rmSync(path.dirname(srcDir), { recursive: true, force: true });
   cleanup(env);

@@ -57,6 +57,78 @@ function esc(s) {
   })[c]);
 }
 
+/* ------------------------------------------------------------------ *
+ * 拖放安装纯函数（export 供 Node 单测离线验证，无 DOM 依赖）
+ * ------------------------------------------------------------------ */
+
+/** 递归收集时跳过的目录名（依赖噪声，不属于插件本体）。 */
+export const DROP_SKIP_DIR_NAMES = ['node_modules', '.git'];
+
+/** 渲染层预检的插件包总量上限（主进程 plugin.installUpload 还有同值兜底）。 */
+export const DROP_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+
+/** ArrayBuffer → base64：按 32KB 分块 String.fromCharCode，避免大文件爆栈。 */
+export function arrayBufferToBase64(buf) {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  const CHUNK = 0x8000;
+  let out = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    out += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(out);
+}
+
+/**
+ * 递归展开 webkitGetAsEntry 目录树，收集 [{path,b64}] 文件清单。
+ * entry 只需实现 {isDirectory,isFile,name,file(cb[,errCb]),createReader()} 协议，
+ * createReader() 返回 {readEntries(ok[,errCb])}（每批若干条，空批即尽）——
+ * 真实 File System API 与 mock 树同协议。
+ * - 跳过 DROP_SKIP_DIR_NAMES 目录；
+ * - 累计字节数超过 maxBytes 抛 {code:'DROP_TOO_LARGE'}；
+ * - 单个条目读取失败走 onError 旁路（默认吞掉）继续收集其余文件。
+ */
+export async function collectFilesFromEntry(entry, { maxBytes = DROP_MAX_TOTAL_BYTES, onError } = {}) {
+  const files = [];
+  let total = 0;
+  const walk = async (ent, prefix) => {
+    if (ent.isDirectory) {
+      if (DROP_SKIP_DIR_NAMES.includes(ent.name)) return;
+      const reader = ent.createReader();
+      for (;;) {
+        const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+        if (!batch || batch.length === 0) break;
+        for (const child of batch) {
+          try {
+            await walk(child, prefix ? `${prefix}/${child.name}` : child.name);
+          } catch (err) {
+            if (err?.code === 'DROP_TOO_LARGE') throw err;
+            try { onError?.(err); } catch {}
+          }
+        }
+      }
+      return;
+    }
+    if (ent.isFile) {
+      const file = await new Promise((resolve, reject) => ent.file(resolve, reject));
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      total += bytes.length;
+      if (total > maxBytes) {
+        const err = new Error(`插件包过大（> ${(maxBytes / 1024 / 1024).toFixed(0)}MB 上限）`);
+        err.code = 'DROP_TOO_LARGE';
+        throw err;
+      }
+      files.push({ path: prefix || ent.name, b64: arrayBufferToBase64(bytes) });
+    }
+  };
+  try {
+    await walk(entry, '');
+  } catch (err) {
+    if (err?.code === 'DROP_TOO_LARGE') throw err;
+    try { onError?.(err); } catch {}
+  }
+  return files;
+}
+
 /* Official nav item classes, verbatim from the host settings sidebar. */
 const NAV_BTN_BASE =
   'flex h-8 w-full items-center gap-2 rounded-xl px-2.5 text-left transition-colors ' +
@@ -801,40 +873,166 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
 
   /**
    * 已装插件管理区（设置页是插件管理主入口，浮动面板只是保底）。
-   * 结构沿用数据源页范式：小标题 + 行卡（rounded-xl border bg-surface）、
-   * 官方 Switch、textButton 操作列；移除走行下内联确认条。
+   * 区头 flex 行：左标题 + 右「添加插件」（开浮动面板市场 tab）。
+   * 行卡按启用状态分两组：「已启用 (N)」普通分组；「未启用 (N) · 拖入即装」
+   * 是虚线 dropzone，拖 .zip/插件文件夹进来走 plugin.installUpload 安装
+   * （默认未启用），列表刷新由 zmod:plugin-changed 广播驱动。
    */
   function renderInstalledPluginsSection(root) {
     const defs = registry.getAll();
+    const enabledDefs = defs.filter((d) => registry.isActive(d.id));
+    const disabledDefs = defs.filter((d) => !registry.isActive(d.id));
 
     const section = document.createElement('section');
     section.className = 'flex flex-col gap-3';
+
+    // 区头：左标题 + 右操作
     const header = document.createElement('div');
-    header.className = 'flex flex-col gap-0.5';
+    header.className = 'flex items-center justify-between gap-3';
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'flex min-w-0 flex-col gap-0.5';
     const h3 = document.createElement('h3');
     h3.className = 'text-ui-sm font-medium text-foreground-subtle';
     h3.textContent = `已装插件 (${defs.length})`;
-    header.appendChild(h3);
+    titleWrap.appendChild(h3);
     const desc = document.createElement('div');
     desc.className = 'text-ui-xs text-foreground-subtle/80';
     desc.textContent = '开关与设置即时生效；移除后配置保留，重新安装默认启用。';
-    header.appendChild(desc);
+    titleWrap.appendChild(desc);
+    header.appendChild(titleWrap);
+    header.appendChild(makeAddPluginButton());
     section.appendChild(header);
-    root.appendChild(section);
 
-    if (defs.length === 0) {
+    // 已启用组：普通分组（无外框），行卡与确认条/设置表单跟随
+    const enabledGroup = document.createElement('div');
+    enabledGroup.className = 'flex flex-col gap-2';
+    enabledGroup.appendChild(groupLabel(`已启用 (${enabledDefs.length})`));
+    if (enabledDefs.length === 0) {
       const empty = document.createElement('div');
-      empty.className = 'rounded-xl border border-dashed border-border px-4 py-6 text-center text-ui-sm text-foreground-subtle';
-      empty.textContent = '暂无插件';
-      section.appendChild(empty);
-      return;
+      empty.className = 'py-1 text-ui-sm text-foreground-subtle/70';
+      empty.textContent = '暂无已启用插件';
+      enabledGroup.appendChild(empty);
+    }
+    for (const def of enabledDefs) {
+      enabledGroup.appendChild(installedPluginRow(def));
+      if (confirmRemoveId === def.id) enabledGroup.appendChild(removeConfirmBar(def));
+      if (settingsOpenId === def.id) enabledGroup.appendChild(pluginSettingsForm(def));
+    }
+    section.appendChild(enabledGroup);
+
+    // 未启用组：虚线 dropzone（空态也保留容器 + 提示行）
+    section.appendChild(buildDisabledDropzone(disabledDefs));
+    root.appendChild(section);
+  }
+
+  function groupLabel(text) {
+    const el = document.createElement('h3');
+    el.className = 'text-ui-sm font-medium text-foreground-subtle';
+    el.textContent = text;
+    return el;
+  }
+
+  /** 区头右侧按钮：打开浮动面板并直跳市场 tab；全局缺失时降级快捷键提示。 */
+  function makeAddPluginButton() {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = OFFICIAL_PRIMARY_BTN;
+    btn.textContent = '+ 添加插件';
+    btn.addEventListener('click', () => {
+      if (typeof window.ZMod?.openManager === 'function') {
+        window.ZMod.openManager('market');
+      } else {
+        ui.showToast('按 Ctrl+Shift+M 打开面板', 'warn');
+      }
+    });
+    return btn;
+  }
+
+  /** 未启用分组：虚线容器 + 顶部提示行 + 行卡；同时是拖放安装的 dropzone。 */
+  function buildDisabledDropzone(disabledDefs) {
+    const zone = document.createElement('div');
+    zone.className = 'flex flex-col gap-2 rounded-xl border border-dashed border-border p-2.5';
+    zone.appendChild(groupLabel(`未启用 (${disabledDefs.length}) · 拖入即装`));
+    const hint = document.createElement('div');
+    hint.className = 'text-ui-xs text-foreground-subtle text-center';
+    const HINT_TEXT = '拖入 .zip 或插件文件夹,松手自动安装 · 新插件默认未启用,确认后再开启';
+    hint.textContent = HINT_TEXT;
+    zone.appendChild(hint);
+
+    if (disabledDefs.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'py-3 text-center text-ui-sm text-foreground-subtle/70';
+      empty.textContent = '暂无未启用插件';
+      zone.appendChild(empty);
+    }
+    for (const def of disabledDefs) {
+      zone.appendChild(installedPluginRow(def));
+      if (confirmRemoveId === def.id) zone.appendChild(removeConfirmBar(def));
+      if (settingsOpenId === def.id) zone.appendChild(pluginSettingsForm(def));
     }
 
-    for (const def of defs) {
-      section.appendChild(installedPluginRow(def));
-      if (confirmRemoveId === def.id) section.appendChild(removeConfirmBar(def));
-      if (settingsOpenId === def.id) section.appendChild(pluginSettingsForm(def));
-    }
+    // 拖放接线：高亮用主题 token 内联样式（追加的 Tailwind 类未必在宿主 bundle 生成过）；
+    // dragenter/dragleave 在子元素间跳动，用进入计数消除高亮闪烁。
+    const HIGHLIGHT_BORDER = 'var(--color-primary, #3b82f6)';
+    const HIGHLIGHT_BG = 'color-mix(in srgb, var(--color-primary, #3b82f6) 6%, transparent)';
+    let depth = 0;
+    const highlight = () => {
+      zone.style.borderColor = HIGHLIGHT_BORDER;
+      zone.style.background = HIGHLIGHT_BG;
+    };
+    const unhighlight = () => {
+      zone.style.borderColor = '';
+      zone.style.background = '';
+    };
+    const setBusy = (busy) => {
+      if (hint.isConnected) hint.textContent = busy ? '校验安装中…' : HINT_TEXT;
+    };
+
+    zone.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      depth += 1;
+      highlight();
+    });
+    zone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    });
+    zone.addEventListener('dragleave', () => {
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) unhighlight();
+    });
+    zone.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      depth = 0;
+      unhighlight();
+      const dt = e.dataTransfer;
+      try {
+        const file = dt?.files?.[0];
+        if (file && /\.zip$/i.test(file.name)) {
+          setBusy(true);
+          const zipBase64 = arrayBufferToBase64(await file.arrayBuffer());
+          const res = await api.invoke('plugin.installUpload', { kind: 'zip', name: file.name, zipBase64 });
+          ui.showToast(res && res.ok ? '已安装到未启用区(默认未启用)' : (res && res.error) || '安装失败', res && res.ok ? 'success' : 'error');
+          return;
+        }
+        const entry = dt?.items?.[0]?.webkitGetAsEntry?.();
+        if (entry && entry.isDirectory) {
+          setBusy(true);
+          const files = await collectFilesFromEntry(entry);
+          const res = await api.invoke('plugin.installUpload', { kind: 'files', name: entry.name, files });
+          ui.showToast(res && res.ok ? '已安装到未启用区(默认未启用)' : (res && res.error) || '安装失败', res && res.ok ? 'success' : 'error');
+          return;
+        }
+        ui.showToast('仅支持 .zip 或插件文件夹', 'warn');
+      } catch (err) {
+        if (err?.code === 'DROP_TOO_LARGE') ui.showToast('插件包过大', 'warn');
+        else ui.showToast(`安装失败：${err?.message || err}`, 'error');
+      } finally {
+        setBusy(false); // 成功时列表刷新由 plugin-changed 广播驱动，这里的重绘只是兜底
+        renderContent();
+      }
+    });
+    return zone;
   }
 
   function installedPluginRow(def) {

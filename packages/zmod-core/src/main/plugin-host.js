@@ -52,6 +52,8 @@ const REGISTRY_TTL_MS = 10 * 60 * 1000;
 const REGISTRY_TIMEOUT_MS = 15000;
 const DOWNLOAD_TIMEOUT_MS = 60000;
 const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
+// 拖放安装（渲染层 zip/文件夹上传 + 目录投放共用）单包上限
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 const REMOVE_RETRY_PASSES = 2;
 const REMOVE_RETRY_DELAY_MS = 600;
 
@@ -75,6 +77,10 @@ function timedFetch(fetchImpl, url, timeoutMs) {
 
 function sha256File(filePath) {
   return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+function sha256Buf(buf) {
+  return createHash('sha256').update(buf).digest('hex');
 }
 
 // System32 的 tar（bsdtar）解 zip：避免 Git Bash/MSYS 环境抓到把 "C:\" 当远程
@@ -366,7 +372,8 @@ async function materializeInstalled(deps, src, { mode }) {
     sourceRef: src.sourceRef || '',
     shasum: src.shasum || ''
   });
-  configManager.setPluginEnabled(id, true);
+  // update 分支不得覆写用户现有开关状态；install 分支保持"市场重装默认启用"
+  if (mode === 'install') configManager.setPluginEnabled(id, true);
   deps.broadcastImpl({
     action: mode === 'update' ? 'updated' : 'installed',
     id,
@@ -374,6 +381,78 @@ async function materializeInstalled(deps, src, { mode }) {
     manifest
   });
   return { id, version: typeof manifest.version === 'string' ? manifest.version : '' };
+}
+
+// ---------------------------------------------------------------------------
+// 拖放安装共用管线（watch 目录/zip 投放 与 plugin.installUpload RPC 共用）
+// ---------------------------------------------------------------------------
+
+/** 拖放来源的 manifest 校验（可解析 + schema + engine），失败抛错。label 只用于错误信息前缀。 */
+function validateDropManifest(dir, dataDir, label) {
+  const manifest = readManifest(dir);
+  if (!manifest || typeof manifest !== 'object') {
+    throw new Error(`${label} 的 manifest.json 无法解析`);
+  }
+  const schema = validateManifestSchema?.(manifest);
+  if (!schema || !schema.ok) {
+    throw new Error(`${label} manifest 校验失败: ${schema ? schema.errors.join('; ') : '校验模块不可达'}`);
+  }
+  const engine = checkEngine?.(manifest, {
+    zmodVersion: readZmodVersion(dataDir),
+    hostVersion: hostVersion()
+  });
+  if (!engine || !engine.ok) {
+    throw new Error(`${label} 引擎不兼容: ${engine ? engine.reasons.join('; ') : '校验模块不可达'}`);
+  }
+  return manifest;
+}
+
+/**
+ * 校验通过后的落盘 + 记账 + 广播（watch 投放与 installUpload 共用核心段）：
+ * 已装拒装 → suppress → cpSync 到 plugins/<id> → 记账 → 默认未启用 → installed 广播。
+ * 拖放安装一律 setPluginEnabled(id,false)：装到"未启用区"，用户确认后再开启。
+ * inPlace: watch 目录投放时内容已在 plugins/<id> 原位 —— 跳过占用检查与拷贝。
+ * 返回 { id, version }；失败抛错（watch 调用方自吞，RPC 调用方包装 ok:false）。
+ */
+function materializeDrop(deps, { dir, manifest, source, sourceRef, shasum, inPlace = false }) {
+  const id = manifest.id;
+  const dest = path.join(deps.pluginsDir, id);
+  if (!inPlace) {
+    if (fs.existsSync(dest)) {
+      throw new Error(`插件 ${id} 已安装,请先移除再投放`);
+    }
+    suppressInstallTarget(id); // 自写忽略：落盘事件不重复处理
+    fs.mkdirSync(deps.pluginsDir, { recursive: true });
+    fs.cpSync(dir, dest, { recursive: true });
+  }
+  // inPlace（watch 目录投放）：内容本已在位，事件已被消费，不额外开抑制窗口
+  recordInstalled(deps.dataDir, id, {
+    version: typeof manifest.version === 'string' ? manifest.version : '',
+    source,
+    sourceRef: sourceRef || '',
+    shasum: shasum || ''
+  });
+  configManager.setPluginEnabled(id, false);
+  deps.broadcastImpl({
+    action: 'installed',
+    id,
+    entryUrl: entryUrlFor(deps.pluginsDir, id, manifest),
+    manifest
+  });
+  return { id, version: typeof manifest.version === 'string' ? manifest.version : '' };
+}
+
+/** installUpload files 形态的路径清洗：拒绝绝对路径与 ..，返回规范化（/ 分隔）相对路径。 */
+function sanitizeDropRelPath(rawPath) {
+  const p = String(rawPath || '').replace(/\\/g, '/');
+  if (!p || p.startsWith('/') || /^[a-zA-Z]:/.test(p) || p.startsWith('\\\\')) {
+    throw new Error(`非法文件路径（拒绝绝对路径）: ${JSON.stringify(rawPath)}`);
+  }
+  const segs = p.split('/');
+  if (segs.some((s) => s === '..')) {
+    throw new Error(`非法文件路径（拒绝 ..）: ${JSON.stringify(rawPath)}`);
+  }
+  return segs.join('/');
 }
 
 // ---------------------------------------------------------------------------
@@ -507,71 +586,49 @@ async function processWatchTarget(target) {
   }
 }
 
-/** 目录投放：manifest schema + engine 校验 → 无记录则记账广播 installed，有记录则刷新广播 updated。 */
+/** 目录投放：共用管线校验+落盘；账本已有该 id 则走 updated 分支（保留原 source，不动开关状态）。 */
 function handleDirDrop(dirname, full) {
   const st = dirWatch;
   if (!fs.existsSync(path.join(full, 'manifest.json')) || !fs.existsSync(path.join(full, 'index.js'))) {
     rescheduleTarget(dirname);
     return;
   }
-  const manifest = readManifest(full);
-  if (!manifest || typeof manifest !== 'object') {
-    warnWatch(`目录 ${dirname} 的 manifest.json 无法解析，忽略`);
-    return;
+  try {
+    const manifest = validateDropManifest(full, st.dataDir, `目录 ${dirname}`);
+    const id = manifest.id;
+    if (id !== dirname) {
+      // 渲染层 discover 以目录名为插件 id，目录名与 manifest.id 不一致必然装载错位
+      warnWatch(`目录名 (${dirname}) 与 manifest.id (${id}) 不一致，忽略`);
+      return;
+    }
+    const entry = getInstalledEntry(st.dataDir, id);
+    if (entry) {
+      // 升级/内容刷新：目录内容已在位，只刷新账本并广播 updated（保留原 source 与 installedAt）
+      recordInstalled(st.dataDir, id, {
+        ...entry,
+        version: typeof manifest.version === 'string' ? manifest.version : entry.version,
+        installedAt: entry.installedAt
+      });
+      st.known.add(id);
+      st.broadcastImpl({
+        action: 'updated',
+        id,
+        entryUrl: entryUrlFor(st.pluginsDir, id, manifest),
+        manifest
+      });
+      return;
+    }
+    const res = materializeDrop(
+      { dataDir: st.dataDir, pluginsDir: st.pluginsDir, broadcastImpl: st.broadcastImpl },
+      { dir: full, manifest, source: 'dir', sourceRef: `watch:${dirname}`, shasum: '', inPlace: true }
+    );
+    st.known.add(res.id);
+  } catch (err) {
+    warnWatch(`目录 ${dirname} 投放处理失败，忽略: ${err?.message || err}`);
   }
-  const schema = validateManifestSchema?.(manifest);
-  if (!schema || !schema.ok) {
-    warnWatch(`目录 ${dirname} manifest 校验失败，忽略: ${schema ? schema.errors.join('; ') : '校验模块不可达'}`);
-    return;
-  }
-  const engine = checkEngine?.(manifest, {
-    zmodVersion: readZmodVersion(st.dataDir),
-    hostVersion: hostVersion()
-  });
-  if (!engine || !engine.ok) {
-    warnWatch(`目录 ${dirname} 引擎不兼容，忽略: ${engine ? engine.reasons.join('; ') : '校验模块不可达'}`);
-    return;
-  }
-  const id = manifest.id;
-  if (id !== dirname) {
-    // 渲染层 discover 以目录名为插件 id，目录名与 manifest.id 不一致必然装载错位
-    warnWatch(`目录名 (${dirname}) 与 manifest.id (${id}) 不一致，忽略`);
-    return;
-  }
-  const entry = getInstalledEntry(st.dataDir, id);
-  if (entry) {
-    // 升级/内容刷新：目录内容已在位，只刷新账本并广播 updated（保留原 source 与 installedAt）
-    recordInstalled(st.dataDir, id, {
-      ...entry,
-      version: typeof manifest.version === 'string' ? manifest.version : entry.version,
-      installedAt: entry.installedAt
-    });
-    st.known.add(id);
-    st.broadcastImpl({
-      action: 'updated',
-      id,
-      entryUrl: entryUrlFor(st.pluginsDir, id, manifest),
-      manifest
-    });
-    return;
-  }
-  recordInstalled(st.dataDir, id, {
-    version: typeof manifest.version === 'string' ? manifest.version : '',
-    source: 'dir',
-    sourceRef: `watch:${dirname}`,
-    shasum: ''
-  });
-  configManager.setPluginEnabled(id, true);
-  st.known.add(id);
-  st.broadcastImpl({
-    action: 'installed',
-    id,
-    entryUrl: entryUrlFor(st.pluginsDir, id, manifest),
-    manifest
-  });
 }
 
-/** zip 投放：解压 → 校验 → 落盘 → 删 zip（安装成功即收）→ 记账广播；失败保留原 zip 供用户自查。 */
+/** zip 投放：解压 → 共用管线校验+落盘 → 删 zip（安装成功即收）→ 记账广播；失败保留原 zip 供用户自查。 */
 function handleZipDrop(filename, full) {
   const st = dirWatch;
   const holder = makeHolder(st.dataDir, safeTmpKey(path.basename(filename)));
@@ -587,53 +644,22 @@ function handleZipDrop(filename, full) {
       warnWatch(`zip ${filename} 缺少 manifest.json/index.js，不安装（保留原文件）`);
       return;
     }
-    const manifest = readManifest(dir);
-    if (!manifest || typeof manifest !== 'object') {
-      warnWatch(`zip ${filename} 的 manifest.json 无法解析，不安装（保留原文件）`);
-      return;
-    }
-    const schema = validateManifestSchema?.(manifest);
-    if (!schema || !schema.ok) {
-      warnWatch(`zip ${filename} manifest 校验失败，不安装（保留原文件）: ${schema ? schema.errors.join('; ') : '校验模块不可达'}`);
-      return;
-    }
-    const engine = checkEngine?.(manifest, {
-      zmodVersion: readZmodVersion(st.dataDir),
-      hostVersion: hostVersion()
-    });
-    if (!engine || !engine.ok) {
-      warnWatch(`zip ${filename} 引擎不兼容，不安装（保留原文件）: ${engine ? engine.reasons.join('; ') : '校验模块不可达'}`);
-      return;
-    }
-    const id = manifest.id;
-    const dest = path.join(st.pluginsDir, id);
-    if (fs.existsSync(dest)) {
-      warnWatch(`zip ${filename} 的插件 ${id} 已存在，视为无效投放（请先移除再投放）`);
-      return;
-    }
-    const shasum = sha256File(full);
-    suppressInstallTarget(id); // 自写忽略：落盘事件不重复处理
-    fs.mkdirSync(st.pluginsDir, { recursive: true });
-    fs.cpSync(dir, dest, { recursive: true });
     try {
-      fs.rmSync(full, { force: true });
+      const manifest = validateDropManifest(dir, st.dataDir, `zip ${filename}`);
+      const shasum = sha256File(full);
+      const res = materializeDrop(
+        { dataDir: st.dataDir, pluginsDir: st.pluginsDir, broadcastImpl: st.broadcastImpl },
+        { dir, manifest, source: 'zip', sourceRef: `watch:${filename}`, shasum }
+      );
+      st.known.add(res.id);
+      try {
+        fs.rmSync(full, { force: true });
+      } catch (err) {
+        warnWatch(`清理投放的 zip 失败: ${err?.message || err}`);
+      }
     } catch (err) {
-      warnWatch(`清理投放的 zip 失败: ${err?.message || err}`);
+      warnWatch(`zip ${filename} 不安装（保留原文件）: ${err?.message || err}`);
     }
-    recordInstalled(st.dataDir, id, {
-      version: typeof manifest.version === 'string' ? manifest.version : '',
-      source: 'zip',
-      sourceRef: `watch:${filename}`,
-      shasum
-    });
-    configManager.setPluginEnabled(id, true);
-    st.known.add(id);
-    st.broadcastImpl({
-      action: 'installed',
-      id,
-      entryUrl: entryUrlFor(st.pluginsDir, id, manifest),
-      manifest
-    });
   } finally {
     holder.cleanup();
   }
@@ -823,6 +849,84 @@ export function registerPluginHost(gateway, injected = {}) {
       return { ok: false, error: String(err?.message || err) };
     } finally {
       try { src?.cleanup?.(); } catch {}
+    }
+  });
+
+  // ---- 拖放上传安装（设置页 dropzone；kind: zip | files）----
+  // 与 watch 投放共用 validateDropManifest + materializeDrop；装完一律默认未启用。
+  gateway.register('plugin.installUpload', async ({ kind, name, zipBase64, files } = {}) => {
+    const c = ctx();
+    const d = { ...deps, ...c };
+    const label = safeTmpKey(name) || 'drop';
+    try {
+      if (kind === 'zip') {
+        if (typeof zipBase64 !== 'string' || !zipBase64) {
+          return { ok: false, error: '缺少 zipBase64 参数' };
+        }
+        const buf = Buffer.from(zipBase64, 'base64');
+        if (buf.length === 0) return { ok: false, error: 'zip 数据为空' };
+        if (buf.length > MAX_UPLOAD_BYTES) {
+          return { ok: false, error: `插件包过大（${(buf.length / 1024 / 1024).toFixed(1)}MB > 20MB 上限）` };
+        }
+        const holder = makeHolder(c.dataDir, label);
+        try {
+          const zipPath = path.join(holder.root, 'drop.zip');
+          fs.writeFileSync(zipPath, buf);
+          const dir = extractZip(zipPath, path.join(holder.root, 'x'));
+          assertSourceShape(dir);
+          const manifest = validateDropManifest(dir, c.dataDir, `上传包 ${label}`);
+          const res = materializeDrop(d, {
+            dir, manifest, source: 'zip', sourceRef: `drop:${name}`, shasum: sha256Buf(buf)
+          });
+          return { ok: true, id: res.id, ...(res.version ? { version: res.version } : {}) };
+        } finally {
+          holder.cleanup();
+        }
+      }
+
+      if (kind === 'files') {
+        if (!Array.isArray(files) || files.length === 0) {
+          return { ok: false, error: '缺少 files 参数（[{path,b64}]）' };
+        }
+        const holder = makeHolder(c.dataDir, label);
+        try {
+          const stage = path.join(holder.root, 'payload');
+          let total = 0;
+          const seen = new Set();
+          for (const f of files) {
+            if (!f || typeof f.path !== 'string' || typeof f.b64 !== 'string') {
+              throw new Error('files 项格式非法（需要 {path,b64}）');
+            }
+            const rel = sanitizeDropRelPath(f.path);
+            // 渲染层已跳过 node_modules/.git；主进程兜底再滤一层
+            if (/(^|\/)(node_modules|\.git)(\/|$)/.test(rel)) continue;
+            const buf = Buffer.from(f.b64, 'base64');
+            total += buf.length;
+            if (total > MAX_UPLOAD_BYTES) {
+              return { ok: false, error: `插件包过大（>20MB 上限）` };
+            }
+            if (seen.has(rel)) throw new Error(`重复文件路径: ${rel}`);
+            seen.add(rel);
+            const dest = path.join(stage, ...rel.split('/'));
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.writeFileSync(dest, buf);
+          }
+          if (!seen.has('manifest.json') || !seen.has('index.js')) {
+            throw new Error('插件源缺少根级 manifest.json/index.js，拒绝安装');
+          }
+          const manifest = validateDropManifest(stage, c.dataDir, `上传包 ${label}`);
+          const res = materializeDrop(d, {
+            dir: stage, manifest, source: 'dir', sourceRef: `drop:${name}`, shasum: ''
+          });
+          return { ok: true, id: res.id, ...(res.version ? { version: res.version } : {}) };
+        } finally {
+          holder.cleanup();
+        }
+      }
+
+      return { ok: false, error: '不支持的 kind（zip | files）' };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err) };
     }
   });
 
