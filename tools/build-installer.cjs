@@ -25,14 +25,13 @@ fs.writeFileSync(
   JSON.stringify({ name: pkg.name, version: pkg.version, type: pkg.type, dependencies: pkg.dependencies }, null, 2) + '\n'
 );
 
-// 运行所需文件：CLI + 运行时源 + 官方插件 + 入口脚本（test 目录不随安装包分发）
+// 运行所需文件：CLI + 运行时源 + 官方插件（test 目录不随安装包分发）
 for (const item of ['packages', 'plugins', 'LICENSE', 'README.md']) {
   fs.cpSync(path.join(ROOT, item), path.join(STAGING, item), {
     recursive: true,
     filter: (src) => !src.split(path.sep).includes('test')
   });
 }
-fs.copyFileSync(path.join(ROOT, 'installer', 'run-install.cmd'), path.join(STAGING, 'run-install.cmd'));
 
 console.log('[1/3] installing production deps into staging ...');
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
