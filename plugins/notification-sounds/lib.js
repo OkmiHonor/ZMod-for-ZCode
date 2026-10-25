@@ -96,8 +96,12 @@ export function base64ToUint8Array(b64) {
   return out;
 }
 
-/** Event-bus channels the B3 settings card uses to notify the runtime half. */
+/** Event-bus channels shared by the settings card (B3) and the runtime half. */
 export const CHANNELS = {
   libraryChanged: 'ns:library-changed',
-  settingsChanged: 'ns:settings-changed'
+  settingsChanged: 'ns:settings-changed',
+  /** Card → runtime: 试听指定音色，payload = soundId */
+  preview: 'ns:preview',
+  /** Card → runtime: 全量替换 soundMap，payload = 新的 soundMap 对象 */
+  mapChanged: 'ns:map-changed'
 };

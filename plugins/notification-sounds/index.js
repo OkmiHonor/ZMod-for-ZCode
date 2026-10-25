@@ -8,6 +8,7 @@ import {
   mergeLibrary,
   base64ToUint8Array
 } from './lib.js';
+import { mountCard } from './card.js';
 
 const PLUGIN_ID = 'notification-sounds';
 const OFFICIAL_POP_MARK = 'task-notification-pop';
@@ -168,9 +169,17 @@ export default definePlugin({
 
     await reloadLibrary();
 
+    /* ---- B3 设置卡句柄：库重载完成后让其重绘（导入/删除后的最终态） ---- */
+    let cardApi = null;
+
     /* ---- 库变更（B3 设置卡导入/删除音色后广播）→ 清缓存重合并 ---- */
-    const offLib = events.on(CHANNELS.libraryChanged, () => {
-      reloadLibrary().catch((err) => console.error('[ZMod:NotifySounds] library reload failed:', err));
+    const offLib = events.on(CHANNELS.libraryChanged, async () => {
+      try {
+        await reloadLibrary();
+      } catch (err) {
+        console.error('[ZMod:NotifySounds] library reload failed:', err);
+      }
+      cardApi?.rerender?.();
     });
     cleanup(offLib);
 
@@ -191,6 +200,62 @@ export default definePlugin({
         for (const key of ['enabled', 'volume', 'focusPlay', 'soundMap']) refresh(key);
       })
     );
+
+    /* ---- B3 设置卡通道：试听 + soundMap 全量替换 ---- */
+    cleanup(events.on(CHANNELS.preview, (soundId) => playSound(soundId, snap.volume)));
+    cleanup(
+      events.on(CHANNELS.mapChanged, (map) => {
+        try {
+          if (!map || typeof map !== 'object' || Array.isArray(map)) return;
+          // 先合并回默认骨架再做类型收紧：只接受字符串值（'' = 跟随默认）
+          const merged = { ...defaultSoundMap() };
+          for (const key of Object.keys(merged)) {
+            if (typeof map[key] === 'string') merged[key] = map[key];
+          }
+          // s.set 持久化并 emit setting:<id>:soundMap → 既有 onChange 链路刷新 snap
+          s.set('soundMap', merged);
+        } catch (err) {
+          console.error('[ZMod:NotifySounds] mapChanged apply failed:', err);
+        }
+      })
+    );
+
+    /* ---- B3 设置卡：contribute 到官方设置页「扩展插件」区。
+       内核在 plugins.loadAll() 之前就同步挂好 window.ZMod.settingsPage
+       （renderer/index.js boot 时序），正常时序直接可用；轮询仅为兜底。 ---- */
+    const wireCard = () => {
+      const page = window.ZMod?.settingsPage;
+      if (!page || typeof page.contribute !== 'function') return false;
+      try {
+        cardApi = mountCard({
+          contribute: page.contribute.bind(page),
+          uncontribute: typeof page.uncontribute === 'function' ? page.uncontribute.bind(page) : null,
+          events,
+          invoke,
+          ui: ctx.ui,
+          getLibrary: () => library,
+          getSoundMap: () => snap.soundMap
+        });
+        cleanup(() => cardApi?.dispose?.());
+        return true;
+      } catch (err) {
+        console.error('[ZMod:NotifySounds] card mount failed:', err);
+        return true; // 挂载失败不重试，避免刷错误日志
+      }
+    };
+    if (!wireCard()) {
+      let tries = 0;
+      const poll = setInterval(() => {
+        if (wireCard() || ++tries >= 20) clearInterval(poll);
+      }, 500);
+      cleanup(() => clearInterval(poll));
+    }
+    // 兜底：插件停用（含热更新重载）时务必把卡片从设置页撤下
+    cleanup(() => {
+      try {
+        window.ZMod?.settingsPage?.uncontribute?.(PLUGIN_ID);
+      } catch {}
+    });
 
     /* ---- 官方通知声压制补丁：instead 回调首参为绑定原函数，返回值即结果 ---- */
     const warnedSrcs = new Set();
