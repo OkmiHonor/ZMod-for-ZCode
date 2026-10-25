@@ -1,0 +1,15 @@
+{
+  "id": "usage-stats",
+  "name": "Token 用量统计",
+  "version": "1.1.0-beta",
+  "description": "非侵入拦截客户端遥测统计 Token 消耗/缓存命中/费用（逐请求口径对齐官方命中率），余额走数据源系统",
+  "author": "ZMod Team",
+  "engine": {
+    "zmod": ">=1.0.0-beta"
+  },
+  "permissions": [
+    "dom.patch"
+  ],
+  "category": "productivity",
+  "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+}

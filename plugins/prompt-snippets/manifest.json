@@ -1,0 +1,15 @@
+{
+  "id": "prompt-snippets",
+  "name": "Prompt 片段库",
+  "version": "1.1.0-beta",
+  "description": "常驻悬浮球 + 可展开面板，支持快捷插入、{{变量}} Tab 跳转、Lexical 富文本适配",
+  "author": "ZMod Team",
+  "engine": {
+    "zmod": ">=1.0.0-beta"
+  },
+  "permissions": [
+    "dom.patch"
+  ],
+  "category": "productivity",
+  "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "qcard-fade",
+  "name": "提问卡智能透明",
+  "version": "1.1.0-beta",
+  "description": "提问选择卡与底部输入框离底（翻历史）时自动淡出/折叠，悬停毛玻璃唤醒，聚焦恢复原生",
+  "author": "ZMod Team",
+  "engine": {
+    "zmod": ">=1.0.0-beta"
+  },
+  "permissions": [
+    "dom.patch"
+  ],
+  "category": "appearance",
+  "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+}

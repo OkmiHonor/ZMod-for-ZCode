@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-25T14:09:58.333Z",
+  "updated": "2026-10-25T14:41:48.718Z",
   "plugins": [
     {
       "id": "acrylic-window",
@@ -11,6 +11,65 @@
         "name": "亚克力背板与老板键",
         "version": "1.4.0",
         "description": "Windows 11 DWM 亚克力/云母模糊全透背板，以及全局快捷键一键隐藏/恢复客户端",
+        "author": "ZMod Team",
+        "engine": {
+          "zmod": ">=1.0.0-beta"
+        },
+        "permissions": [
+          "dom.patch"
+        ],
+        "category": "appearance",
+        "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+      }
+    },
+    {
+      "id": "bubble-notifications",
+      "version": "0.1.0",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/bubble-notifications-0.1.0.zip",
+      "shasum": "b5ed816639439bbf2f9d1ab5ea56f5b34b18817aa638b3db85fbbaf0e1cd2679",
+      "manifest": {
+        "id": "bubble-notifications",
+        "name": "任务气泡通知",
+        "version": "0.1.0",
+        "description": "把任务通知以屏幕顶部气泡弹出：完成/出错/等待分类强调色，可配开关与停留时长",
+        "author": "ZMod Team",
+        "category": "productivity",
+        "engine": {
+          "zmod": ">=1.1.0-beta"
+        }
+      }
+    },
+    {
+      "id": "prompt-snippets",
+      "version": "1.1.0-beta",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/prompt-snippets-1.1.0-beta.zip",
+      "shasum": "3632ae3ea8229148c4f79b8ffa5d3cb161d40a478da618539e21227e519f808e",
+      "manifest": {
+        "id": "prompt-snippets",
+        "name": "Prompt 片段库",
+        "version": "1.1.0-beta",
+        "description": "常驻悬浮球 + 可展开面板，支持快捷插入、{{变量}} Tab 跳转、Lexical 富文本适配",
+        "author": "ZMod Team",
+        "engine": {
+          "zmod": ">=1.0.0-beta"
+        },
+        "permissions": [
+          "dom.patch"
+        ],
+        "category": "productivity",
+        "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+      }
+    },
+    {
+      "id": "qcard-fade",
+      "version": "1.1.0-beta",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/qcard-fade-1.1.0-beta.zip",
+      "shasum": "ee18900883e0f9bfebb1d7977712a6b712dab21a6c451b9e6ebeff644bfb6838",
+      "manifest": {
+        "id": "qcard-fade",
+        "name": "提问卡智能透明",
+        "version": "1.1.0-beta",
+        "description": "提问选择卡与底部输入框离底（翻历史）时自动淡出/折叠，悬停毛玻璃唤醒，聚焦恢复原生",
         "author": "ZMod Team",
         "engine": {
           "zmod": ">=1.0.0-beta"
@@ -40,6 +99,27 @@
           "datasource"
         ],
         "category": "datasource",
+        "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+      }
+    },
+    {
+      "id": "usage-stats",
+      "version": "1.1.0-beta",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/usage-stats-1.1.0-beta.zip",
+      "shasum": "a9abdc64c4962fc2e0d8addc3e72fec1f7d98521ce588856c4316251722e34d9",
+      "manifest": {
+        "id": "usage-stats",
+        "name": "Token 用量统计",
+        "version": "1.1.0-beta",
+        "description": "非侵入拦截客户端遥测统计 Token 消耗/缓存命中/费用（逐请求口径对齐官方命中率），余额走数据源系统",
+        "author": "ZMod Team",
+        "engine": {
+          "zmod": ">=1.0.0-beta"
+        },
+        "permissions": [
+          "dom.patch"
+        ],
+        "category": "productivity",
         "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
       }
     }

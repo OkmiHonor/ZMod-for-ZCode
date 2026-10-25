@@ -27,7 +27,14 @@ const RELEASE_BASE = `https://github.com/OkmiHonor/ZMod-for-ZCode/releases/downl
 
 // 官方市场只独立分发这些插件（安装器已纯基座化；其余 plugins/ 目录仅作本地
 // 源码存档，不进 registry）。
-const PUBLISHED_PLUGINS = new Set(['quota-popover', 'acrylic-window']);
+const PUBLISHED_PLUGINS = new Set([
+  'quota-popover',
+  'acrylic-window',
+  'bubble-notifications',
+  'prompt-snippets',
+  'qcard-fade',
+  'usage-stats',
+]);
 
 function ps(script) {
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
