@@ -44,6 +44,9 @@ ZMod CLI v${CLI_VERSION} — Next-generation modular mod loader for ZCode
   zmod restore              还原官方纯净客户端
   zmod plugin list          查看已安装插件
   zmod plugin install <src> 安装插件（本地目录 / .zip / git 仓库 URL）
+  zmod plugin remove <id>   卸载插件（配置保留，重装可恢复）
+  zmod plugin update [id]   更新插件（无 id = 遍历账本全部；zip/dir 来源不支持自动更新）
+  zmod plugin search [关键词] 搜索官方插件注册表（id / 名称 / 描述）
   zmod plugin enable <id>   启用插件（重启客户端生效）
   zmod plugin disable <id>  禁用插件
 `;

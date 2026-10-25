@@ -1,0 +1,136 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
+// 隔离数据目录：paths.js / installed.js / config.js 全部跟随该环境变量
+const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-plugin-cmd-'));
+process.env.ZMOD_USER_DATA_DIR = dataRoot;
+
+const { planUpdates, filterSearch, removeDirWithRetry, pluginCommand } = await import(
+  '../src/commands/plugin.js'
+);
+const { readInstalled } = await import('../../zmod-core/src/common/installed.js');
+
+const registryJson = {
+  updated: '2026-10-25T00:00:00.000Z',
+  plugins: [
+    {
+      id: 'alpha',
+      version: '1.0.0',
+      url: 'https://example.com/plugins/alpha-1.0.0.zip',
+      shasum: 'a'.repeat(64),
+      manifest: { id: 'alpha', name: 'Alpha 插件', version: '1.0.0', description: 'alpha 描述', author: 't' }
+    },
+    {
+      id: 'beta',
+      version: '2.0.0',
+      url: 'https://example.com/plugins/beta-2.0.0.zip',
+      shasum: 'b'.repeat(64),
+      manifest: { id: 'beta', name: 'Beta', version: '2.0.0', description: '含唯一关键词量子稳定', author: 't' }
+    }
+  ]
+};
+
+test('planUpdates: registry 同版→无动作, 新版→更新, git/zip 来源→跳过', () => {
+  const local = [
+    { id: 'alpha', source: 'registry', version: '1.0.0' },
+    { id: 'beta', source: 'registry', version: '1.0.0' },
+    { id: 'gamma', source: 'git', version: '0.1.0' },
+    { id: 'delta', source: 'zip', version: '0.1.0' }
+  ];
+  const byId = Object.fromEntries(planUpdates(local, registryJson).map((d) => [d.id, d]));
+
+  assert.equal(byId.alpha.action, 'latest', 'registry 同版本 → 无动作');
+  assert.equal(byId.beta.action, 'update', 'registry 新版本 → 更新');
+  assert.equal(byId.beta.targetVersion, '2.0.0');
+  assert.equal(byId.beta.entry.url, registryJson.plugins[1].url, 'update 决策携带 registry 条目');
+  assert.equal(byId.gamma.action, 'skip', 'git 来源不参与 registry 对比');
+  assert.equal(byId.delta.action, 'skip', 'zip 来源跳过');
+  assert.ok(byId.delta.reason.includes('不支持自动更新'));
+});
+
+test('planUpdates: registry 缺失→missing, 本地较新→不降级, 本地版本缺失→按可更新处理', () => {
+  const [missing] = planUpdates([{ id: 'nope', source: 'registry', version: '1.0.0' }], registryJson);
+  assert.equal(missing.action, 'missing');
+
+  const [newerLocal] = planUpdates([{ id: 'alpha', source: 'registry', version: '9.9.9' }], registryJson);
+  assert.equal(newerLocal.action, 'skip', '本地比 registry 新 → 跳过以免降级');
+
+  const [unknownLocal] = planUpdates([{ id: 'alpha', source: 'registry', version: '' }], registryJson);
+  assert.equal(unknownLocal.action, 'update', '本地版本缺失无法对比 → 按可更新处理');
+});
+
+test('filterSearch: 无关键词返回全部, 匹配 id/名称/描述, 大小写不敏感', () => {
+  assert.deepEqual(filterSearch(registryJson).map((p) => p.id), ['alpha', 'beta']);
+  assert.deepEqual(filterSearch(registryJson, 'ALPHA').map((p) => p.id), ['alpha'], '命中 id');
+  assert.deepEqual(filterSearch(registryJson, '插件').map((p) => p.id), ['alpha'], '命中 name');
+  assert.deepEqual(filterSearch(registryJson, '量子').map((p) => p.id), ['beta'], '命中 description');
+  assert.deepEqual(filterSearch(registryJson, 'no-such-keyword-xyz'), []);
+});
+
+test('removeDirWithRetry: 两轮循环内删除非空目录成功, 已不存在也返回 true', async () => {
+  const target = path.join(dataRoot, 'retry-target');
+  fs.mkdirSync(path.join(target, 'nested'), { recursive: true });
+  fs.writeFileSync(path.join(target, 'nested', 'f.txt'), 'x');
+
+  assert.equal(await removeDirWithRetry(target, { delayMs: 1 }), true);
+  assert.equal(fs.existsSync(target), false, '目录已被删除');
+  assert.equal(await removeDirWithRetry(target, { delayMs: 1 }), true, '目标已不存在视为成功');
+});
+
+test('install 记账到 installed.json 并铺设插件目录', async () => {
+  const srcDir = path.join(dataRoot, 'fixture-src', 'demo-plugin');
+  fs.mkdirSync(srcDir, { recursive: true });
+  fs.writeFileSync(path.join(srcDir, 'index.js'), 'export default {};\n');
+  fs.writeFileSync(
+    path.join(srcDir, 'manifest.json'),
+    JSON.stringify({ id: 'demo-plugin', name: 'Demo', version: '0.1.0', description: 'demo fixture', author: 'test' })
+  );
+
+  await pluginCommand('install', srcDir);
+
+  const ledger = readInstalled(dataRoot);
+  const entry = ledger.plugins['demo-plugin'];
+  assert.ok(entry, 'installed.json 中出现 demo-plugin 条目');
+  assert.equal(entry.source, 'dir');
+  assert.equal(entry.version, '0.1.0');
+  assert.equal(entry.sourceRef, path.resolve(srcDir));
+  assert.equal(entry.shasum, '', '目录来源无 shasum');
+  assert.ok(entry.installedAt, '记录安装时间');
+
+  assert.ok(fs.existsSync(path.join(dataRoot, 'plugins', 'demo-plugin', 'index.js')), '插件目录已铺设');
+});
+
+test('install 校验: 非法 manifest 拒装, 已装提示 remove/update', async () => {
+  // 拦截 process.exit：转为可断言的异常，同时让 install 的 finally 清理照常执行
+  const origExit = process.exit;
+  let exitCode = null;
+  process.exit = (code) => {
+    exitCode = code;
+    throw new Error(`__exit_${code}`);
+  };
+  try {
+    const badDir = path.join(dataRoot, 'fixture-src', 'bad-plugin');
+    fs.mkdirSync(badDir, { recursive: true });
+    fs.writeFileSync(path.join(badDir, 'index.js'), 'export default {};\n');
+    fs.writeFileSync(
+      path.join(badDir, 'manifest.json'),
+      JSON.stringify({ id: 'bad_plugin', name: '', version: 'not-semver', description: 'x', author: 't' })
+    );
+
+    await assert.rejects(() => pluginCommand('install', badDir), /__exit_1/);
+    assert.equal(exitCode, 1, 'manifest 校验失败以退出码 1 终止');
+    assert.ok(!fs.existsSync(path.join(dataRoot, 'plugins', 'bad_plugin')), '校验失败的插件不落盘');
+
+    // 同 id 重复安装：报"已安装"退出，账本仍只有一条
+    exitCode = null;
+    const srcDir = path.join(dataRoot, 'fixture-src', 'demo-plugin');
+    await assert.rejects(() => pluginCommand('install', srcDir), /__exit_1/);
+    const ledger = readInstalled(dataRoot);
+    assert.equal(Object.keys(ledger.plugins).filter((k) => k === 'demo-plugin').length, 1);
+  } finally {
+    process.exit = origExit;
+  }
+});
