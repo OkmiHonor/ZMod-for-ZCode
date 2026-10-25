@@ -5,7 +5,7 @@ import os from 'node:os';
 import { locateZCode, findAsarInHost, findHostExe } from '../locate.js';
 import { findMarkers, extractAll, packAndVerify, getUnpackedSet } from '../lib/asar.js';
 import { isZcodeRunning, killZcode, launchDetached, sleep } from '../lib/process.js';
-import { resolveBaselineCandidate, backfillBaseSnapshot } from '../lib/baseline.js';
+import { resolveBaselineCandidate, backfillBaseSnapshot, getHostVersion, getGlobalBaselinePath } from '../lib/baseline.js';
 import { MARKERS, V1_MARKERS, patchMainSource, patchPreloadSource, patchIndexHtmlSource } from '../patches/index.js';
 import {
   ensureDirectories,
@@ -175,11 +175,14 @@ export async function install(opts = {}) {
       process.exit(1);
     }
     const v2Hits = findMarkers(asarPath, Object.values(MARKERS));
+    const hostVersion = getHostVersion(hostDir, findHostExe);
+    const globalBaseline = getGlobalBaselinePath(hostVersion);
+    if (hostVersion) console.log(`• 宿主版本: ZCode ${hostVersion}`);
     let pristineSource;
     if (v2Hits.length > 0) {
-      const candidate = resolveBaselineCandidate({ baseSnapshot, asarPath, explicit: opts.baseline });
+      const candidate = resolveBaselineCandidate({ baseSnapshot, asarPath, explicit: opts.baseline, globalBaseline });
       if (!candidate) {
-        console.error('✖ 当前 asar 已是 ZMod v2 补丁版，且找不到任何官方基线（base/app.asar、app.asar.backup1 均不存在）。');
+        console.error('✖ 当前 asar 已是 ZMod v2 补丁版，且找不到任何官方基线（base/app.asar、机器级缓存、app.asar.backup1 均不存在）。');
         console.error('  恢复方式（任选其一）：');
         console.error('  1. zmod install --baseline <官方原始 app.asar 路径>');
         console.error('  2. 重装 ZCode 客户端恢复官方 asar 后重新安装 ZMod');
@@ -187,17 +190,14 @@ export async function install(opts = {}) {
       }
       console.log(`• 检测到已安装 v2，基于${candidate.label}重装`);
       pristineSource = candidate.path;
-      if (backfillBaseSnapshot(baseSnapshot, pristineSource)) {
+      if (backfillBaseSnapshot(baseSnapshot, pristineSource, { hostVersion })) {
         console.log('• 已回填基线快照 base/app.asar');
       }
     } else {
       pristineSource = asarPath;
       // snapshot the pristine official asar — future reinstalls and `restore` depend on it
-      console.log('• 当前为官方纯净版，快照基线到 base/app.asar');
-      fs.mkdirSync(path.dirname(baseSnapshot), { recursive: true });
-      const snapTmp = `${baseSnapshot}.tmp`;
-      fs.copyFileSync(asarPath, snapTmp);
-      fs.renameSync(snapTmp, baseSnapshot);
+      console.log('• 当前为官方纯净版，快照基线到 base/app.asar' + (hostVersion ? ' 与机器级缓存' : ''));
+      backfillBaseSnapshot(baseSnapshot, asarPath, { hostVersion });
     }
 
     // ---- 2. Extract + patch ----

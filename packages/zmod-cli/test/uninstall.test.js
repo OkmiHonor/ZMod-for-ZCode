@@ -42,11 +42,12 @@ test('planUninstall orders dirs shallow-first so rmdir can cascade', () => {
   assert.deepEqual(depths, [...depths].sort((a, b) => a - b));
 });
 
-test('resolveBaselineCandidate prefers snapshot, falls back to legacy/explicit, null when none', () => {
+test('resolveBaselineCandidate prefers snapshot, falls back to global cache/legacy/explicit, null when none', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-baseline-'));
   const asar = path.join(tmp, 'app.asar');
   fs.writeFileSync(asar, 'patched');
   const snapshot = path.join(tmp, 'data', 'base', 'app.asar');
+  const globalCache = path.join(tmp, 'LocalZMod', 'app.asar.3.16.3');
   const legacy = path.join(tmp, 'app.asar.backup1');
   const explicit = path.join(tmp, 'official.asar');
 
@@ -60,20 +61,30 @@ test('resolveBaselineCandidate prefers snapshot, falls back to legacy/explicit, 
   hit = resolveBaselineCandidate({ baseSnapshot: snapshot, asarPath: asar, explicit });
   assert.equal(hit.path, legacy, 'legacy backup outranks explicit');
 
+  fs.mkdirSync(path.dirname(globalCache), { recursive: true });
+  fs.writeFileSync(globalCache, 'official-cache');
+  hit = resolveBaselineCandidate({ baseSnapshot: snapshot, asarPath: asar, explicit, globalBaseline: globalCache });
+  assert.equal(hit.path, globalCache, 'machine cache outranks legacy and explicit');
+
   fs.mkdirSync(path.dirname(snapshot), { recursive: true });
   fs.writeFileSync(snapshot, 'official-snap');
-  hit = resolveBaselineCandidate({ baseSnapshot: snapshot, asarPath: asar, explicit });
+  hit = resolveBaselineCandidate({ baseSnapshot: snapshot, asarPath: asar, explicit, globalBaseline: globalCache });
   assert.equal(hit.path, snapshot, 'canonical snapshot wins');
 });
 
-test('backfillBaseSnapshot copies only when source differs', () => {
+test('backfillBaseSnapshot copies only when source differs; mirrors to machine cache when version given', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-backfill-'));
+  process.env.LOCALAPPDATA = path.join(tmp, 'fake-local');
   const snapshot = path.join(tmp, 'data', 'base', 'app.asar');
   const source = path.join(tmp, 'official.asar');
   fs.writeFileSync(source, 'official-bytes');
 
-  assert.equal(backfillBaseSnapshot(snapshot, snapshot), false, 'same file → no-op');
-  assert.equal(backfillBaseSnapshot(snapshot, source), true);
+  assert.equal(backfillBaseSnapshot(snapshot, snapshot), false, 'same file → no-op, no version → no cache write');
+  assert.ok(!fs.existsSync(path.join(process.env.LOCALAPPDATA, 'ZMod')), 'no cache dir without hostVersion');
+
+  assert.equal(backfillBaseSnapshot(snapshot, source, { hostVersion: '3.16.3.8992' }), true);
   assert.equal(fs.readFileSync(snapshot, 'utf8'), 'official-bytes');
+  const cached = path.join(process.env.LOCALAPPDATA, 'ZMod', 'bases', 'app.asar.3.16.3.8992');
+  assert.equal(fs.readFileSync(cached, 'utf8'), 'official-bytes', 'machine cache mirrored, version-anchored');
   assert.ok(!fs.existsSync(`${snapshot}.tmp`), 'temp file renamed away');
 });

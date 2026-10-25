@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import { locateZCode, findAsarInHost, findHostExe } from '../locate.js';
+import { resolveBaselineCandidate, getHostVersion, getGlobalBaselinePath, backfillBaseSnapshot } from '../lib/baseline.js';
 import { getBaseSnapshotPath } from '../../../zmod-core/src/common/paths.js';
 import { isZcodeRunning, killZcode, launchDetached, sleep } from '../lib/process.js';
 
@@ -19,12 +19,17 @@ export async function restore(opts = {}) {
   }
   const asarPath = findAsarInHost(hostDir);
 
-  const candidates = [getBaseSnapshotPath(), path.join(path.dirname(asarPath), 'app.asar.backup1')];
-  const source = candidates.find((c) => c && fs.existsSync(c));
-  if (!source) {
-    console.error('✖ 找不到任何原始基线（base/app.asar 与 app.asar.backup1 均不存在），无法自动还原。');
+  const hostVersion = getHostVersion(hostDir, findHostExe);
+  const candidate = resolveBaselineCandidate({
+    baseSnapshot: getBaseSnapshotPath(),
+    asarPath,
+    globalBaseline: getGlobalBaselinePath(hostVersion)
+  });
+  if (!candidate) {
+    console.error('✖ 找不到任何原始基线（base/app.asar、机器级缓存、app.asar.backup1 均不存在），无法自动还原。');
     process.exit(1);
   }
+  const source = candidate.path;
   console.log(`• 还原来源: ${source}`);
 
   if (opts.force && isZcodeRunning()) {
@@ -59,6 +64,8 @@ export async function restore(opts = {}) {
     return;
   }
   console.log(`✔ 已还原: ${asarPath}`);
+  // 命中机器级缓存/旧备份时回填 data 快照并镜像缓存，让下次 install/restore 完全自愈
+  backfillBaseSnapshot(getBaseSnapshotPath(), source, { hostVersion });
 
   if (opts.force) {
     const exe = findHostExe(hostDir);

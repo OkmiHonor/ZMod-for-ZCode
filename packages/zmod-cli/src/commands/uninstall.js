@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { locateZCode, findAsarInHost } from '../locate.js';
+import { locateZCode, findAsarInHost, findHostExe } from '../locate.js';
 import { findMarkers } from '../lib/asar.js';
 import { MARKERS } from '../patches/index.js';
-import { resolveBaselineCandidate } from '../lib/baseline.js';
+import { resolveBaselineCandidate, getHostVersion, getGlobalBaselinePath } from '../lib/baseline.js';
 import { getBaseSnapshotPath, getUserDataDir, getLogsDir } from '../../../zmod-core/src/common/paths.js';
 import { sleep } from '../lib/process.js';
 import { teeConsoleTo } from './install.js';
@@ -45,7 +45,8 @@ async function bestEffortRestore(opts) {
   const candidate = resolveBaselineCandidate({
     baseSnapshot: getBaseSnapshotPath(),
     asarPath,
-    explicit: opts.baseline
+    explicit: opts.baseline,
+    globalBaseline: getGlobalBaselinePath(getHostVersion(hostDir, findHostExe))
   });
   if (!candidate) {
     console.warn('⚠ asar 仍是 ZMod 补丁版且无可用基线，无法自动还原官方客户端。');
