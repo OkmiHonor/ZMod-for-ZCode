@@ -16,6 +16,11 @@ Var /GLOBAL unKeepDataState
 Var /GLOBAL unKeepDataCheckbox
 
 !define MUI_ABORTWARNING
+; v6 紫 violet theme icons (repo: installer/icons)
+!define MUI_ICON "${__FILEDIR__}\icons\installer.ico"
+!define MUI_UNICON "${__FILEDIR__}\icons\uninstaller.ico"
+Icon "${__FILEDIR__}\icons\installer.ico"
+UninstallIcon "${__FILEDIR__}\icons\uninstaller.ico"
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_DIRECTORYPAGE_TEXT_TOP "ZMod 文件将被释放到此目录（与 ZCode 客户端目录无关，保持默认即可）"
 !insertmacro MUI_PAGE_DIRECTORY
