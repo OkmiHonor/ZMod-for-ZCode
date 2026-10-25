@@ -9,7 +9,7 @@
  *   node tools/publish-plugins.cjs          打包 + 生成 registry.json + 打印 gh release upload 命令
  *   node tools/publish-plugins.cjs --check  重算 zip+sha 与 registry.json 比对，一致 exit 0，漂移 exit 1
  *
- * 不引第三方依赖：zip 用 System32 bsdtar（Compress-Archive 嵌套目录条目是反斜杠，弃用）；zip 条目自检用 .NET ZipFile 列条目名。
+ * 不引第三方依赖：zip 用 .NET ZipArchive 固定时间戳打包（确定性）；zip 条目自检用 .NET ZipFile 列条目名。
  * 所有 PowerShell 调用走 -EncodedCommand（UTF-16LE base64），绕开 Windows 命令行引号地狱。
  */
 const fs = require('node:fs');
@@ -50,17 +50,26 @@ function ps(script) {
 
 function q(p) { return p.replace(/'/g, "''"); }
 
-// 打 zip：System32 bsdtar（-a 按扩展名选 zip 格式）。不能用 Compress-Archive：
-// WinPS 5.1 对嵌套目录写反斜杠条目名，跨平台解压会坏。必须显式 System32\tar.exe，
-// MSYS 环境下裸 `tar` 会抓到 GNU tar（不支持 zip）。
-const TAR = 'C:\\Windows\\System32\\tar.exe';
+// 打 zip：.NET ZipArchive 逐条目写入，条目时间戳固定 1980-01-01（zip 纪元）。
+// 确定性是硬要求：--check 靠重打比对 sha，若时间戳随文件 mtime 走（Compress-Archive
+// 与 bsdtar 均如此），npm test 等触碰插件文件后重打必然漂移。嵌套目录条目名用 '/'。
 function packZip(dir, zipPath) {
-  const r = spawnSync(TAR, ['-a', '-cf', path.resolve(zipPath), ...fs.readdirSync(dir)], {
-    cwd: dir,
-    encoding: 'utf8',
-  });
-  if (r.error) throw r.error;
-  if (r.status !== 0) throw new Error(`tar 打包失败(${r.status}): ${r.stderr}`);
+  ps(
+    `$ErrorActionPreference='Stop'\n` +
+      `Add-Type -AssemblyName System.IO.Compression\n` +
+      `Add-Type -AssemblyName System.IO.Compression.FileSystem\n` +
+      `$src='${q(path.resolve(dir))}'\n` +
+      `$out=[System.IO.File]::Open('${q(path.resolve(zipPath))}','Create')\n` +
+      `$z=New-Object System.IO.Compression.ZipArchive($out,'Create')\n` +
+      `try {\n` +
+      `  Get-ChildItem -LiteralPath $src -Recurse -File | Sort-Object FullName | ForEach-Object {\n` +
+      `    $rel=$_.FullName.Substring($src.Length+1).Replace('\\','/')\n` +
+      `    $e=$z.CreateEntry($rel)\n` +
+      `    $e.LastWriteTime=Get-Date '1980-01-01 00:00:00'\n` +
+      `    $s=$e.Open(); $f=$_.OpenRead(); $f.CopyTo($s); $f.Dispose(); $s.Dispose()\n` +
+      `  }\n` +
+      `} finally { $z.Dispose(); $out.Dispose() }\n`
+  );
 }
 
 // 列 zip 条目名，用于自检（manifest.json 必须在解压根，且无反斜杠条目保证跨平台可解压）

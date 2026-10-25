@@ -1,11 +1,11 @@
 {
-  "updated": "2026-10-25T14:46:00.202Z",
+  "updated": "2026-10-25T14:55:11.817Z",
   "plugins": [
     {
       "id": "acrylic-window",
       "version": "1.4.0",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/acrylic-window-1.4.0.zip",
-      "shasum": "c10964ac55fd29acbefe61f46208cd2aeab499da1cb679d6a8f54a218c8cda05",
+      "shasum": "1e872fef47c8d2423e5085f5f2fa27a92e202a98068865b37f0db562e6260d49",
       "manifest": {
         "id": "acrylic-window",
         "name": "亚克力背板与老板键",
@@ -26,7 +26,7 @@
       "id": "bubble-notifications",
       "version": "0.1.0",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/bubble-notifications-0.1.0.zip",
-      "shasum": "c3fba51ec037c71466b625c0fc56eff231ae1ced34e844541905ba8fb6c41edf",
+      "shasum": "b1265cb81cc6446ddfed0881815b99ba9af107afb2fad09311bf4a4d8ad07840",
       "manifest": {
         "id": "bubble-notifications",
         "name": "任务气泡通知",
@@ -43,7 +43,7 @@
       "id": "notification-sounds",
       "version": "0.1.0",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/notification-sounds-0.1.0.zip",
-      "shasum": "0a72001a4dd9e0b961fb0cce1b4eff2632308b2affad4e0bc43662052b4770fe",
+      "shasum": "d0d6da3286fc6289cde076a8ac55e61adbaaa41493bed9fb91924038c32927c6",
       "manifest": {
         "id": "notification-sounds",
         "name": "通知声音管理",
@@ -60,7 +60,7 @@
       "id": "prompt-snippets",
       "version": "1.1.0-beta",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/prompt-snippets-1.1.0-beta.zip",
-      "shasum": "0fb83b97e54f1fd25674775289dddf9f4278b1258b19b70ee2921eaf3e0902ba",
+      "shasum": "c208870291d22fde8cbf0d9fe5ab1a318378b87d15b97d30d308619157f2f86c",
       "manifest": {
         "id": "prompt-snippets",
         "name": "Prompt 片段库",
@@ -81,7 +81,7 @@
       "id": "qcard-fade",
       "version": "1.1.0-beta",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/qcard-fade-1.1.0-beta.zip",
-      "shasum": "f3d61fe2ae68da0104890e5968d4f004a341815b32c9ff5c14b65f8d9dc16e94",
+      "shasum": "e61c4be4fd2d6a60dc2951fd2498cab9e07b1412b25c439dacd6760754eb19c6",
       "manifest": {
         "id": "qcard-fade",
         "name": "提问卡智能透明",
@@ -102,7 +102,7 @@
       "id": "quota-popover",
       "version": "1.4.0",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/quota-popover-1.4.0.zip",
-      "shasum": "6091144380fd4fa22fa36711722b8087c00e0d93e337db58ffe7d25b35539133",
+      "shasum": "41f06467bd533b182f3e003ca80d11f100f140872dd3977807071b790c8a2c20",
       "manifest": {
         "id": "quota-popover",
         "name": "余量弹窗与模型页余量",
@@ -123,7 +123,7 @@
       "id": "usage-stats",
       "version": "1.1.0-beta",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/usage-stats-1.1.0-beta.zip",
-      "shasum": "824c3a4eab043d39d61918f91384167ea7fcc6aba077e92c5d47f9f648a3d6b4",
+      "shasum": "45e41f9d4149abb503a1c51e8a18d92fe0e399712ea050ebe40cc9a02cee32d3",
       "manifest": {
         "id": "usage-stats",
         "name": "Token 用量统计",
@@ -144,7 +144,7 @@
       "id": "whale-widget",
       "version": "1.1.0-beta",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/whale-widget-1.1.0-beta.zip",
-      "shasum": "db61f19f9ab127ce782e2c56c19fe705a8ceda25b0fa34dbd2da19e27537848a",
+      "shasum": "e7243724867f089b5232f6d9d5c94624d7a305ee13bb74f8362895c7e9a6c24c",
       "manifest": {
         "id": "whale-widget",
         "name": "DeepSeek 余额小鲸鱼（v1 原版移植）",
