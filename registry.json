@@ -1,15 +1,15 @@
 {
-  "updated": "2026-10-25T14:01:29.893Z",
+  "updated": "2026-10-25T14:09:58.333Z",
   "plugins": [
     {
       "id": "acrylic-window",
-      "version": "1.1.0-beta",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/acrylic-window-1.1.0-beta.zip",
-      "shasum": "6880d3bf8a36f9b3a630fb9294e293f3bd983ef694683ab0ad4a4ff649aea9a6",
+      "version": "1.4.0",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/acrylic-window-1.4.0.zip",
+      "shasum": "529484c8afeaa136e3965f998d86943b7c3f600be74abf369b6ff8da917be14f",
       "manifest": {
         "id": "acrylic-window",
         "name": "亚克力背板与老板键",
-        "version": "1.1.0-beta",
+        "version": "1.4.0",
         "description": "Windows 11 DWM 亚克力/云母模糊全透背板，以及全局快捷键一键隐藏/恢复客户端",
         "author": "ZMod Team",
         "engine": {
@@ -24,13 +24,13 @@
     },
     {
       "id": "quota-popover",
-      "version": "1.1.0-beta",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/quota-popover-1.1.0-beta.zip",
-      "shasum": "67c5c656dec7afb375ab8ad7c3a57858dbfb24a025cf221a741e24ae9f1203e2",
+      "version": "1.4.0",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/quota-popover-1.4.0.zip",
+      "shasum": "6f2e771788e36617baf38cc61140058a1f6d68c64caa5a34a1c0ff53e4530f2b",
       "manifest": {
         "id": "quota-popover",
         "name": "余量弹窗与模型页余量",
-        "version": "1.1.0-beta",
+        "version": "1.4.0",
         "description": "把数据源实例的余额/配额注入官方界面：输入框「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1）+ 官方设置「模型设置」页注入余量总览（运行时注入，不改官方文件）",
         "author": "ZMod Team",
         "engine": {
