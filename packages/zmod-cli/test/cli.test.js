@@ -53,19 +53,19 @@ test('ZMod CLI Suite', async (t) => {
       '../src/patches/index.js'
     );
     const mainSrc = 'import{a}from"./chunk.js";console.log(a);';
-    const first = patchMainSource(mainSrc, '2.0.0');
+    const first = patchMainSource(mainSrc, '1.0.0-beta');
     assert.ok(first.changed);
     assert.ok(first.code.startsWith(`/*${MARKERS.head}`));
     assert.ok(first.code.trimEnd().endsWith('})();'));
-    const second = patchMainSource(first.code, '2.0.0');
+    const second = patchMainSource(first.code, '1.0.0-beta');
     assert.equal(second.changed, false);
     assert.equal(second.code, first.code);
 
     const html = '<html><head><script type="module" crossorigin src="./assets/index.js"></script></head><body><div id="root"></div></body></html>';
-    const patchedHtml = patchIndexHtmlSource(html, '2.0.0');
+    const patchedHtml = patchIndexHtmlSource(html, '1.0.0-beta');
     assert.ok(patchedHtml.changed);
     // script tag must land inside <body>, after the app's own module script
     assert.ok(patchedHtml.code.indexOf('zmod-local://core/index.js') > html.indexOf('<body>'));
-    assert.ok(patchIndexHtmlSource(patchedHtml.code, '2.0.0').changed === false);
+    assert.ok(patchIndexHtmlSource(patchedHtml.code, '1.0.0-beta').changed === false);
   });
 });

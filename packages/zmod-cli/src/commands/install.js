@@ -18,7 +18,7 @@ import {
 } from '../../../zmod-core/src/common/paths.js';
 import { configManager } from '../../../zmod-core/src/common/config.js';
 
-const VERSION = '2.0.0';
+const VERSION = '1.0.0-beta';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 function copyDir(src, dest) {
