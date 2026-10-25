@@ -357,6 +357,7 @@ async function materializeInstalled(deps, src, { mode }) {
     if (!replaced) throw new Error(`旧插件目录删除失败（被占用？）: ${dest}`);
   }
 
+  suppressInstallTarget(id); // 自写忽略：RPC 路径自行广播，目录监视不重复处理
   fs.mkdirSync(pluginsDir, { recursive: true });
   fs.cpSync(src.dir, dest, { recursive: true });
   recordInstalled(deps.dataDir, id, {
@@ -376,6 +377,378 @@ async function materializeInstalled(deps, src, { mode }) {
 }
 
 // ---------------------------------------------------------------------------
+// plugins 目录监视（把插件文件夹或 zip 拖进 <data>/plugins 即装即热载）
+// ---------------------------------------------------------------------------
+
+const WATCH_DEBOUNCE_MS = 500;
+const WATCH_SUPPRESS_MS = 3000;
+const WATCH_RETRY_LIMIT = 10;
+
+/**
+ * 目录监视单例状态：
+ * - pending：按目标（plugins 下第一级条目名）合并抖动事件，500ms 稳定后处理一次；
+ * - suppress：RPC install/update/remove 的自写目标窗口，命中即跳过（它们已自行广播）；
+ * - known：已知插件目录快照（启动扫描 + 每次变更后更新），驱动"目录消失"判定；
+ * - retries：目标"未就绪"（大目录/大 zip 拷贝进行中）的顺延重试计数。
+ */
+const dirWatch = {
+  active: false,
+  watcher: null,
+  dataDir: null,
+  pluginsDir: null,
+  pending: new Map(),
+  retries: new Map(),
+  suppress: new Map(),
+  known: new Set(),
+  broadcastImpl: () => {},
+  nowImpl: () => Date.now(),
+  debounceMs: WATCH_DEBOUNCE_MS,
+  retryLimit: WATCH_RETRY_LIMIT
+};
+
+function warnWatch(msg) {
+  console.warn(`[ZMod:PluginWatch] ${msg}`);
+}
+
+/** RPC install/update/remove 落盘前登记：窗口内的监视事件视为宿主自写，跳过处理。 */
+function suppressInstallTarget(id) {
+  if (typeof id === 'string' && id) {
+    dirWatch.suppress.set(id, dirWatch.nowImpl() + WATCH_SUPPRESS_MS);
+  }
+}
+
+/** 已知插件快照：盘上有 index.js 的目录 ∪ 账本 id（覆盖手动删目录前的历史安装）。 */
+function scanKnownPlugins(pluginsDir, dataDir) {
+  const known = new Set();
+  try {
+    for (const e of fs.readdirSync(pluginsDir, { withFileTypes: true })) {
+      if (e.isDirectory() && fs.existsSync(path.join(pluginsDir, e.name, 'index.js'))) {
+        known.add(e.name);
+      }
+    }
+  } catch {}
+  try {
+    for (const id of Object.keys(readInstalled(dataDir).plugins)) known.add(id);
+  } catch {}
+  return known;
+}
+
+/** fs.watch 原始事件入口：提取目标并按 500ms 窗口合并抖动。 */
+function onWatchEvent(_eventType, filename) {
+  const st = dirWatch;
+  try {
+    if (!filename) return;
+    const target = String(filename).replace(/\\/g, '/').split('/')[0];
+    if (!target || target.startsWith('.')) return;
+    if (st.pending.has(target)) return; // 窗口内同目标事件合并
+    st.retries.delete(target);
+    const t = setTimeout(() => {
+      st.pending.delete(target);
+      void processWatchTarget(target);
+    }, st.debounceMs);
+    t.unref?.();
+    st.pending.set(target, t);
+  } catch (err) {
+    warnWatch(`事件入队失败: ${err?.message || err}`);
+  }
+}
+
+/** 事件稳定后仍未就绪（拷贝进行中）→ 有限次顺延，事件停了也不会漏装。 */
+function rescheduleTarget(target) {
+  const st = dirWatch;
+  const n = (st.retries.get(target) || 0) + 1;
+  if (n > st.retryLimit) {
+    st.retries.delete(target);
+    warnWatch(`${target} 持续未就绪，放弃本次监视（等待下一次事件触发）`);
+    return;
+  }
+  st.retries.set(target, n);
+  const t = setTimeout(() => {
+    st.pending.delete(target);
+    void processWatchTarget(target);
+  }, st.debounceMs);
+  t.unref?.();
+  st.pending.set(target, t);
+}
+
+/**
+ * 目标稳定后的分派：自写窗口 → zip 投放 / 目录投放 / 目录消失。
+ * 所有分支自吞异常（主进程常驻，监视失败只 warn 不炸）。
+ */
+async function processWatchTarget(target) {
+  const st = dirWatch;
+  if (!st.active) return;
+  try {
+    const until = st.suppress.get(target);
+    if (until !== undefined) {
+      if (st.nowImpl() < until) {
+        // 自写窗口内不处理，但同步快照使 known 与盘上实况一致
+        if (fs.existsSync(path.join(st.pluginsDir, target))) st.known.add(target);
+        else st.known.delete(target);
+        return;
+      }
+      st.suppress.delete(target);
+    }
+    const full = path.join(st.pluginsDir, target);
+    let stat = null;
+    try { stat = fs.statSync(full); } catch {}
+    if (!stat) {
+      handleDisappeared(target);
+      return;
+    }
+    if (/\.zip$/i.test(target)) {
+      if (stat.isFile()) handleZipDrop(target, full);
+      return;
+    }
+    if (!stat.isDirectory()) return;
+    handleDirDrop(target, full);
+  } catch (err) {
+    warnWatch(`处理事件失败 ${target}: ${err?.message || err}`);
+  }
+}
+
+/** 目录投放：manifest schema + engine 校验 → 无记录则记账广播 installed，有记录则刷新广播 updated。 */
+function handleDirDrop(dirname, full) {
+  const st = dirWatch;
+  if (!fs.existsSync(path.join(full, 'manifest.json')) || !fs.existsSync(path.join(full, 'index.js'))) {
+    rescheduleTarget(dirname);
+    return;
+  }
+  const manifest = readManifest(full);
+  if (!manifest || typeof manifest !== 'object') {
+    warnWatch(`目录 ${dirname} 的 manifest.json 无法解析，忽略`);
+    return;
+  }
+  const schema = validateManifestSchema?.(manifest);
+  if (!schema || !schema.ok) {
+    warnWatch(`目录 ${dirname} manifest 校验失败，忽略: ${schema ? schema.errors.join('; ') : '校验模块不可达'}`);
+    return;
+  }
+  const engine = checkEngine?.(manifest, {
+    zmodVersion: readZmodVersion(st.dataDir),
+    hostVersion: hostVersion()
+  });
+  if (!engine || !engine.ok) {
+    warnWatch(`目录 ${dirname} 引擎不兼容，忽略: ${engine ? engine.reasons.join('; ') : '校验模块不可达'}`);
+    return;
+  }
+  const id = manifest.id;
+  if (id !== dirname) {
+    // 渲染层 discover 以目录名为插件 id，目录名与 manifest.id 不一致必然装载错位
+    warnWatch(`目录名 (${dirname}) 与 manifest.id (${id}) 不一致，忽略`);
+    return;
+  }
+  const entry = getInstalledEntry(st.dataDir, id);
+  if (entry) {
+    // 升级/内容刷新：目录内容已在位，只刷新账本并广播 updated（保留原 source 与 installedAt）
+    recordInstalled(st.dataDir, id, {
+      ...entry,
+      version: typeof manifest.version === 'string' ? manifest.version : entry.version,
+      installedAt: entry.installedAt
+    });
+    st.known.add(id);
+    st.broadcastImpl({
+      action: 'updated',
+      id,
+      entryUrl: entryUrlFor(st.pluginsDir, id, manifest),
+      manifest
+    });
+    return;
+  }
+  recordInstalled(st.dataDir, id, {
+    version: typeof manifest.version === 'string' ? manifest.version : '',
+    source: 'dir',
+    sourceRef: `watch:${dirname}`,
+    shasum: ''
+  });
+  configManager.setPluginEnabled(id, true);
+  st.known.add(id);
+  st.broadcastImpl({
+    action: 'installed',
+    id,
+    entryUrl: entryUrlFor(st.pluginsDir, id, manifest),
+    manifest
+  });
+}
+
+/** zip 投放：解压 → 校验 → 落盘 → 删 zip（安装成功即收）→ 记账广播；失败保留原 zip 供用户自查。 */
+function handleZipDrop(filename, full) {
+  const st = dirWatch;
+  const holder = makeHolder(st.dataDir, safeTmpKey(path.basename(filename)));
+  try {
+    let dir;
+    try {
+      dir = extractZip(full, path.join(holder.root, 'x'));
+    } catch {
+      rescheduleTarget(filename); // zip 可能仍在拷贝中
+      return;
+    }
+    if (!fs.existsSync(path.join(dir, 'manifest.json')) || !fs.existsSync(path.join(dir, 'index.js'))) {
+      warnWatch(`zip ${filename} 缺少 manifest.json/index.js，不安装（保留原文件）`);
+      return;
+    }
+    const manifest = readManifest(dir);
+    if (!manifest || typeof manifest !== 'object') {
+      warnWatch(`zip ${filename} 的 manifest.json 无法解析，不安装（保留原文件）`);
+      return;
+    }
+    const schema = validateManifestSchema?.(manifest);
+    if (!schema || !schema.ok) {
+      warnWatch(`zip ${filename} manifest 校验失败，不安装（保留原文件）: ${schema ? schema.errors.join('; ') : '校验模块不可达'}`);
+      return;
+    }
+    const engine = checkEngine?.(manifest, {
+      zmodVersion: readZmodVersion(st.dataDir),
+      hostVersion: hostVersion()
+    });
+    if (!engine || !engine.ok) {
+      warnWatch(`zip ${filename} 引擎不兼容，不安装（保留原文件）: ${engine ? engine.reasons.join('; ') : '校验模块不可达'}`);
+      return;
+    }
+    const id = manifest.id;
+    const dest = path.join(st.pluginsDir, id);
+    if (fs.existsSync(dest)) {
+      warnWatch(`zip ${filename} 的插件 ${id} 已存在，视为无效投放（请先移除再投放）`);
+      return;
+    }
+    const shasum = sha256File(full);
+    suppressInstallTarget(id); // 自写忽略：落盘事件不重复处理
+    fs.mkdirSync(st.pluginsDir, { recursive: true });
+    fs.cpSync(dir, dest, { recursive: true });
+    try {
+      fs.rmSync(full, { force: true });
+    } catch (err) {
+      warnWatch(`清理投放的 zip 失败: ${err?.message || err}`);
+    }
+    recordInstalled(st.dataDir, id, {
+      version: typeof manifest.version === 'string' ? manifest.version : '',
+      source: 'zip',
+      sourceRef: `watch:${filename}`,
+      shasum
+    });
+    configManager.setPluginEnabled(id, true);
+    st.known.add(id);
+    st.broadcastImpl({
+      action: 'installed',
+      id,
+      entryUrl: entryUrlFor(st.pluginsDir, id, manifest),
+      manifest
+    });
+  } finally {
+    holder.cleanup();
+  }
+}
+
+/** 目录消失：仅对已知插件（快照 ∪ 账本）生效，清账本 + enabled 键并广播 removed。 */
+function handleDisappeared(target) {
+  const st = dirWatch;
+  if (!st.known.has(target)) return false;
+  st.known.delete(target);
+  if (getInstalledEntry(st.dataDir, target)) removeInstalled(st.dataDir, target);
+  try { configManager.deletePluginEnabled(target); } catch {}
+  st.broadcastImpl({ action: 'removed', id: target, entryUrl: null, manifest: null });
+  return true;
+}
+
+/** 测试/诊断辅助：立即跑完当前全部待处理目标（含重试链），返回全部处理完成。 */
+async function flushPending() {
+  const st = dirWatch;
+  for (let i = 0; i < 50 && st.pending.size > 0; i++) {
+    for (const target of [...st.pending.keys()]) {
+      const t = st.pending.get(target);
+      clearTimeout(t);
+      st.pending.delete(target);
+      await processWatchTarget(target);
+    }
+  }
+}
+
+function defaultWatchImpl(dir, opts) {
+  return fs.watch(dir, opts);
+}
+
+/**
+ * 启动 plugins 目录监视（单例防重入）。目录不存在先建；recursive 子目录事件
+ * 依赖平台支持（Windows 原生支持）。监视器 unref：不阻塞测试/CLI 进程退出。
+ * @param {{
+ *   dataDir?: string,
+ *   watchImpl?: (dir: string, opts: object) => object,
+ *   broadcastImpl?: (payload: object) => void,
+ *   nowImpl?: () => number,
+ *   debounceMs?: number,
+ *   retryLimit?: number
+ * }} [opts]
+ * @returns {boolean} 是否真正启动（已在运行则 false）
+ */
+export function startPluginDirWatch(opts = {}) {
+  const st = dirWatch;
+  if (st.active) return false;
+  const dataDir = path.resolve(opts.dataDir || getUserDataDir());
+  const pluginsDir = path.join(dataDir, 'plugins');
+  try {
+    fs.mkdirSync(pluginsDir, { recursive: true });
+  } catch (err) {
+    warnWatch(`无法创建插件目录，监视未启动: ${err?.message || err}`);
+    return false;
+  }
+  st.dataDir = dataDir;
+  st.pluginsDir = pluginsDir;
+  st.known = scanKnownPlugins(pluginsDir, dataDir);
+  st.suppress.clear();
+  st.pending.clear();
+  st.retries.clear();
+  st.broadcastImpl = opts.broadcastImpl || (() => {});
+  if (typeof opts.nowImpl === 'function') st.nowImpl = opts.nowImpl;
+  st.debounceMs = Number(opts.debounceMs) || WATCH_DEBOUNCE_MS;
+  st.retryLimit = Number(opts.retryLimit) || WATCH_RETRY_LIMIT;
+  try {
+    const watcher = (opts.watchImpl || defaultWatchImpl)(pluginsDir, { recursive: true });
+    watcher.on('change', (eventType, filename) => onWatchEvent(eventType, filename));
+    watcher.on('error', (err) => {
+      // 目录被删 / 盘符失联等：重置实例允许重建（下次 registerPluginHost 或显式调用）
+      warnWatch(`监视器错误，重置: ${err?.message || err}`);
+      try { watcher.close?.(); } catch {}
+      if (st.watcher === watcher) st.watcher = null;
+      st.active = false;
+      for (const t of st.pending.values()) clearTimeout(t);
+      st.pending.clear();
+      st.retries.clear();
+    });
+    watcher.unref?.();
+    st.watcher = watcher;
+    st.active = true;
+    return true;
+  } catch (err) {
+    warnWatch(`fs.watch 启动失败: ${err?.message || err}`);
+    st.watcher = null;
+    st.active = false;
+    return false;
+  }
+}
+
+/** 仅供单测：驱动事件 / 检查与重置监视内部状态。 */
+export const __pluginWatchTestHooks = {
+  state: dirWatch,
+  onWatchEvent,
+  processWatchTarget,
+  flushPending,
+  suppressInstallTarget,
+  scanKnownPlugins,
+  resetForTest() {
+    const st = dirWatch;
+    try { st.watcher?.close?.(); } catch {}
+    for (const t of st.pending.values()) clearTimeout(t);
+    st.active = false;
+    st.watcher = null;
+    st.pending.clear();
+    st.retries.clear();
+    st.suppress.clear();
+    st.known.clear();
+    st.nowImpl = () => Date.now();
+  }
+};
+
+// ---------------------------------------------------------------------------
 // RPC mount
 // ---------------------------------------------------------------------------
 
@@ -384,7 +757,8 @@ async function materializeInstalled(deps, src, { mode }) {
  *
  * @param {{register: (method: string, handler: (params: object) => Promise<any>) => void}} gateway
  * @param {object} [injected] 测试注入点：dataDir / fetchImpl / cloneImpl /
- *   broadcastImpl / sleepImpl / removeDirImpl / resolveSource
+ *   broadcastImpl / sleepImpl / removeDirImpl / resolveSource /
+ *   watchImpl（注入即拉起目录监视，配合 nowImpl / watchDebounceMs 可离线测 watch 管线）
  */
 export function registerPluginHost(gateway, injected = {}) {
   const deps = {
@@ -460,6 +834,7 @@ export function registerPluginHost(gateway, injected = {}) {
     const c = ctx();
     const dest = path.join(c.pluginsDir, id);
     if (!fs.existsSync(dest)) return { ok: false, error: `插件未安装: ${id}` };
+    suppressInstallTarget(id); // 自删：目录监视不重复广播 removed
     const removed = await deps.removeDirImpl(dest);
     if (!removed) return { ok: false, error: `目录删除失败（被占用？）: ${dest}` };
     removeInstalled(c.dataDir, id);
@@ -558,6 +933,18 @@ export function registerPluginHost(gateway, injected = {}) {
       return { ok: false, error: String(err?.message || err) };
     }
   });
+
+  // ---- plugins 目录监视（拖入目录/zip 即装即热载）----
+  // 仅真实 Electron 主进程自动启动（或显式注入 watchImpl）；单测/CLI 不拉起真实 fs.watch。
+  if (electronApp || injected.watchImpl) {
+    startPluginDirWatch({
+      dataDir: deps.dataDir || undefined,
+      watchImpl: injected.watchImpl,
+      broadcastImpl: deps.broadcastImpl,
+      nowImpl: injected.nowImpl,
+      debounceMs: injected.watchDebounceMs
+    });
+  }
 }
 
 /**
