@@ -16,7 +16,7 @@ Var /GLOBAL unKeepDataState
 Var /GLOBAL unKeepDataCheckbox
 
 !define MUI_ABORTWARNING
-; v6 紫 violet theme icons (repo: installer/icons)
+; border v2 图标（源: assets/icons/border_v2_uninst.ico）
 !define MUI_ICON "${__FILEDIR__}\icons\installer.ico"
 !define MUI_UNICON "${__FILEDIR__}\icons\uninstaller.ico"
 Icon "${__FILEDIR__}\icons\installer.ico"
