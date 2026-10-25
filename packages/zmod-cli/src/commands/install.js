@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
 import { locateZCode, findAsarInHost, findHostExe } from '../locate.js';
 import { findMarkers, extractAll, packAndVerify, getUnpackedSet } from '../lib/asar.js';
 import { isZcodeRunning, killZcode, launchDetached, sleep } from '../lib/process.js';
@@ -11,7 +12,6 @@ import {
   getLegacyUserDataDir,
   getBaseSnapshotPath,
   getPluginsDir,
-  getTmpDir,
   getLogsDir
 } from '../../../zmod-core/src/common/paths.js';
 import { configManager } from '../../../zmod-core/src/common/config.js';
@@ -44,20 +44,24 @@ export function teeConsoleTo(logPath) {
   console.error = (...a) => { origErr(...a); write(a); };
 }
 
-/** Remove leftover tmp/install-* from earlier runs whose cleanup failed. */
+/**
+ * Remove leftover tmp/install-* from earlier runs whose cleanup failed.
+ * Fire-and-forget: the data dir may sit under OneDrive where deleting a
+ * huge stale extract tree takes minutes of per-file sync — never block
+ * the install on it (async rm keeps running while the install proceeds;
+ * if the process exits first, the next run retries).
+ */
 export function cleanStaleTmp() {
-  const tmpRoot = getTmpDir();
+  const legacyTmpRoot = getTmpDir();
   let entries;
   try {
-    entries = fs.readdirSync(tmpRoot);
+    entries = fs.readdirSync(legacyTmpRoot);
   } catch {
     return;
   }
   for (const ent of entries) {
     if (ent.startsWith('install-')) {
-      try {
-        fs.rmSync(path.join(tmpRoot, ent), { recursive: true, force: true });
-      } catch {}
+      fs.rm(path.join(legacyTmpRoot, ent), { recursive: true, force: true }, () => {});
     }
   }
 }
@@ -145,7 +149,10 @@ export async function install(opts = {}) {
   ensureDirectories();
   const baseSnapshot = getBaseSnapshotPath();
   cleanStaleTmp();
-  const tmpRoot = path.join(getTmpDir(), `install-${Date.now()}`);
+  // Install staging lives in the OS temp dir, never in the data dir: the data
+  // dir may sit under OneDrive, where extracting/re-deleting a ~1.2 GB tree
+  // syncs file-by-file and can stall the install for many minutes.
+  const tmpRoot = path.join(os.tmpdir(), `zmod-install-${Date.now()}`);
   fs.mkdirSync(tmpRoot, { recursive: true });
 
   try {

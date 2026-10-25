@@ -1,6 +1,6 @@
 {
   "name": "zmod",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "description": "ZMod CLI - Installer, doctor, and plugin manager for ZCode client",
   "type": "module",
   "bin": {
