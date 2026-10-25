@@ -129,6 +129,37 @@ export async function collectFilesFromEntry(entry, { maxBytes = DROP_MAX_TOTAL_B
   return files;
 }
 
+/**
+ * 同步分拣拖入项 → 安装任务列表（批量拖入的第一步）。
+ * items 是 DataTransferItemList 形状的 array-like——真实 DOM 对象不可迭代
+ * （无 Symbol.iterator），只能索引遍历；测试传普通数组同样成立。
+ * DataTransferItem 在事件循环让出后即失效：本函数必须纯同步，调用方必须
+ * 在任何 await 之前一次性完成收集，之后再逐个异步读取内容。
+ * - 目录项（webkitGetAsEntry().isDirectory）→ {kind:'dir', name, entry}
+ * - .zip 文件项（getAsFile()）→ {kind:'zip', name, file}
+ * - 其余（散文件 / 非 zip）不计任务，名字进 skippedNames 供提示点名
+ */
+export function collectDropTasks(items) {
+  const tasks = [];
+  const skippedNames = [];
+  for (let i = 0; items && i < items.length; i++) {
+    const item = items[i];
+    if (!item) continue;
+    const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
+    if (entry && entry.isDirectory) {
+      tasks.push({ kind: 'dir', name: entry.name, entry });
+      continue;
+    }
+    const file = typeof item.getAsFile === 'function' ? item.getAsFile() : null;
+    if (file && /\.zip$/i.test(file.name || '')) {
+      tasks.push({ kind: 'zip', name: file.name, file });
+      continue;
+    }
+    skippedNames.push(file?.name || entry?.name || `#${i}`);
+  }
+  return { tasks, skippedNames };
+}
+
 /* Official nav item classes, verbatim from the host settings sidebar. */
 const NAV_BTN_BASE =
   'flex h-8 w-full items-center gap-2 rounded-xl px-2.5 text-left transition-colors ' +
@@ -955,7 +986,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     zone.appendChild(groupLabel(`未启用 (${disabledDefs.length}) · 拖入即装`));
     const hint = document.createElement('div');
     hint.className = 'text-ui-xs text-foreground-subtle text-center';
-    const HINT_TEXT = '拖入 .zip 或插件文件夹,松手自动安装 · 新插件默认未启用,确认后再开启';
+    const HINT_TEXT = '拖入 .zip 或插件文件夹（可多选）,松手自动安装 · 新插件默认未启用,确认后再开启';
     hint.textContent = HINT_TEXT;
     zone.appendChild(hint);
 
@@ -984,8 +1015,10 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       zone.style.borderColor = '';
       zone.style.background = '';
     };
+    // busy 传 true 用默认文案、传字符串显示进度（批量时逐个更新）、传 false 恢复
     const setBusy = (busy) => {
-      if (hint.isConnected) hint.textContent = busy ? '校验安装中…' : HINT_TEXT;
+      if (!hint.isConnected) return;
+      hint.textContent = busy === false ? HINT_TEXT : typeof busy === 'string' ? busy : '校验安装中…';
     };
 
     zone.addEventListener('dragenter', (e) => {
@@ -1006,31 +1039,56 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       depth = 0;
       unhighlight();
       const dt = e.dataTransfer;
-      try {
-        const file = dt?.files?.[0];
-        if (file && /\.zip$/i.test(file.name)) {
-          setBusy(true);
-          const zipBase64 = arrayBufferToBase64(await file.arrayBuffer());
-          const res = await api.invoke('plugin.installUpload', { kind: 'zip', name: file.name, zipBase64 });
-          ui.showToast(res && res.ok ? '已安装到未启用区(默认未启用)' : (res && res.error) || '安装失败', res && res.ok ? 'success' : 'error');
-          return;
-        }
-        const entry = dt?.items?.[0]?.webkitGetAsEntry?.();
-        if (entry && entry.isDirectory) {
-          setBusy(true);
-          const files = await collectFilesFromEntry(entry);
-          const res = await api.invoke('plugin.installUpload', { kind: 'files', name: entry.name, files });
-          ui.showToast(res && res.ok ? '已安装到未启用区(默认未启用)' : (res && res.error) || '安装失败', res && res.ok ? 'success' : 'error');
-          return;
-        }
-        ui.showToast('仅支持 .zip 或插件文件夹', 'warn');
-      } catch (err) {
-        if (err?.code === 'DROP_TOO_LARGE') ui.showToast('插件包过大', 'warn');
-        else ui.showToast(`安装失败：${err?.message || err}`, 'error');
-      } finally {
-        setBusy(false); // 成功时列表刷新由 plugin-changed 广播驱动，这里的重绘只是兜底
-        renderContent();
+      // DataTransferItem 在事件循环让出后失效：先同步分拣全部拖入项，再逐个异步安装
+      const { tasks, skippedNames } = collectDropTasks(dt?.items);
+      if (tasks.length === 0) {
+        if (skippedNames.length > 0) ui.showToast('仅支持 .zip 或插件文件夹', 'warn');
+        return;
       }
+      // 串行逐个安装（并行会同时写 plugins 目录并与目录监视竞争）；单项失败不阻断后续
+      const results = [];
+      for (let i = 0; i < tasks.length; i++) {
+        const task = tasks[i];
+        setBusy(`校验安装中…（第 ${i + 1}/${tasks.length} 个）`);
+        try {
+          let res;
+          if (task.kind === 'zip') {
+            const zipBase64 = arrayBufferToBase64(await task.file.arrayBuffer());
+            res = await api.invoke('plugin.installUpload', { kind: 'zip', name: task.name, zipBase64 });
+          } else {
+            const files = await collectFilesFromEntry(task.entry);
+            res = await api.invoke('plugin.installUpload', { kind: 'files', name: task.name, files });
+          }
+          results.push(res && res.ok
+            ? { name: task.name, ok: true }
+            : { name: task.name, ok: false, error: (res && res.error) || '安装失败' });
+        } catch (err) {
+          results.push({
+            name: task.name,
+            ok: false,
+            error: err?.code === 'DROP_TOO_LARGE' ? '插件包过大' : (err?.message || String(err))
+          });
+        }
+      }
+      // 汇总反馈：单个沿用单装语义；多个合并一条，失败项与被跳过项点名
+      const okCount = results.filter((r) => r.ok).length;
+      const failed = results.filter((r) => !r.ok);
+      let msg;
+      let level;
+      if (results.length === 1) {
+        msg = results[0].ok ? '已安装到未启用区(默认未启用)' : results[0].error;
+        level = results[0].ok ? 'success' : 'error';
+      } else if (failed.length === 0) {
+        msg = `已安装 ${okCount} 个插件（默认未启用）`;
+        level = 'success';
+      } else {
+        msg = `已安装 ${okCount} 个，失败 ${failed.length} 个：${failed.map((r) => `${r.name}(${r.error})`).join('、')}`;
+        level = 'error';
+      }
+      if (skippedNames.length > 0) msg += `；已跳过：${skippedNames.join('、')}`;
+      ui.showToast(msg, level);
+      setBusy(false);
+      renderContent(); // 成功时列表刷新由 plugin-changed 广播驱动，这里的重绘只是兜底
     });
     return zone;
   }

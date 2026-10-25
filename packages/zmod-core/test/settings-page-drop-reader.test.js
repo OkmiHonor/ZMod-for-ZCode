@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 // settings-page.js 模块顶层无 DOM 依赖（只有常量与函数声明），可在 Node 单测中导入。
-// 这里只测拖放安装的纯函数：collectFilesFromEntry / arrayBufferToBase64。
-const { collectFilesFromEntry, arrayBufferToBase64, DROP_SKIP_DIR_NAMES, DROP_MAX_TOTAL_BYTES } =
+// 这里只测拖放安装的纯函数：collectFilesFromEntry / arrayBufferToBase64 / collectDropTasks。
+const { collectFilesFromEntry, arrayBufferToBase64, collectDropTasks, DROP_SKIP_DIR_NAMES, DROP_MAX_TOTAL_BYTES } =
   await import('../src/renderer/settings-page.js');
 
 // ---- fake entry tree（webKitGetAsEntry 协议的离线 mock）----
@@ -119,4 +119,54 @@ test('collectFilesFromEntry: 单个条目读取失败走 onError 旁路，不阻
 test('常量: 跳过名单与 20MB 上限符合拖放管线约定', () => {
   assert.deepEqual([...DROP_SKIP_DIR_NAMES].sort(), ['.git', 'node_modules']);
   assert.equal(DROP_MAX_TOTAL_BYTES, 20 * 1024 * 1024);
+});
+
+// ---- collectDropTasks（批量拖入的第一步：同步分拣）----
+
+/** DataTransferItem 形状的 mock：真实 DOM 里目录项 getAsFile 为 null、zip 文件项 entry 为 FileEntry。 */
+const dirItem = (name) => ({ webkitGetAsEntry: () => ({ isDirectory: true, name }), getAsFile: () => null });
+const zipItem = (name) => ({ webkitGetAsEntry: () => ({ isFile: true, name }), getAsFile: () => ({ name }) });
+const plainFileItem = (name) => ({ webkitGetAsEntry: () => ({ isFile: true, name }), getAsFile: () => ({ name }) });
+const noKindItem = () => ({ webkitGetAsEntry: () => null, getAsFile: () => null });
+
+test('collectDropTasks: 混合拖入按目录/zip 分拣，顺序保持，非插件文件点名跳过', () => {
+  const { tasks, skippedNames } = collectDropTasks([
+    dirItem('plug-a'),
+    zipItem('plug-b.zip'),
+    plainFileItem('readme.txt'),
+    dirItem('plug-c')
+  ]);
+  assert.deepEqual(tasks.map((t) => `${t.kind}:${t.name}`), ['dir:plug-a', 'zip:plug-b.zip', 'dir:plug-c']);
+  assert.deepEqual(skippedNames, ['readme.txt']);
+});
+
+test('collectDropTasks: 同名 zip 产出多条任务（去重由主进程已装拒覆盖兜底）', () => {
+  const { tasks } = collectDropTasks([zipItem('a.zip'), zipItem('a.zip'), zipItem('b.zip')]);
+  assert.equal(tasks.length, 3);
+  assert.ok(tasks.every((t) => t.kind === 'zip'));
+});
+
+test('collectDropTasks: 无一可装时 tasks 为空，skippedNames 收齐（含取不到名字的 #序号）', () => {
+  const { tasks, skippedNames } = collectDropTasks([plainFileItem('x.txt'), noKindItem()]);
+  assert.equal(tasks.length, 0);
+  assert.deepEqual(skippedNames, ['x.txt', '#1']);
+});
+
+test('collectDropTasks: webkitGetAsEntry 返回 null 的 zip 文件项仍走 zip 分支', () => {
+  const item = { webkitGetAsEntry: () => null, getAsFile: () => ({ name: 'z.zip' }) };
+  const { tasks, skippedNames } = collectDropTasks([item]);
+  assert.deepEqual(tasks.map((t) => t.kind), ['zip']);
+  assert.deepEqual(skippedNames, []);
+});
+
+test('collectDropTasks: 只依赖索引访问——真实 DataTransferItemList 不可迭代，用 array-like 验证', () => {
+  const list = { length: 2, 0: zipItem('a.zip'), 1: dirItem('plug-d') }; // 无 Symbol.iterator
+  assert.throws(() => [...list], TypeError); // 确认 mock 形状确实不可迭代
+  const { tasks } = collectDropTasks(list);
+  assert.deepEqual(tasks.map((t) => `${t.kind}:${t.name}`), ['zip:a.zip', 'dir:plug-d']);
+});
+
+test('collectDropTasks: 空列表 / items 缺省', () => {
+  assert.deepEqual(collectDropTasks([]), { tasks: [], skippedNames: [] });
+  assert.deepEqual(collectDropTasks(undefined), { tasks: [], skippedNames: [] });
 });
