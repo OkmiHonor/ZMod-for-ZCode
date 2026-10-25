@@ -12,6 +12,7 @@ import {
   getLegacyUserDataDir,
   getBaseSnapshotPath,
   getPluginsDir,
+  getTmpDir,
   getLogsDir
 } from '../../../zmod-core/src/common/paths.js';
 import { configManager } from '../../../zmod-core/src/common/config.js';

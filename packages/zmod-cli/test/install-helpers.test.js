@@ -35,6 +35,8 @@ test('cleanStaleTmp removes only install-* leftovers', { env: {} }, async (t) =>
   fs.writeFileSync(path.join(tmpDir, 'readme'), 'x');
 
   cleanStaleTmp();
+  // fire-and-forget async rm — give the event loop a moment to run callbacks
+  await new Promise((r) => setTimeout(r, 250));
 
   assert.equal(fs.existsSync(path.join(tmpDir, 'install-123')), false);
   assert.equal(fs.existsSync(path.join(tmpDir, 'install-456')), false);
