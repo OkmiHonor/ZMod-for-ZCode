@@ -135,11 +135,13 @@ function main() {
         toast.style.opacity = '1';
         toast.style.transform = 'translateY(0)';
       });
+      // error/warn 需要更长的阅读窗口，避免被截图或切窗错过
+      const duration = type === 'error' || type === 'warn' ? 6000 : 2600;
       setTimeout(() => {
         toast.style.opacity = '0';
         toast.style.transform = 'translateY(10px)';
         setTimeout(() => toast.remove(), 300);
-      }, 2600);
+      }, duration);
     }
 
     /**

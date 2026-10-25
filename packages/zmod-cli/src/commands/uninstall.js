@@ -33,13 +33,13 @@ export function planUninstall(manifest, { keepData }) {
 async function bestEffortRestore(opts) {
   const hostDir = locateZCode({ explicit: opts.path });
   if (!hostDir) {
-    console.log('• 未找到 ZCode 安装目录，跳过 asar 还原（ZMod 补丁如仍在，可用 install --baseline 修复）');
+    console.log('• ZCode install dir not found, skipping asar restore (if the ZMod patch remains, fix with install --baseline)');
     return 'nohost';
   }
   const asarPath = findAsarInHost(hostDir);
   const hits = findMarkers(asarPath, Object.values(MARKERS));
   if (hits.length === 0) {
-    console.log('• asar 已是官方纯净版，无需还原');
+    console.log('• asar is already pristine official, no restore needed');
     return 'pristine';
   }
   const candidate = resolveBaselineCandidate({
@@ -49,25 +49,25 @@ async function bestEffortRestore(opts) {
     globalBaseline: getGlobalBaselinePath(getHostVersion(hostDir, findHostExe))
   });
   if (!candidate) {
-    console.warn('⚠ asar 仍是 ZMod 补丁版且无可用基线，无法自动还原官方客户端。');
-    console.warn('  重装 ZCode 客户端或用 install --baseline 提供官方原始 app.asar 可恢复。');
+    console.warn('⚠ asar is still ZMod-patched and no usable baseline exists; cannot auto-restore the official client.');
+    console.warn('  Reinstall the ZCode client or supply the pristine app.asar via install --baseline to recover.');
     return 'nobaseline';
   }
-  console.log(`• 还原官方 asar（来源: ${candidate.label}）…`);
+  console.log(`• Restoring official asar (source: ${candidate.label})...`);
   const swapTmp = `${asarPath}.zmod-restore`;
   fs.copyFileSync(candidate.path, swapTmp);
   for (let i = 0; i < 3; i++) {
     try {
       fs.renameSync(swapTmp, asarPath);
-      console.log(`✔ 已还原: ${asarPath}`);
+      console.log(`✔ Restored: ${asarPath}`);
       return 'restored';
     } catch {
       if (i < 2) await sleep(1500);
     }
   }
   try { fs.rmSync(swapTmp, { force: true }); } catch {}
-  console.warn(`⚠ 还原失败：${asarPath} 被占用（ZCode 运行中？）。程序文件仍将卸载；`);
-  console.warn('  事后可重装 ZCode 客户端或用 install --baseline 恢复官方 asar。');
+  console.warn(`⚠ Restore failed: ${asarPath} is locked (ZCode running?). Program files will still be uninstalled;`);
+  console.warn('  afterwards reinstall the ZCode client or use install --baseline to recover the official asar.');
   return 'locked';
 }
 
@@ -82,20 +82,20 @@ export async function uninstall(opts = {}) {
     fs.mkdirSync(getLogsDir(), { recursive: true });
     teeConsoleTo(path.join(getLogsDir(), 'uninstall-latest.log'));
   } catch {}
-  console.log('\n🧹 [ZMod Uninstall] 清单驱动卸载\n');
+  console.log('\n🧹 [ZMod Uninstall] Manifest-driven uninstall\n');
   const manifestPath = path.join(REPO_ROOT, MANIFEST);
   if (!fs.existsSync(manifestPath)) {
-    console.error(`✖ ${MANIFEST} 不存在：不是安装器受管的安装目录（开发仓库同此）。`);
+    console.error(`✖ ${MANIFEST} not found: not an installer-managed install directory (dev repo included).`);
     process.exit(3);
   }
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  console.log(`• 清单版本: ${manifest.version}（${manifest.files.length} 文件 / ${manifest.dirs.length} 目录）`);
+  console.log(`• Manifest version: ${manifest.version} (${manifest.files.length} files / ${manifest.dirs.length} dirs)`);
 
   // 数据目录必须在删除任何清单文件之前解析：定位锚点
   // （packages/zmod-cli/bin/zmod.js）本身就在清单里，删完再查会退到 APPDATA 兜底
   const dataDir = getUserDataDir();
   const keepData = opts.wipeData !== true;
-  console.log(keepData ? '• 模式: 保留用户数据（data/）' : '• 模式: 彻底清除（含 data/）');
+  console.log(keepData ? '• Mode: keep user data (data/)' : '• Mode: wipe everything (including data/)');
 
   const restoreState = await bestEffortRestore(opts);
 
@@ -105,7 +105,7 @@ export async function uninstall(opts = {}) {
     const p = path.join(REPO_ROOT, ...rel.split('/'));
     try { fs.rmSync(p, { force: true }); } catch { missing++; }
   }
-  console.log(`• 已删除清单文件 ${plan.files.length - missing} 条${missing ? `（${missing} 条已不存在或失败）` : ''}`);
+  console.log(`• Manifest files deleted: ${plan.files.length - missing}${missing ? ` (${missing} already gone or failed)` : ''}`);
 
   // 删除后短窗内 Windows 可能仍持有目录句柄（Defender/索引器扫刚删的文件），
   // 失败项延迟重试一轮；仍失败说明非空（用户文件混入），保留
@@ -119,14 +119,14 @@ export async function uninstall(opts = {}) {
   let dirLeft = left.length;
   if (!keepData && fs.existsSync(dataDir)) {
     fs.rmSync(dataDir, { recursive: true, force: true });
-    console.log('• 已清除数据目录 data/');
+    console.log('• Data directory data/ removed');
   }
   try { fs.rmdirSync(REPO_ROOT); } catch {
     await sleep(600);
     try { fs.rmdirSync(REPO_ROOT); } catch { dirLeft++; }
   }
-  console.log(dirLeft ? `• ${dirLeft} 个目录非空或被占用，保留原样` : '• 安装目录已移除');
-  console.log('✔ 卸载完成\n');
+  console.log(dirLeft ? `• ${dirLeft} dirs non-empty or locked, left as-is` : '• Install directory removed');
+  console.log('✔ Uninstall complete\n');
   if (restoreState === 'nobaseline' || restoreState === 'locked' || restoreState === 'nohost') {
     process.exit(4);
   }

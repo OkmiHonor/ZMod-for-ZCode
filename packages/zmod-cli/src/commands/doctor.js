@@ -40,56 +40,56 @@ const mark = (ok, label, detail = '') =>
   console.log(`  [${ok ? '✔' : '✖'}] ${label}${detail ? ' — ' + detail : ''}`);
 
 export async function doctor(opts = {}) {
-  console.log(`\n🩺 [ZMod Doctor] v${createRequire(import.meta.url)('../../package.json').version} 诊断报告\n`);
+  console.log(`\n🩺 [ZMod Doctor] v${createRequire(import.meta.url)('../../package.json').version} diagnostics report\n`);
   let failures = 0;
 
-  console.log('• 环境');
+  console.log('• Environment');
   console.log(`  Node ${process.version} · ${process.platform}/${process.arch}`);
 
   const hostDir = locateZCode({ explicit: opts.path });
   const asarPath = hostDir ? findAsarInHost(hostDir) : null;
   if (!asarPath) {
-    console.log('• 宿主');
-    mark(false, 'ZCode 安装目录未找到（--path / ZCODE_PATH / 常见路径均未命中）');
+    console.log('• Host');
+    mark(false, 'ZCode install dir not found (--path / ZCODE_PATH / common paths all missed)');
     failures++;
   } else {
     const version = await readHostVersion(asarPath);
-    console.log(`• 宿主: ${asarPath} (ZCode ${version}, ${(fs.statSync(asarPath).size / 1048576).toFixed(1)} MB)`);
+    console.log(`• Host: ${asarPath} (ZCode ${version}, ${(fs.statSync(asarPath).size / 1048576).toFixed(1)} MB)`);
 
-    console.log('• asar 补丁标记');
+    console.log('• asar patch markers');
     const v2 = findMarkers(asarPath, Object.values(MARKERS));
     const v1 = findMarkers(asarPath, V1_MARKERS);
     if (v1.length > 0) {
-      mark(false, '检测到旧版 ZMod v1 内联魔改', v1.join(', '));
+      mark(false, 'Legacy ZMod v1 inline mod detected', v1.join(', '));
       failures++;
     } else {
       const expected = Object.values(MARKERS);
       const missing = expected.filter((m) => !v2.includes(m));
       if (v2.length === 0) {
-        mark(false, '未安装 ZMod（官方纯净版）', '运行 zmod install');
+        mark(false, 'ZMod not installed (pristine official)', 'run zmod install');
       } else if (missing.length > 0) {
-        mark(false, '补丁不完整', `缺少 ${missing.join(', ')}`);
+        mark(false, 'Incomplete patches', `missing ${missing.join(', ')}`);
         failures++;
       } else {
-        mark(true, '四通道补丁齐全 (head/tail/preload/renderer)');
+        mark(true, 'All four patch channels present (head/tail/preload/renderer)');
       }
     }
 
-    console.log('• Electron 熔断哨兵');
+    console.log('• Electron fuse sentinel');
     const exe = findHostExe(hostDir);
     if (!exe) {
-      mark(true, '未找到主程序（跳过熔断扫描）');
+      mark(true, 'Host exe not found (skipping fuse scan)');
     } else {
       const fuses = scanFuses(exe);
-      if (!fuses.found) mark(true, '未嵌入熔断（asar 可自由重建）');
+      if (!fuses.found) mark(true, 'No embedded fuses (asar can be rebuilt freely)');
       else if (fuses.tripped) {
-        mark(false, '熔断已开启 — 重建 asar 将无法启动客户端！', JSON.stringify(fuses.fuses));
+        mark(false, 'Fuses tripped — rebuilding asar will break client startup!', JSON.stringify(fuses.fuses));
         failures++;
-      } else mark(true, '熔断未启用', JSON.stringify(fuses.fuses));
+      } else mark(true, 'Fuses not enabled', JSON.stringify(fuses.fuses));
     }
   }
 
-  console.log('• 外置运行时');
+  console.log('• External runtime');
   const userData = getUserDataDir();
   const runtimeDir = getRuntimeDir();
   const runtimeFiles = [
@@ -102,33 +102,33 @@ export async function doctor(opts = {}) {
     path.join(runtimeDir, 'sdk', 'schema.js')
   ];
   const missingRuntime = runtimeFiles.filter((f) => !fs.existsSync(f));
-  mark(missingRuntime.length === 0, missingRuntime.length === 0 ? 'runtime 文件齐全' : 'runtime 缺失文件', missingRuntime.join(', ') || runtimeDir);
+  mark(missingRuntime.length === 0, missingRuntime.length === 0 ? 'runtime files complete' : 'runtime files missing', missingRuntime.join(', ') || runtimeDir);
 
-  console.log('• 数据目录');
-  console.log(`  用户数据: ${userData} [${fs.existsSync(userData) ? '存在' : '未初始化'}]`);
-  console.log(`  配置文件: ${getConfigPath()} [${fs.existsSync(getConfigPath()) ? '存在' : '未创建'}]`);
-  console.log(`  基线快照: ${getBaseSnapshotPath()} [${fs.existsSync(getBaseSnapshotPath()) ? '存在' : '无（restore 将不可用）'}]`);
+  console.log('• Data directories');
+  console.log(`  User data: ${userData} [${fs.existsSync(userData) ? 'exists' : 'not initialized'}]`);
+  console.log(`  Config file: ${getConfigPath()} [${fs.existsSync(getConfigPath()) ? 'exists' : 'not created'}]`);
+  console.log(`  Baseline snapshot: ${getBaseSnapshotPath()} [${fs.existsSync(getBaseSnapshotPath()) ? 'exists' : 'missing (restore will be unavailable)'}]`);
 
-  console.log('• 插件');
+  console.log('• Plugins');
   const pluginsDir = getPluginsDir();
   if (!fs.existsSync(pluginsDir)) {
-    mark(false, '插件目录不存在', '运行 zmod install 部署');
+    mark(false, 'Plugins dir missing', 'run zmod install to deploy');
     failures++;
   } else {
     const ids = fs.readdirSync(pluginsDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
     if (ids.length === 0) {
-      mark(false, '插件目录为空');
+      mark(false, 'Plugins dir is empty');
       failures++;
     }
     for (const id of ids) {
       const enabled = configManager.isPluginEnabled(id);
-      console.log(`  [${enabled ? '✔' : ' '}] ${id.padEnd(20)} ${enabled ? '启用' : '禁用'}`);
+      console.log(`  [${enabled ? '✔' : ' '}] ${id.padEnd(20)} ${enabled ? 'enabled' : 'disabled'}`);
     }
   }
 
-  console.log('• 客户端进程');
-  console.log(`  ${isZcodeRunning() ? 'ZCode 正在运行（改 asar 前需退出或 --force）' : '未运行'}`);
+  console.log('• Client process');
+  console.log(`  ${isZcodeRunning() ? 'ZCode is running (quit or use --force before touching the asar)' : 'not running'}`);
 
-  console.log(`\n${failures === 0 ? '✔ 诊断通过' : `✖ ${failures} 项异常`}\n`);
+  console.log(`\n${failures === 0 ? '✔ Diagnostics passed' : `✖ ${failures} issue(s) found`}\n`);
   if (failures > 0) process.exitCode = 1;
 }

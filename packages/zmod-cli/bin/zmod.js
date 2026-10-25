@@ -32,27 +32,32 @@ function readFlags(rest) {
 const HELP = `
 ZMod CLI v${CLI_VERSION} — Next-generation modular mod loader for ZCode
 
-使用方法:
+Usage:
   zmod <command> [options]
 
-常用命令:
-  zmod doctor               诊断宿主、补丁标记、熔断哨兵、运行时与插件
-  zmod install              将 ZMod 微内核安装到 ZCode 客户端（外置运行时 + asar 四通道补丁）
-      [--path <dir>]          指定 ZCode 安装目录（默认自动探测）
-      [--force]               客户端运行中时自动结束进程并在完成后重启
-      [--baseline <file>]     install 专用：指定官方原始 app.asar（基线丢失时的恢复通道）
-  zmod restore              还原官方纯净客户端
-  zmod plugin list          查看已安装插件
-  zmod plugin install <src> 安装插件（本地目录 / .zip / git 仓库 URL）
-  zmod plugin remove <id>   卸载插件（配置保留，重装可恢复）
-  zmod plugin update [id]   更新插件（无 id = 遍历账本全部；zip/dir 来源不支持自动更新）
-  zmod plugin search [关键词] 搜索官方插件注册表（id / 名称 / 描述）
-  zmod plugin enable <id>   启用插件（重启客户端生效）
-  zmod plugin disable <id>  禁用插件
-  zmod plugin init <id>     生成插件脚手架（manifest + index.js + README + 测试）[--dir <目录>]
+Common commands:
+  zmod doctor               Diagnose host, patch markers, fuse sentinel, runtime and plugins
+  zmod install              Install the ZMod microkernel into the ZCode client (external runtime + 4-channel asar patches)
+      [--path <dir>]          ZCode install directory (auto-detected by default)
+      [--force]               When the client is running, kill the process automatically and relaunch when done
+      [--baseline <file>]     install only: path to the pristine official app.asar (recovery channel when the baseline is lost)
+  zmod restore              Restore the pristine official client
+  zmod plugin list          List installed plugins
+  zmod plugin install <src> Install a plugin (local dir / .zip / git repo URL)
+  zmod plugin remove <id>   Uninstall a plugin (config kept, reinstall restores it)
+  zmod plugin update [id]   Update plugins (no id = all ledger entries; zip/dir sources do not support auto-update)
+  zmod plugin search [term] Search the official plugin registry (id / name / description)
+  zmod plugin enable <id>   Enable a plugin (takes effect after client restart)
+  zmod plugin disable <id>  Disable a plugin
+  zmod plugin init <id>     Generate a plugin scaffold (manifest + index.js + README + tests) [--dir <dir>]
 `;
 
 async function main() {
+  // --help/-h anywhere after the command = dry path: never execute side effects
+  if (command !== 'help' && (args.includes('--help') || args.includes('-h'))) {
+    console.log(HELP);
+    return;
+  }
   const flags = readFlags(args.slice(1));
   switch (command) {
     case 'doctor':
@@ -80,7 +85,7 @@ async function main() {
       break;
     default:
       console.log(HELP);
-      console.error(`\n未知命令: ${command}`);
+      console.error(`\nUnknown command: ${command}`);
       process.exitCode = 1;
   }
 }

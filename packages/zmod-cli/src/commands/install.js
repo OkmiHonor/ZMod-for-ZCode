@@ -84,18 +84,18 @@ export function migrateLegacyDataDir() {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   try {
     fs.renameSync(legacy, target);
-    console.log(`• 用户数据已迁移: ${legacy} → ${target}`);
+    console.log(`• User data migrated: ${legacy} -> ${target}`);
   } catch (err) {
     if (err.code !== 'EXDEV') {
-      console.error(`✖ 旧数据目录迁移失败（${err.message}），继续使用: ${legacy}`);
+      console.error(`✖ Legacy data dir migration failed (${err.message}), continuing with: ${legacy}`);
       return;
     }
     try {
       fs.cpSync(legacy, target, { recursive: true });
       fs.rmSync(legacy, { recursive: true, force: true });
-      console.log(`• 用户数据已迁移（跨盘复制）: ${legacy} → ${target}`);
+      console.log(`• User data migrated (cross-drive copy): ${legacy} -> ${target}`);
     } catch (err2) {
-      console.error(`✖ 旧数据目录迁移失败（${err2.message}），继续使用: ${legacy}`);
+      console.error(`✖ Legacy data dir migration failed (${err2.message}), continuing with: ${legacy}`);
     }
   }
 }
@@ -160,7 +160,7 @@ function deployRuntimeAndPlugins() {
     }
     writeBuiltinRecords(dataDir, [...shipped]);
   } catch (err) {
-    console.warn(`⚠ builtin 插件记账失败（不影响安装）: ${err?.message || err}`);
+    console.warn(`⚠ Builtin plugin ledger update failed (install continues): ${err?.message || err}`);
   }
   return runtimeDir;
 }
@@ -173,11 +173,11 @@ export async function install(opts = {}) {
 
   const hostDir = locateZCode({ explicit: opts.path });
   if (!hostDir) {
-    console.error('✖ 未找到 ZCode 安装目录。请用 --path <目录> 指定，或设置 ZCODE_PATH 环境变量。');
+    console.error('✖ ZCode install directory not found. Use --path <dir> or set the ZCODE_PATH env var.');
     process.exit(1);
   }
   const asarPath = findAsarInHost(hostDir);
-  console.log(`• 宿主目录: ${hostDir}`);
+  console.log(`• Host directory: ${hostDir}`);
 
   ensureDirectories();
   const baseSnapshot = getBaseSnapshotPath();
@@ -192,39 +192,39 @@ export async function install(opts = {}) {
     // ---- 1. Determine the pristine source ----
     const v1Hits = findMarkers(asarPath, V1_MARKERS);
     if (v1Hits.length > 0) {
-      console.error(`✖ 检测到旧版 ZMod v1（内联魔改）标记: ${v1Hits.join(', ')}`);
-      console.error('  为保护你的生产环境，安装器拒绝处理。请先用 v1 工具链还原官方纯净版再安装。');
+      console.error(`✖ Legacy ZMod v1 (inline mod) markers detected: ${v1Hits.join(', ')}`);
+      console.error('  Refusing to proceed to protect your install. Restore the pristine official client with the v1 toolchain first, then install.');
       process.exit(1);
     }
     const v2Hits = findMarkers(asarPath, Object.values(MARKERS));
     const hostVersion = getHostVersion(hostDir, findHostExe);
     const globalBaseline = getGlobalBaselinePath(hostVersion);
-    if (hostVersion) console.log(`• 宿主版本: ZCode ${hostVersion}`);
+    if (hostVersion) console.log(`• Host version: ZCode ${hostVersion}`);
     let pristineSource;
     if (v2Hits.length > 0) {
       const candidate = resolveBaselineCandidate({ baseSnapshot, asarPath, explicit: opts.baseline, globalBaseline });
       if (!candidate) {
-        console.error('✖ 当前 asar 已是 ZMod 补丁版，且找不到任何官方基线（base/app.asar、机器级缓存、app.asar.backup1 均不存在）。');
-        console.error('  恢复方式（任选其一）：');
-        console.error('  1. zmod install --baseline <官方原始 app.asar 路径>');
-        console.error('  2. 重装 ZCode 客户端恢复官方 asar 后重新安装 ZMod');
+        console.error('✖ asar is already ZMod-patched and no official baseline was found (base/app.asar, machine-level cache and app.asar.backup1 are all missing).');
+        console.error('  Recovery options (pick one):');
+        console.error('  1. zmod install --baseline <path to the pristine official app.asar>');
+        console.error('  2. Reinstall the ZCode client to restore the official asar, then install ZMod again');
         process.exit(1);
       }
-      console.log(`• 检测到已安装 ZMod，基于${candidate.label}重装`);
+      console.log(`• Existing ZMod install detected, reinstalling from ${candidate.label}`);
       pristineSource = candidate.path;
       if (backfillBaseSnapshot(baseSnapshot, pristineSource, { hostVersion })) {
-        console.log('• 已回填基线快照 base/app.asar');
+        console.log('• Backfilled baseline snapshot base/app.asar');
       }
     } else {
       pristineSource = asarPath;
       // snapshot the pristine official asar — future reinstalls and `restore` depend on it
-      console.log('• 当前为官方纯净版，快照基线到 base/app.asar' + (hostVersion ? ' 与机器级缓存' : ''));
+      console.log('• Pristine official client detected, snapshotting baseline to base/app.asar' + (hostVersion ? ' and machine-level cache' : ''));
       backfillBaseSnapshot(baseSnapshot, asarPath, { hostVersion });
     }
 
     // ---- 2. Extract + patch ----
     const extractDir = path.join(tmpRoot, 'extract');
-    console.log('• 解包官方 asar…');
+    console.log('• Extracting official asar...');
     const unpackedHint = `${asarPath}.unpacked`;
     await extractAll(pristineSource, extractDir, fs.existsSync(unpackedHint) ? unpackedHint : null);
 
@@ -233,7 +233,7 @@ export async function install(opts = {}) {
     const htmlPath = path.join(extractDir, 'out', 'renderer', 'index.html');
     for (const f of [mainPath, preloadPath, htmlPath]) {
       if (!fs.existsSync(f)) {
-        console.error(`✖ 宿主结构不符合预期，缺少 ${path.relative(extractDir, f)}`);
+        console.error(`✖ Unexpected host layout, missing ${path.relative(extractDir, f)}`);
         process.exit(1);
       }
     }
@@ -245,23 +245,27 @@ export async function install(opts = {}) {
     const html = patchIndexHtmlSource(fs.readFileSync(htmlPath, 'utf8'), VERSION);
     fs.writeFileSync(htmlPath, html.code, 'utf8');
     console.log(
-      `• 补丁: main(head${main.changed ? '✔' : '=0'}+tail) preload${preload.changed ? '✔' : '=0'} renderer${html.changed ? '✔' : '=0'}`
+      `• Patches: main(head${main.changed ? '✔' : '=0'}+tail) preload${preload.changed ? '✔' : '=0'} renderer${html.changed ? '✔' : '=0'}`
     );
 
     // ---- 3. Repack + verify ----
-    console.log('• 重建 asar（node-pty/ssh2 原生二进制 unpack 校验）…');
+    console.log('• Repacking asar (verifying node-pty/ssh2 native unpack set)...');
     const newAsar = path.join(tmpRoot, 'app.asar.new');
     const unpackedCount = await packAndVerify(extractDir, newAsar, pristineSource);
-    console.log(`• unpacked 集合与基线一致: ${unpackedCount} 条`);
+    console.log(`• Unpacked set matches baseline: ${unpackedCount} entries`);
 
     // ---- 4. Deploy runtime + plugins (no client restart needed for this part) ----
     const runtimeDir = deployRuntimeAndPlugins();
-    console.log(`• 运行时与插件已部署: ${runtimeDir}`);
+    console.log(`• Runtime and plugins deployed: ${runtimeDir}`);
+    // 升级安装清理旧版残留：run-install.cmd 新版已不分发（NSIS 卸载兜底也会删）
+    try {
+      fs.rmSync(path.join(path.dirname(getUserDataDir()), 'run-install.cmd'), { force: true });
+    } catch {}
 
     // ---- 5. Swap the asar (evidence-based lock handling: try first) ----
     let killed = false;
     if (opts.force && isZcodeRunning()) {
-      console.log('• --force: 结束 ZCode 进程…');
+      console.log('• --force: killing ZCode process...');
       killZcode();
       killed = true;
       await sleep(2000);
@@ -285,30 +289,30 @@ export async function install(opts = {}) {
       try {
         fs.rmSync(swapTmp, { force: true });
       } catch {}
-      console.error('\n✖ app.asar 被占用，宿主补丁未应用（运行时与插件已就位）。');
-      console.error(`  rename 失败: ${lockErr?.code || ''} ${lockErr?.message || lockErr}`);
+      console.error('\n✖ app.asar is locked, host patch not applied (runtime and plugins are in place).');
+      console.error(`  rename failed: ${lockErr?.code || ''} ${lockErr?.message || lockErr}`);
       if (isZcodeRunning()) {
-        console.error('  ZCode 正在运行（可能在安装期间被重新打开）：请完全退出后重跑 zmod install，或使用 --force 自动结束进程并重启。');
+        console.error('  ZCode is running (possibly reopened during install): quit it fully and rerun zmod install, or use --force to kill the process and relaunch automatically.');
       } else {
-        console.error('  未检测到 ZCode 进程，asar 仍被占用——可能是杀毒/索引扫描；稍等片刻后重跑 zmod install。');
+        console.error('  No ZCode process detected but the asar is still locked — likely antivirus/indexer scanning; wait a moment and rerun zmod install.');
       }
       process.exitCode = 2;
       return;
     }
-    console.log(`• 已写入: ${asarPath}`);
+    console.log(`• Written: ${asarPath}`);
 
     configManager.set('installPath', hostDir);
     if (killed) {
       const exe = findHostExe(hostDir);
       if (exe) {
         launchDetached(exe);
-        console.log('• 已重新拉起 ZCode');
+        console.log('• Relaunched ZCode');
       }
     }
 
-    console.log('\n✔ ZMod 安装完成！');
-    console.log('  启动 ZCode 后按 Ctrl+Shift+M 打开管理面板。');
-    console.log(`  还原官方: zmod restore（基线快照: ${baseSnapshot}）\n`);
+    console.log('\n✔ ZMod install complete!');
+    console.log('  Launch ZCode and press Ctrl+Shift+M to open the management panel.');
+    console.log(`  Restore official: zmod restore (baseline snapshot: ${baseSnapshot})\n`);
   } finally {
     try {
       fs.rmSync(tmpRoot, { recursive: true, force: true });

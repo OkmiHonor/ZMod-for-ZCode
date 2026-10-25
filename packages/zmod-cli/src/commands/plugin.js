@@ -216,6 +216,21 @@ async function fetchOnce(url) {
   }
 }
 
+/**
+ * fetchRegistry 用的代理提示：Node fetch 不读系统代理，双源全挂时指路。
+ * 已设置 HTTPS_PROXY/HTTP_PROXY（含小写）则不再提示。
+ */
+function proxyEnvHint() {
+  const set = (v) => typeof v === 'string' && v.trim() !== '';
+  if (
+    set(process.env.HTTPS_PROXY) || set(process.env.https_proxy) ||
+    set(process.env.HTTP_PROXY) || set(process.env.http_proxy)
+  ) {
+    return '';
+  }
+  return ' (no proxy env detected; set HTTPS_PROXY if you use a system proxy)';
+}
+
 /** 双源顺序尝试（GitHub raw 主源 + jsdelivr 镜像），先成功者用；全失败返回 null。 */
 async function fetchRegistry() {
   const errors = [];
@@ -226,7 +241,7 @@ async function fetchRegistry() {
       errors.push(`${url}: ${err?.message || err}`);
     }
   }
-  console.error('✖ 拉取插件注册表失败（双源均不可达）:');
+  console.error(`✖ 拉取插件注册表失败（双源均不可达）${proxyEnvHint()}:`);
   for (const e of errors) console.error(`  ${e}`);
   return null;
 }
@@ -635,6 +650,27 @@ function runPluginInit(id, flags = {}) {
   console.log('  发布走查见 docs/plugin-author-guide.md（提 PR 到 plugins/ 或登记 registry 条目）。\n');
 }
 
+/**
+ * 开发目录判定：cwd 与数据目录同属一个 package.json 根时，视为在 ZMod 开发仓库内
+ * 运行——此时 data 会解析到仓库自身的 data/，空列表会误导用户以为插件丢失。
+ */
+function isRunningInsideDevRepo() {
+  const findPkgRoot = (start) => {
+    let cur = start;
+    for (let i = 0; i < 8; i++) {
+      if (fs.existsSync(path.join(cur, 'package.json'))) return cur;
+      const parent = path.dirname(cur);
+      if (parent === cur) return null;
+      cur = parent;
+    }
+    return null;
+  };
+  const dataRoot = findPkgRoot(path.dirname(getUserDataDir()));
+  if (!dataRoot) return false;
+  const cwdRoot = findPkgRoot(process.cwd());
+  return cwdRoot != null && path.resolve(cwdRoot) === path.resolve(dataRoot);
+}
+
 export async function pluginCommand(subCmd, arg, rest = []) {
   if (subCmd === 'init') {
     runPluginInit(arg, parseInitFlags(rest));
@@ -710,7 +746,11 @@ export async function pluginCommand(subCmd, arg, rest = []) {
     console.log('\n📦 [ZMod 插件]:\n');
     const plugins = scanInstalled();
     if (plugins.length === 0) {
-      console.log(`  （无插件 — 运行 zmod install 部署官方插件到 ${getPluginsDir()}）\n`);
+      console.log(`  （无插件 — 运行 zmod install 部署官方插件到 ${getPluginsDir()}）`);
+      if (isRunningInsideDevRepo()) {
+        console.log('  Development mode: data dir resolved to the repository itself. Run from elsewhere (or set ZMOD_USER_DATA_DIR) to operate the deployed install.');
+      }
+      console.log();
       return;
     }
     for (const p of plugins) {
