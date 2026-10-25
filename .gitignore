@@ -27,3 +27,6 @@ whale-skins/_source/
 
 # 构建产物
 dist/
+
+# runtime artifacts from running the CLI in-repo
+/data/

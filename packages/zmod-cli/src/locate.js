@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execSync } from 'node:child_process';
 import { configManager } from '../../zmod-core/src/common/config.js';
 import { runningZcodeExePath } from './lib/process.js';
 
@@ -18,8 +19,44 @@ export function findAsarInHost(hostDir) {
 }
 
 /**
+ * Custom install dirs: read the ZCode NSIS uninstall entry's InstallLocation
+ * from the registry (HKCU Uninstall\<guid>). Covers installs outside the
+ * platform defaults even when nothing is running and config was wiped.
+ */
+function zcodeDirFromUninstallRegistry() {
+  if (process.platform !== 'win32') return null;
+  const root = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall';
+  try {
+    const out = execSync(`reg query "${root}" /s /f "ZCode" /d`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    const keys = [
+      ...new Set(
+        [...out.matchAll(/HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\\S+/g)].map(
+          (m) => m[0]
+        )
+      )
+    ];
+    for (const key of keys) {
+      try {
+        const kv = execSync(`reg query "${key}" /v InstallLocation`, {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore']
+        });
+        const line = kv.split(/\r?\n/).find((l) => l.includes('REG_SZ'));
+        const dir = line?.split('REG_SZ')[1]?.trim();
+        if (dir && findAsarInHost(dir)) return dir;
+      } catch {}
+    }
+  } catch {}
+  return null;
+}
+
+/**
  * Resolve the ZCode host directory. Priority:
- * explicit --path > saved installPath (config.json) > ZCODE_PATH env > platform defaults.
+ * explicit --path > saved installPath (config.json) > ZCODE_PATH env > platform defaults
+ * > registry uninstall entry > running-process inference.
  */
 export function locateZCode(opts = {}) {
   const candidates = [];
@@ -50,6 +87,8 @@ export function locateZCode(opts = {}) {
   for (const c of candidates) {
     if (c && fs.existsSync(c) && findAsarInHost(c)) return c;
   }
+  const fromRegistry = zcodeDirFromUninstallRegistry();
+  if (fromRegistry) return fromRegistry;
   // Last resort: infer the install dir from a running client's executable —
   // covers custom install locations no default candidate knows about.
   const exe = runningZcodeExePath();
