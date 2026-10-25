@@ -71,7 +71,7 @@ test('ZMod SDK definePlugin & Schema Suite', async (t) => {
   });
 
   await t.test('definitions are extensible — start() may attach lifecycle state', () => {
-    // regression: v2.0.0-alpha froze the definition object, and plugins that
+    // regression: an early alpha froze the definition object, and plugins that
     // wrote `this._cleanup = ...` inside start() crashed with a TypeError
     const plugin = definePlugin({
       id: 'lifecycle-state',

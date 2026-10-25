@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { locateZCode, findAsarInHost, findHostExe } from '../locate.js';
 import { findMarkers, readHostVersion } from '../lib/asar.js';
 import { MARKERS, V1_MARKERS } from '../patches/index.js';
@@ -39,7 +40,7 @@ const mark = (ok, label, detail = '') =>
   console.log(`  [${ok ? '✔' : '✖'}] ${label}${detail ? ' — ' + detail : ''}`);
 
 export async function doctor(opts = {}) {
-  console.log('\n🩺 [ZMod Doctor] v2.0 诊断报告\n');
+  console.log(`\n🩺 [ZMod Doctor] v${createRequire(import.meta.url)('../../package.json').version} 诊断报告\n`);
   let failures = 0;
 
   console.log('• 环境');
@@ -65,7 +66,7 @@ export async function doctor(opts = {}) {
       const expected = Object.values(MARKERS);
       const missing = expected.filter((m) => !v2.includes(m));
       if (v2.length === 0) {
-        mark(false, '未安装 ZMod v2（官方纯净版）', '运行 zmod install');
+        mark(false, '未安装 ZMod（官方纯净版）', '运行 zmod install');
       } else if (missing.length > 0) {
         mark(false, '补丁不完整', `缺少 ${missing.join(', ')}`);
         failures++;

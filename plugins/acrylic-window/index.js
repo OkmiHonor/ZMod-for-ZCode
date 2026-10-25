@@ -40,7 +40,7 @@ export default definePlugin({
   id: 'acrylic-window',
   name: '亚克力背板与老板键',
   description: 'Windows 11 亚克力/云母窗口（系统材质 + 官方主题底色透明化）+ 全局老板键',
-  version: '2.1.0',
+  version: '1.0.0-beta',
   author: 'ZMod Team',
 
   settings: {

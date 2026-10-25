@@ -10,6 +10,9 @@ import { pluginCommand } from '../src/commands/plugin.js';
 import { install } from '../src/commands/install.js';
 import { restore } from '../src/commands/restore.js';
 import { uninstall } from '../src/commands/uninstall.js';
+import { createRequire } from 'node:module';
+
+const { version: CLI_VERSION } = createRequire(import.meta.url)('../package.json');
 
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
@@ -27,7 +30,7 @@ function readFlags(rest) {
 }
 
 const HELP = `
-ZMod CLI v2.0.0 — Next-generation modular mod loader for ZCode
+ZMod CLI v${CLI_VERSION} — Next-generation modular mod loader for ZCode
 
 使用方法:
   zmod <command> [options]

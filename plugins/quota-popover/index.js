@@ -435,7 +435,7 @@ const REFRESH_MARK = 'zmod-quota-refresh';
 export default definePlugin({
   id: 'quota-popover',
   name: '余量弹窗与模型页余量',
-  version: '2.2.0',
+  version: '1.0.0-beta',
   description: '官方「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1）+ 官方设置模型页供应商详情注入 v1 Bento 账户额度卡（数据源驱动，不改官方文件）',
   author: 'ZMod Team',
 

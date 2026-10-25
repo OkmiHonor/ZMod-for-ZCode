@@ -1,7 +1,10 @@
-# 大体积/可再生内容不入库：解包树、构建树、官方归档、日志、临时诊断
+# 依赖与构建产物
 node_modules/
-asar-archive/
+dist/
 build-*/
+
+# 解包树 / 官方归档 / 日志 / 临时诊断
+asar-archive/
 extract/
 logs/
 stray/
@@ -9,24 +12,9 @@ _verify/
 _selftest/
 *.asar
 *.asar.unpacked/
-HANDOFF.md
 
-# 本地私产/无关项目/第三方 vendored 源：磁盘保留，不入库（官方 asar 备份与上游源码不可再分发）
-facewinunlock-focus-fix/
-zcode-asset-archive-*/
-upstream/
-backups/
-dsh-port/
-.dsh-acl-out/
-.serena/
-README-迁移清单.md
-
-# 备份文件与皮肤源料：磁盘保留，不入库
+# 备份文件
 *.backup1
-whale-skins/_source/
 
-# 构建产物
-dist/
-
-# runtime artifacts from running the CLI in-repo
+# 仓库内运行 CLI 产生的本地数据
 /data/

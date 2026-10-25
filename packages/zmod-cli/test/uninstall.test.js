@@ -7,7 +7,7 @@ import { planUninstall } from '../src/commands/uninstall.js';
 import { resolveBaselineCandidate, backfillBaseSnapshot } from '../src/lib/baseline.js';
 
 const manifest = {
-  version: '2.3.0',
+  version: '1.0.0-beta',
   files: [
     'run-install.cmd',
     'Uninstall.exe',

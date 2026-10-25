@@ -2,7 +2,7 @@
   "name": "zmod-build-tools",
   "private": true,
   "version": "1.0.0-beta",
-  "description": "ZMod build/deploy toolchain, deliberately kept OUTSIDE the ZCode install dir so installer cleanup cannot delete it",
+  "description": "ZMod build toolchain (installer packaging & host diagnostics)",
   "dependencies": {
     "@electron/asar": "^3.2.10"
   }

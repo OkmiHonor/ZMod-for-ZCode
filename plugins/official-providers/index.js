@@ -328,7 +328,7 @@ function preset(overrides) {
 export default definePlugin({
   id: 'official-providers',
   name: '数据源适配器（官方）',
-  version: '1.0.0',
+  version: '1.0.0-beta',
   description: '提供通用 HTTP 与常用平台预设的数据源类型；凭据全部加密保存，出厂零预配',
   author: 'ZMod Team',
 

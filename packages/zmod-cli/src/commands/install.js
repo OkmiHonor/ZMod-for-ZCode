@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
+import { createRequire } from 'node:module';
 import { locateZCode, findAsarInHost, findHostExe } from '../locate.js';
 import { findMarkers, extractAll, packAndVerify, getUnpackedSet } from '../lib/asar.js';
 import { isZcodeRunning, killZcode, launchDetached, sleep } from '../lib/process.js';
@@ -18,7 +19,7 @@ import {
 } from '../../../zmod-core/src/common/paths.js';
 import { configManager } from '../../../zmod-core/src/common/config.js';
 
-const VERSION = '1.0.0-beta';
+const VERSION = createRequire(import.meta.url)('../../package.json').version;
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 function copyDir(src, dest) {
@@ -182,13 +183,13 @@ export async function install(opts = {}) {
     if (v2Hits.length > 0) {
       const candidate = resolveBaselineCandidate({ baseSnapshot, asarPath, explicit: opts.baseline, globalBaseline });
       if (!candidate) {
-        console.error('✖ 当前 asar 已是 ZMod v2 补丁版，且找不到任何官方基线（base/app.asar、机器级缓存、app.asar.backup1 均不存在）。');
+        console.error('✖ 当前 asar 已是 ZMod 补丁版，且找不到任何官方基线（base/app.asar、机器级缓存、app.asar.backup1 均不存在）。');
         console.error('  恢复方式（任选其一）：');
         console.error('  1. zmod install --baseline <官方原始 app.asar 路径>');
         console.error('  2. 重装 ZCode 客户端恢复官方 asar 后重新安装 ZMod');
         process.exit(1);
       }
-      console.log(`• 检测到已安装 v2，基于${candidate.label}重装`);
+      console.log(`• 检测到已安装 ZMod，基于${candidate.label}重装`);
       pristineSource = candidate.path;
       if (backfillBaseSnapshot(baseSnapshot, pristineSource, { hostVersion })) {
         console.log('• 已回填基线快照 base/app.asar');
@@ -284,7 +285,7 @@ export async function install(opts = {}) {
       }
     }
 
-    console.log('\n✔ ZMod v2 安装完成！');
+    console.log('\n✔ ZMod 安装完成！');
     console.log('  启动 ZCode 后按 Ctrl+Shift+M 打开管理面板。');
     console.log(`  还原官方: zmod restore（基线快照: ${baseSnapshot}）\n`);
   } finally {

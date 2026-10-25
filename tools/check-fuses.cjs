@@ -35,7 +35,11 @@ function scanExe(exePath) {
 module.exports = { scanExe };
 
 if (require.main === module) {
-  const exe = process.argv[2] || 'D:/ZCode/ZCode.exe';
+  const exe = process.argv[2];
+  if (!exe) {
+    console.error('用法: node tools/check-fuses.cjs <ZCode.exe 路径>');
+    process.exit(1);
+  }
   try {
     const r = scanExe(exe);
     if (!r.found) console.log('[fuse] 未嵌入 fuse 哨兵（未配置熔断，asar 可自由重建）');

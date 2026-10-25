@@ -1,5 +1,5 @@
 /**
- * ZMod Renderer Microkernel v2.0
+ * ZMod Renderer Microkernel
  *
  * Loaded by the host via `<script type="module" src="zmod-local://core/index.js">`.
  * Everything (plugins, SDK) is fetched through the zmod-local:// custom protocol,
