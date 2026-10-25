@@ -1,4 +1,4 @@
-# ZMod (v2.0) — Modular Mod Loader for ZCode
+# ZMod — Modular Mod Loader for ZCode
 
 <div align="center">
 
@@ -14,11 +14,11 @@
 
 ## 它解决什么问题
 
-传统的客户端魔改方案把几 MB 的代码反编译后硬编码注入 asar 包。ZMod 2.0 改用 **Vencord/Spicetify 式架构**：
+传统的客户端魔改方案把几 MB 的代码反编译后硬编码注入 asar 包。ZMod 改用 **Vencord/Spicetify 式架构**：
 
 - 💎 **宿主补丁只有四小片**：主进程头/尾各几行（注册自定义协议 + 动态加载外置运行时）、preload 尾部一个 CJS 桥、index.html 一个 `<script>` 标签。所有真正的代码 100% 存放在用户数据目录，**更新运行时/插件无需重打 asar**。
 - 💎 **特权本地协议（`zmod-local://`）**：`standard + supportFetchAPI + corsEnabled` 特权协议，从外部动态加载 ESModule 插件；协议端自动把裸导入 `@zmod/sdk` 重写为绝对 URL，插件源码零构建直接运行。
-- 💎 **声明式配置中心**：插件声明 settings Schema（开关/滑块/下拉/文本/密码/颜色），管理面板自动渲染表单，持久化到 `%APPDATA%/ZMod/config.json`。
+- 💎 **声明式配置中心**：插件声明 settings Schema（开关/滑块/下拉/文本/密码/颜色），管理面板自动渲染表单，持久化到数据目录的 `config.json`（数据目录随 ZMod 安装目录，自动迁移旧版 %APPDATA%/ZMod）。
 - 💎 **硬件级凭据库（Secret Vault）**：基于 Electron `safeStorage`（Windows DPAPI），API Key / Cookie 加密落盘。
 - 💎 **双通道 RPC**：preload IPC 桥优先，fetch-over-protocol 兜底；含路径穿越防护与插件启用配置持久化。
 - 💎 **安装器安全设计**：自动快照官方 asar 基线（`base/app.asar`）→ `restore` 一键还原；检测到旧版 v1 内联魔改或 Electron 熔断（AsarIntegrity 烧录）时拒绝安装；重建时强制校验 node-pty/ssh2 原生二进制 unpack 集合与官方一致。
@@ -31,7 +31,7 @@ ZCode 宿主 (app.asar, 四通道补丁)
 ├── out/preload/index.cjs    ← 尾: contextBridge.exposeInMainWorld("zmodAPI")
 └── out/renderer/index.html  ← <script type="module" src="zmod-local://core/index.js">
 
-%APPDATA%/ZMod/ (全外置运行时, 更新零接触 asar)
+<ZMod 安装目录>/data/ (全外置运行时, 更新零接触 asar)
 ├── runtime/main/            ← 微内核主进程: 协议路由 / RPC 网关 / Secret Vault
 ├── runtime/core/index.js    ← 渲染微内核: 插件注册表 / 声明式设置表单 / 管理面板
 ├── runtime/sdk/             ← @zmod-sdk (definePlugin + Schema 校验)
