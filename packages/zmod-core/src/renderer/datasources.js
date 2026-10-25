@@ -1,7 +1,8 @@
 /**
  * ZMod DataSource Registry (renderer side, DOM-free).
  *
- * Providers are contributed by plugins (e.g. official-providers); instances
+ * Providers are contributed by the base kernel (see builtin-providers.js) and
+ * by plugins via the forPlugin() facade; instances
  * are user configuration stored in config.json with secrets split into the
  * vault. Consumers (balance cards, whale widget, ...) share one cache layer
  * so a single upstream request fans out to every view.

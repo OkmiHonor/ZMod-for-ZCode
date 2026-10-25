@@ -76,7 +76,7 @@ zmod plugin install ..\my-mod-0.1.0.zip
 
 两条路（详见 `tools/publish-plugins.cjs` 头注释）：
 
-1. **收录进官方仓库（推荐）**：把插件目录放进 ZMod 仓库 `plugins/<id>/`，提 Pull Request。维护者合并后由 `node tools/publish-plugins.cjs` 统一打 zip、算 sha256、更新仓根 `registry.json`，并上传到 GitHub release tag `plugins`。CI/维护者的 `--check` 模式会校验 zip/sha/内嵌 manifest 与目录无漂移，所以**四个官方插件的 manifest.version 必须与 index.js 里 definePlugin 字面量同步改**。
+1. **收录进官方仓库（推荐）**：把插件目录放进 ZMod 仓库 `plugins/<id>/`，提 Pull Request。维护者把它加入 `tools/publish-plugins.cjs` 的 `PUBLISHED_PLUGINS` 白名单（当前官方市场只收录 `quota-popover`；安装器已纯基座化，数据源 provider 随基座内置），合并后由 `node tools/publish-plugins.cjs` 统一打 zip、算 sha256、更新仓根 `registry.json`，并上传到 GitHub release tag `plugins`。CI/维护者的 `--check` 模式会校验 zip/sha/内嵌 manifest 与目录无漂移，所以**白名单内官方插件的 manifest.version 必须与 index.js 里 definePlugin 字面量同步改**。
 2. **登记条目**：插件留在你自己的仓库/托管，开 issue 或 PR 给维护者提交 registry 条目（`id` / `version` / `url`（zip 直链）/ `shasum` / `manifest` 内嵌副本），由维护者合入 `registry.json`。
 
 用户侧随后即可 `zmod plugin update` 或面板市场一键安装。

@@ -83,10 +83,10 @@ npm run zmod plugin disable <id>                         # 禁用
 
 ## 🔌 数据源系统（datasources）
 
-余额/额度类插件不写死任何接口地址或账号，统一走「类型适配器 + 用户实例」模型：
+余额/额度类能力不写死任何接口地址或账号，统一走「类型适配器 + 用户实例」模型：
 
 ```text
-Provider（类型适配器，插件注册）        Instance（用户实例，设置页配置）
+Provider（类型适配器，基座/插件注册）    Instance（用户实例，设置页配置）
 ┌──────────────────────────┐         ┌────────────────────────────┐
 │ type: custom-http        │◀──类型──│ name: 我的网关              │
 │ settings: url/token/路径 │         │ settings: {url, token, …}  │
@@ -94,7 +94,7 @@ Provider（类型适配器，插件注册）        Instance（用户实例，�
 └──────────────────────────┘         └────────────────────────────┘
 ```
 
-- **官方适配器插件** `official-providers`：`custom-http`（任意 JSON 接口：地址 + Bearer 令牌 + 取值路径）、`openai-compatible`（反代网关）、`console-web`（Cookie 控制台接口）；全部出厂零预配；
+- **基座内置适配器**（`runtime/core/builtin-providers.js`，随基座发布、无需安装）：`custom-http`（任意 JSON 接口：地址 + Bearer 令牌 + 取值路径）、`openai-compatible`（反代网关）、`console-web`（Cookie 控制台接口）、`deepseek`、`antigravity`、`bailian-bss`、`mimo`、`official-account`（零凭据被动读取官方账号余量）；全部出厂零预配；
 - **凭据永不落明文**：`secret` 类型设置写入系统加密保险库（Windows DPAPI / `safeStorage`），`config.json` 只保留非敏感字段；
 - **共享缓存**：多个插件消费同一数据源时共享一次上游请求（60s TTL，可强制刷新）；
 - **主进程 HTTP 代理** `net.fetch`：渲染端经 RPC 走主进程网络栈绕开 CORS；仅允许 http(s) 与常规方法。
@@ -140,14 +140,15 @@ export default definePlugin({
 - **UI 铁律**：不要向 React 主树注入 DOM，用 `fixed` 定位 + 独立 z-index；样式走 `ui.injectStyle` 命名空间。
 - **媒体**：禁 `file://`（Chromium 拦截），用内联 SVG / Base64 / WebAudio / emoji。
 
-### 内置官方插件
+### 插件分发
+
+安装器纯基座化（不捆绑任何插件）；数据源 provider 是基座内置能力。官方独立分发插件只此一个：
 
 | 插件 | 说明 |
 | --- | --- |
-| `acrylic-window` | Windows 11 亚克力/云母背板（主进程 `setBackgroundMaterial`）+ 全局老板键 |
-| `official-providers` | 数据源类型适配器（custom-http / openai-compatible / console-web），凭据全加密、出厂零预配 |
-| `quota-popover` | 输入框「上下文容量」浮窗追加今日余额卡 + 模型设置页余量总览 |
-| `account-quota` | 官方账号数据源：从客户端自身通道采集账号余量供余额卡消费 |
+| `quota-popover` | 输入框「上下文容量」浮窗追加今日余额卡 + 模型设置页余量总览（插件市场安装） |
+
+> 曾随基座分发的 `official-providers` / `account-quota` 已并入基座（数据源 provider 内置），升级安装时会自动清理残留；`acrylic-window` 源码保留在仓库 `plugins/` 下作存档，不再随基座分发、不在官方市场。
 
 ## 🧩 插件
 

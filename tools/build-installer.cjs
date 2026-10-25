@@ -25,8 +25,10 @@ fs.writeFileSync(
   JSON.stringify({ name: pkg.name, version: pkg.version, type: pkg.type, dependencies: pkg.dependencies }, null, 2) + '\n'
 );
 
-// 运行所需文件：CLI + 运行时源 + 官方插件（test 目录不随安装包分发）
-for (const item of ['packages', 'plugins', 'LICENSE', 'README.md']) {
+// 运行所需文件：CLI + 运行时源（安装器纯基座化——数据源 provider 已并入
+// runtime/core，官方插件一律走插件市场独立分发，staging 不再含任何插件；
+// test 目录不随安装包分发）
+for (const item of ['packages', 'LICENSE', 'README.md']) {
   fs.cpSync(path.join(ROOT, item), path.join(STAGING, item), {
     recursive: true,
     filter: (src) => !src.split(path.sep).includes('test')

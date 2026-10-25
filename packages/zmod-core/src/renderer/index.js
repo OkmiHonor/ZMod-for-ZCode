@@ -7,6 +7,7 @@
  */
 
 import { DataSourceRegistry } from './datasources.js';
+import { registerBuiltinProviders } from './builtin-providers.js';
 import { createSettingsPageIntegration } from './settings-page.js';
 import { applyPluginChange } from './plugin-bridge.js';
 import { mergeMarketView } from './market-view.js';
@@ -1173,6 +1174,9 @@ function main() {
     emit: (event, payload) => events.emit(event, payload),
     on: (event, fn) => events.on(event, fn)
   });
+  // Datasource providers ship with the base kernel (former official-providers
+  // and account-quota plugins); register them before any plugin loads.
+  registerBuiltinProviders(dataSourceRegistry);
   // Config/vault hot reload pushed by the main process: refresh datasource
   // instances and let the settings page re-render if it is open.
   if (typeof api.on === 'function') {

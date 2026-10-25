@@ -1,28 +1,6 @@
 {
-  "updated": "2026-10-25T09:51:03.544Z",
+  "updated": "2026-10-25T12:05:56.815Z",
   "plugins": [
-    {
-      "id": "account-quota",
-      "version": "1.1.0-beta",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/account-quota-1.1.0-beta.zip",
-      "shasum": "e918c4c94d367e2e2367a01ff51e2e3836c2b996e2d222a36327e76f0841a5d4",
-      "manifest": {
-        "id": "account-quota",
-        "name": "账号额度（零凭据）",
-        "version": "1.1.0-beta",
-        "description": "被动采集官方登录账号的今日余额/配额，并注册为数据源类型「官方账号额度」——在数据源页添加实例即可像普通数据源一样使用（零凭据、零请求）",
-        "author": "ZMod Team",
-        "engine": {
-          "zmod": ">=1.0.0-beta"
-        },
-        "permissions": [
-          "datasource",
-          "net.fetch"
-        ],
-        "category": "datasource",
-        "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
-      }
-    },
     {
       "id": "acrylic-window",
       "version": "1.1.0-beta",
@@ -41,29 +19,6 @@
           "dom.patch"
         ],
         "category": "appearance",
-        "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
-      }
-    },
-    {
-      "id": "official-providers",
-      "version": "1.1.0-beta",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/official-providers-1.1.0-beta.zip",
-      "shasum": "b190d2ad55eeb016dbd319ca951d70466b77841358d8223788cfdd40640292cd",
-      "manifest": {
-        "id": "official-providers",
-        "name": "数据源适配器（官方）",
-        "version": "1.1.0-beta",
-        "description": "提供通用 HTTP 与常用平台预设的数据源类型；凭据全部加密保存，出厂零预配",
-        "author": "ZMod Team",
-        "engine": {
-          "zmod": ">=1.0.0-beta"
-        },
-        "permissions": [
-          "net.fetch",
-          "vault.write",
-          "datasource"
-        ],
-        "category": "datasource",
         "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
       }
     },

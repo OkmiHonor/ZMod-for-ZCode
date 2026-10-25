@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
- * ZMod 插件市场发布脚本：plugins/ 下每个含 manifest.json 的目录 →
+ * ZMod 插件市场发布脚本：plugins/ 下命中 PUBLISHED_PLUGINS 白名单且含
+ * manifest.json 的目录 →
  *   dist/plugins/<id>-<version>.zip（zip 根 = 插件目录内容）→ sha256 → 更新仓根 registry.json。
+ * （安装器已纯基座化，官方市场只独立分发白名单内的插件；其余目录仅作源码存档。）
  *
  * 用法：
  *   node tools/publish-plugins.cjs          打包 + 生成 registry.json + 打印 gh release upload 命令
@@ -22,6 +24,10 @@ const DIST_PLUGINS = path.join(ROOT, 'dist', 'plugins');
 const REGISTRY = path.join(ROOT, 'registry.json');
 const RELEASE_TAG = 'plugins';
 const RELEASE_BASE = `https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/${RELEASE_TAG}`;
+
+// 官方市场只独立分发这些插件（安装器已纯基座化；其余 plugins/ 目录仅作本地
+// 源码存档，不进 registry）。
+const PUBLISHED_PLUGINS = new Set(['quota-popover', 'acrylic-window']);
 
 function ps(script) {
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
@@ -58,6 +64,7 @@ function sha256(file) {
 function loadPlugins() {
   return fs.readdirSync(PLUGINS_DIR, { withFileTypes: true })
     .filter((e) => e.isDirectory() && fs.existsSync(path.join(PLUGINS_DIR, e.name, 'manifest.json')))
+    .filter((e) => PUBLISHED_PLUGINS.has(e.name))
     .map((e) => {
       const dir = path.join(PLUGINS_DIR, e.name);
       const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));

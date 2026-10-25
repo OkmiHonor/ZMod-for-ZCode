@@ -1034,7 +1034,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     if (providers.length === 0) {
       const warn = document.createElement('div');
       warn.className = 'rounded-xl border border-dashed border-border px-4 py-6 text-center text-ui-sm text-foreground-subtle';
-      warn.textContent = '尚未安装任何数据源类型（Provider）。安装 official-providers 等插件后可在此添加。';
+      warn.textContent = '尚未加载任何数据源类型（Provider）。重启客户端或检查渲染内核控制台输出。';
       root.appendChild(warn);
       return;
     }

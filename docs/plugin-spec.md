@@ -77,9 +77,9 @@
   "updated": "2026-10-25T09:07:13.241Z",
   "plugins": [
     {
-      "id": "account-quota",
+      "id": "quota-popover",
       "version": "1.1.0-beta",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/account-quota-1.1.0-beta.zip",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/quota-popover-1.1.0-beta.zip",
       "shasum": "<64 位 hex，zip 的 sha256>",
       "manifest": { "...": "与 plugins/<id>/manifest.json 完全一致的内嵌副本" }
     }

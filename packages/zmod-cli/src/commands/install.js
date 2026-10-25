@@ -100,7 +100,7 @@ export function migrateLegacyDataDir() {
   }
 }
 
-/** Deploy the runtime (main/core/sdk) and official plugins into the user data dir. */
+/** Deploy the runtime (main/core/sdk) into the user data dir. */
 function deployRuntimeAndPlugins() {
   const userData = getUserDataDir();
   const runtimeDir = path.join(userData, 'runtime');
@@ -126,26 +126,16 @@ function deployRuntimeAndPlugins() {
 
   copyDir(path.join(REPO_ROOT, 'packages', 'zmod-sdk', 'src'), path.join(runtimeDir, 'sdk'));
 
-  const srcPlugins = path.join(REPO_ROOT, 'plugins');
-  const shipped = new Set();
-  if (fs.existsSync(srcPlugins)) {
-    for (const ent of fs.readdirSync(srcPlugins, { withFileTypes: true })) {
-      if (ent.isDirectory()) {
-        shipped.add(ent.name);
-        copyDir(path.join(srcPlugins, ent.name), path.join(getPluginsDir(), ent.name));
-      }
-    }
-    // Mirror sync: plugins dropped from the release must not linger in
-    // existing installs, or removed features keep running after upgrade.
-    for (const ent of fs.readdirSync(getPluginsDir(), { withFileTypes: true })) {
-      if (ent.isDirectory() && !shipped.has(ent.name)) {
-        fs.rmSync(path.join(getPluginsDir(), ent.name), { recursive: true, force: true });
-      }
-    }
+  // 基座不再随发任何插件：数据源 provider 已并入渲染内核（builtin-providers.js），
+  // 官方插件改为市场独立分发（registry 只列 quota-popover）。升级安装时清理已
+  // 退役插件的残留目录；用户自装/市场安装的第三方插件一律不动。
+  const RETIRED_PLUGINS = ['official-providers', 'account-quota'];
+  for (const id of RETIRED_PLUGINS) {
+    fs.rmSync(path.join(getPluginsDir(), id), { recursive: true, force: true });
   }
-
-  // 基座随发插件记账为 builtin（面板按 installed.source==='builtin' 识别），
-  // 并清理镜像同步已删除插件的过期 builtin 账本。记账失败不阻断安装。
+  // 基座随发插件记账为 builtin（面板按 installed.source==='builtin' 识别）。
+  // 随发插件集已为空（空转路径，保留以兼容既有账本语义），但上面的退役清理
+  // 依赖这段把对应 builtin 账本记录一并移除。记账失败不阻断安装。
   try {
     const dataDir = getUserDataDir();
     const ledger = readInstalled(dataDir);
@@ -254,9 +244,9 @@ export async function install(opts = {}) {
     const unpackedCount = await packAndVerify(extractDir, newAsar, pristineSource);
     console.log(`• Unpacked set matches baseline: ${unpackedCount} entries`);
 
-    // ---- 4. Deploy runtime + plugins (no client restart needed for this part) ----
+    // ---- 4. Deploy runtime (no client restart needed for this part) ----
     const runtimeDir = deployRuntimeAndPlugins();
-    console.log(`• Runtime and plugins deployed: ${runtimeDir}`);
+    console.log(`• Runtime deployed (pure base, no bundled plugins): ${runtimeDir}`);
     // 升级安装清理旧版残留：run-install.cmd 新版已不分发（NSIS 卸载兜底也会删）
     try {
       fs.rmSync(path.join(path.dirname(getUserDataDir()), 'run-install.cmd'), { force: true });
