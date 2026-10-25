@@ -144,7 +144,7 @@ export default definePlugin({
 
 ### 插件分发
 
-安装器纯基座化（不捆绑任何插件）；数据源 provider 是基座内置能力。官方独立分发插件（经插件市场 / CLI / URL 安装）：
+安装器纯基座化（不捆绑任何插件）；数据源 provider 是基座内置能力。官方独立分发插件（经插件市场 / CLI / URL 安装）。所有插件 zip 统一挂在 [`plugins` release](https://github.com/OkmiHonor/ZMod-for-ZCode/releases/tag/plugins)，[registry.json](./registry.json) 即市场目录（应用内插件中心与 CLI 均自动拉取，无需手动下载）：
 
 | 插件 | 说明 |
 | --- | --- |
