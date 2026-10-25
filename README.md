@@ -142,13 +142,14 @@ export default definePlugin({
 
 ### 插件分发
 
-安装器纯基座化（不捆绑任何插件）；数据源 provider 是基座内置能力。官方独立分发插件只此一个：
+安装器纯基座化（不捆绑任何插件）；数据源 provider 是基座内置能力。官方独立分发插件（经插件市场 / CLI / URL 安装）：
 
 | 插件 | 说明 |
 | --- | --- |
-| `quota-popover` | 输入框「上下文容量」浮窗追加今日余额卡 + 模型设置页余量总览（插件市场安装） |
+| `quota-popover` | 输入框「上下文容量」浮窗追加今日余额卡 + 模型设置页余量总览 |
+| `acrylic-window` | Windows 11 亚克力/云母模糊背板 + 全局快捷键老板键 |
 
-> 曾随基座分发的 `official-providers` / `account-quota` 已并入基座（数据源 provider 内置），升级安装时会自动清理残留；`acrylic-window` 源码保留在仓库 `plugins/` 下作存档，不再随基座分发、不在官方市场。
+> 曾随基座分发的 `official-providers` / `account-quota` 已并入基座（数据源 provider 内置），升级安装时会自动清理残留。
 
 ## 🧩 插件
 
