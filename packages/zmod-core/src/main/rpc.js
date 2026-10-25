@@ -7,6 +7,7 @@ import { getPluginsDir, getUserDataDir, getPluginDataDir } from '../common/paths
 import { readInstalled } from '../common/installed.js';
 import { registerPluginHost } from './plugin-host.js';
 import { registerPluginAssetApi } from './plugin-assets.js';
+import { registerBubbleHud } from './bubble-hud.js';
 import { notificationTapStatus } from './notifications.js';
 
 let electron = null;
@@ -378,6 +379,10 @@ class RpcGateway {
 
     // ---- Plugin persistent data dir assets (survive plugin updates) ----
     registerPluginAssetApi({ register: (method, handler) => this.register(method, handler) });
+
+    // ---- Bubble HUD (task notification overlay, windows-only; window is
+    // created lazily on the first bubble.show, when app is guaranteed ready) ----
+    registerBubbleHud(this);
   }
 
   _toggleMainWindow() {
