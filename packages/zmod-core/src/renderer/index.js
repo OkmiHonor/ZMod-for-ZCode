@@ -9,6 +9,7 @@
 import { DataSourceRegistry } from './datasources.js';
 import { createSettingsPageIntegration } from './settings-page.js';
 import { applyPluginChange } from './plugin-bridge.js';
+import { mergeMarketView } from './market-view.js';
 
 const ZMOD_VERSION = '1.0.0-beta';
 
@@ -496,6 +497,9 @@ function main() {
     async loadOne(item, globalCfg) {
       const mod = await import(item.entryUrl);
       const def = mod.default || mod;
+      // 主进程 discover 注入的安装账本记录 {source,installedAt}|null，面板按
+      // source==='builtin' 显示「随基座」标记；热装载广播路径无账本信息，为 null
+      def._installed = item?.installed ?? null;
       this.register(def);
       const enabled = globalCfg?.plugins?.[def.id]?.enabled ?? true;
       if (enabled) await this.enable(def.id);
@@ -565,6 +569,33 @@ function main() {
     .zmod-mgr-footer { padding:10px 18px; border-top:1px solid var(--zmod-border,rgba(128,128,128,.2)); color:var(--zmod-fg-dim,#888); font-size:12px; display:flex; justify-content:space-between; }
     .zmod-mgr-back { cursor:pointer; background:none; border:none; color:#60a5fa; font-size:13px; padding:0 0 10px; }
     .zmod-mgr-empty { color:var(--zmod-fg-dim,#888); text-align:center; padding:24px 0; }
+    .zmod-mgr-tabs { display:flex; gap:2px; padding:0 12px; border-bottom:1px solid var(--zmod-border,rgba(128,128,128,.2)); }
+    .zmod-mgr-tab { cursor:pointer; background:none; border:none; color:var(--zmod-fg-dim,#888); font-size:13px;
+      padding:9px 12px 7px; border-bottom:2px solid transparent; margin-bottom:-1px; }
+    .zmod-mgr-tab:hover { color:var(--zmod-fg,#eee); }
+    .zmod-mgr-tab-active { color:var(--zmod-fg,#eee); border-bottom-color:#3b82f6; }
+    .zmod-mgr-remove { cursor:pointer; background:none; border:1px solid var(--zmod-border,rgba(128,128,128,.25)); color:var(--zmod-fg-dim,#999);
+      border-radius:6px; padding:3px 8px; font-size:12px; }
+    .zmod-mgr-remove:hover { color:#ef4444; border-color:#ef4444; }
+    .zmod-mgr-confirm { display:flex; align-items:center; gap:10px; padding:9px 2px;
+      border-bottom:1px solid var(--zmod-border,rgba(128,128,128,.14)); font-size:12px; color:var(--zmod-fg-dim,#888); }
+    .zmod-mgr-confirm-text { flex:1; min-width:0; }
+    .zmod-mgr-btn { cursor:pointer; background:none; border:1px solid var(--zmod-border,rgba(128,128,128,.25));
+      color:var(--zmod-fg,#eee); border-radius:6px; padding:3px 10px; font-size:12px; }
+    .zmod-mgr-btn:hover { border-color:#3b82f6; }
+    .zmod-mgr-btn-danger { color:#ef4444; border-color:rgba(239,68,68,.55); }
+    .zmod-mgr-btn-danger:hover { border-color:#ef4444; }
+    .zmod-mgr-tag { display:inline-block; margin:5px 6px 0 0; padding:1px 7px; border-radius:999px;
+      border:1px solid var(--zmod-border,rgba(128,128,128,.25)); color:var(--zmod-fg-dim,#888); font-size:11px; }
+    .zmod-mgr-engine { color:#ef4444; font-size:12px; margin-top:3px; }
+    .zmod-mgr-toolbar { display:flex; align-items:center; justify-content:space-between; padding:2px 0 8px;
+      color:var(--zmod-fg-dim,#888); font-size:12px; min-height:28px; }
+    .zmod-mgr-input { flex:1; min-width:0; height:30px; border-radius:8px; border:1px solid var(--zmod-border,rgba(128,128,128,.25));
+      background:var(--zmod-bg-input,rgba(128,128,128,.12)); color:var(--zmod-fg,#eee); padding:0 10px; font-size:12px; outline:none; }
+    .zmod-mgr-input:focus { border-color:#3b82f6; }
+    .zmod-mgr-urlbox { margin-top:14px; padding-top:12px; border-top:1px solid var(--zmod-border,rgba(128,128,128,.2));
+      display:flex; flex-direction:column; gap:8px; }
+    .zmod-mgr-urlrow { display:flex; gap:8px; }
   `;
 
   class ManagerPanel {
@@ -574,6 +605,14 @@ function main() {
       this._ui = ui;
       this._root = null;
       this._settingsFor = null;
+      // 插件中心状态：已装/市场双 tab
+      this._tab = 'installed'; // 'installed' | 'market'
+      this._marketData = null; // plugin.listRemote 的成功结果 { ok,plugins,stale,error? }
+      this._marketLoading = false;
+      this._marketError = null;
+      // 行内二次确认（不用 window.confirm）：记录目标插件 id
+      this._confirmRemoveFor = null;
+      this._confirmInstallFor = null;
     }
 
     _isLightTheme() {
@@ -636,8 +675,13 @@ function main() {
 
       const body = document.createElement('div');
       body.className = 'zmod-mgr-body';
-      if (this._settingsFor) this._renderSettings(body);
-      else this._renderList(body);
+      if (this._settingsFor) {
+        this._renderSettings(body);
+      } else {
+        card.appendChild(this._buildTabs());
+        if (this._tab === 'market') this._renderMarket(body);
+        else this._renderList(body);
+      }
       card.appendChild(body);
 
       const footer = document.createElement('div');
@@ -649,16 +693,44 @@ function main() {
       this._root.appendChild(card);
     }
 
+    _buildTabs() {
+      const tabs = document.createElement('div');
+      tabs.className = 'zmod-mgr-tabs';
+      for (const [key, label] of [
+        ['installed', '已装'],
+        ['market', '市场']
+      ]) {
+        const b = document.createElement('button');
+        b.className = 'zmod-mgr-tab' + (this._tab === key ? ' zmod-mgr-tab-active' : '');
+        b.textContent = label;
+        b.addEventListener('click', () => {
+          if (this._tab === key) return;
+          this._tab = key;
+          this._confirmRemoveFor = null;
+          this._confirmInstallFor = null;
+          this._settingsFor = null;
+          // 首次进市场拉数据；已有数据/错误态则直接渲染（错误态提供重试按钮）
+          if (key === 'market' && !this._marketData && !this._marketLoading && !this._marketError) {
+            this._loadMarket();
+          }
+          this._render();
+        });
+        tabs.appendChild(b);
+      }
+      return tabs;
+    }
+
     _renderList(body) {
       const defs = this._registry.getAll();
       if (defs.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'zmod-mgr-empty';
-        empty.textContent = '未发现任何插件。请检查 ZMod 数据目录下的 plugins 子目录。';
+        empty.textContent = '未发现任何插件。可切换到「市场」tab 安装，或检查 ZMod 数据目录下的 plugins 子目录。';
         body.appendChild(empty);
         return;
       }
       for (const def of defs) {
+        const isBuiltin = def._installed?.source === 'builtin';
         const row = document.createElement('div');
         row.className = 'zmod-mgr-row';
 
@@ -666,7 +738,7 @@ function main() {
         info.className = 'zmod-mgr-row-info';
         info.innerHTML = `<div class="zmod-mgr-row-name">${escapeHtml(def.name || def.id)}<span class="zmod-mgr-ver">v${escapeHtml(
           def.version || '1.0.0'
-        )}</span></div>`;
+        )}</span>${isBuiltin ? '<span class="zmod-mgr-ver">随基座</span>' : ''}</div>`;
         if (def.description) {
           const desc = document.createElement('div');
           desc.className = 'zmod-mgr-row-desc';
@@ -686,6 +758,15 @@ function main() {
           row.appendChild(gear);
         }
 
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'zmod-mgr-remove';
+        removeBtn.textContent = '移除';
+        removeBtn.addEventListener('click', () => {
+          this._confirmRemoveFor = this._confirmRemoveFor === def.id ? null : def.id;
+          this._render();
+        });
+        row.appendChild(removeBtn);
+
         const toggle = document.createElement('input');
         toggle.type = 'checkbox';
         toggle.style.cssText = 'cursor:pointer;accent-color:#3b82f6;width:18px;height:18px;';
@@ -697,7 +778,326 @@ function main() {
         });
         row.appendChild(toggle);
         body.appendChild(row);
+
+        if (this._confirmRemoveFor === def.id) {
+          body.appendChild(this._buildRemoveConfirm(def, isBuiltin));
+        }
       }
+    }
+
+    /** 移除二次确认条：行下方内联展开，不走 window.confirm。 */
+    _buildRemoveConfirm(def, isBuiltin) {
+      const bar = document.createElement('div');
+      bar.className = 'zmod-mgr-confirm';
+      const text = document.createElement('span');
+      text.className = 'zmod-mgr-confirm-text';
+      text.textContent =
+        `确认移除 ${def.name || def.id}？配置将保留` +
+        (isBuiltin ? '（随基座发布，重跑安装器会重新部署）' : '');
+      bar.appendChild(text);
+      const cancel = document.createElement('button');
+      cancel.className = 'zmod-mgr-btn';
+      cancel.textContent = '取消';
+      cancel.addEventListener('click', () => {
+        this._confirmRemoveFor = null;
+        this._render();
+      });
+      bar.appendChild(cancel);
+      const ok = document.createElement('button');
+      ok.className = 'zmod-mgr-btn zmod-mgr-btn-danger';
+      ok.textContent = '确认';
+      ok.addEventListener('click', async () => {
+        ok.disabled = true;
+        await this._removePlugin(def.id);
+      });
+      bar.appendChild(ok);
+      return bar;
+    }
+
+    async _removePlugin(id) {
+      try {
+        const res = await api.invoke('plugin.remove', { id });
+        this._confirmRemoveFor = null;
+        if (res && res.ok) this._ui.showToast('已移除', 'success');
+        else this._ui.showToast((res && res.error) || '移除失败', 'error');
+      } catch (err) {
+        this._confirmRemoveFor = null;
+        this._ui.showToast(`移除失败：${err?.message || err}`, 'error');
+      }
+      this._render();
+    }
+
+    // ---- 市场 tab ---------------------------------------------------------
+
+    async _loadMarket() {
+      this._marketLoading = true;
+      this._marketError = null;
+      if (this._tab === 'market') this._render();
+      try {
+        const res = await api.invoke('plugin.listRemote', {});
+        if (res && res.ok) this._marketData = res;
+        else this._marketError = (res && res.error) || '获取市场数据失败';
+      } catch (err) {
+        this._marketError = String(err?.message || err);
+      } finally {
+        this._marketLoading = false;
+        if (this._tab === 'market') this._render();
+      }
+    }
+
+    _renderMarket(body) {
+      if (this._marketLoading) {
+        const loading = document.createElement('div');
+        loading.className = 'zmod-mgr-empty';
+        loading.textContent = '加载中…';
+        body.appendChild(loading);
+        return;
+      }
+      if (this._marketError) {
+        const box = document.createElement('div');
+        box.className = 'zmod-mgr-empty';
+        box.textContent = `市场获取失败：${this._marketError}`;
+        const retry = document.createElement('button');
+        retry.className = 'zmod-mgr-gear';
+        retry.style.cssText = 'margin-top:10px;';
+        retry.textContent = '重试';
+        retry.addEventListener('click', () => this._loadMarket());
+        body.appendChild(box);
+        body.appendChild(retry);
+        return;
+      }
+      if (!this._marketData) {
+        // 直接以市场 tab 打开（如热装载广播触发）时兜底拉一次
+        this._loadMarket();
+        const loading = document.createElement('div');
+        loading.className = 'zmod-mgr-empty';
+        loading.textContent = '加载中…';
+        body.appendChild(loading);
+        return;
+      }
+
+      const toolbar = document.createElement('div');
+      toolbar.className = 'zmod-mgr-toolbar';
+      const staleHint = document.createElement('span');
+      staleHint.textContent = this._marketData.stale ? '（缓存数据）' : '';
+      toolbar.appendChild(staleHint);
+      const refresh = document.createElement('button');
+      refresh.className = 'zmod-mgr-gear';
+      refresh.textContent = '↻ 刷新';
+      refresh.addEventListener('click', () => this._loadMarket());
+      toolbar.appendChild(refresh);
+      body.appendChild(toolbar);
+
+      const { rows } = mergeMarketView(this._registry.getAll(), this._marketData.plugins || [], {
+        zmodVersion: ZMOD_VERSION
+      });
+      if (rows.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'zmod-mgr-empty';
+        empty.textContent = '市场暂无插件。可稍后点「刷新」重试，或从下方 URL 安装。';
+        body.appendChild(empty);
+      }
+      for (const r of rows) {
+        body.appendChild(this._buildMarketRow(r));
+        if (this._confirmInstallFor === r.id && r.state === 'not-installed' && r.permissions.length) {
+          body.appendChild(this._buildInstallConfirm(r));
+        }
+      }
+      body.appendChild(this._buildUrlInstallBox());
+    }
+
+    _buildMarketRow(r) {
+      const row = document.createElement('div');
+      row.className = 'zmod-mgr-row';
+
+      const info = document.createElement('div');
+      info.className = 'zmod-mgr-row-info';
+      info.innerHTML = `<div class="zmod-mgr-row-name">${escapeHtml(r.name)}<span class="zmod-mgr-ver">v${escapeHtml(
+        r.version || '?'
+      )}</span>${r.category ? `<span class="zmod-mgr-ver">${escapeHtml(r.category)}</span>` : ''}</div>`;
+      if (r.description) {
+        const desc = document.createElement('div');
+        desc.className = 'zmod-mgr-row-desc';
+        desc.textContent = r.description;
+        info.appendChild(desc);
+      }
+      for (const p of r.permissions) {
+        const tag = document.createElement('span');
+        tag.className = 'zmod-mgr-tag';
+        tag.textContent = p;
+        info.appendChild(tag);
+      }
+      if (!r.engineOk) {
+        const warn = document.createElement('div');
+        warn.className = 'zmod-mgr-engine';
+        warn.textContent = r.engineReason || '引擎不兼容';
+        info.appendChild(warn);
+      }
+      row.appendChild(info);
+
+      if (r.state === 'installed') {
+        const ver = document.createElement('span');
+        ver.className = 'zmod-mgr-ver';
+        ver.textContent = `已装 v${r.installedVersion || '?'}`;
+        row.appendChild(ver);
+      } else {
+        const btn = document.createElement('button');
+        btn.className = 'zmod-mgr-gear';
+        btn.textContent =
+          r.state === 'update-available'
+            ? `更新 v${r.installedVersion || '?'}→v${r.version || '?'}`
+            : '安装';
+        if (!r.engineOk) {
+          // 引擎不兼容：禁用并悬浮说明，主进程侧仍有硬校验兜底
+          btn.disabled = true;
+          btn.title = r.engineReason || '引擎不兼容';
+          btn.style.cssText = 'opacity:.45;cursor:not-allowed;';
+        } else {
+          btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try {
+              if (r.state === 'update-available') await this._updateFromMarket(r);
+              else if (r.permissions.length) {
+                // 声明了权限：先内联确认再安装
+                this._confirmInstallFor = this._confirmInstallFor === r.id ? null : r.id;
+                this._render();
+              } else {
+                await this._installRegistry(r);
+              }
+            } finally {
+              btn.disabled = false;
+            }
+          });
+        }
+        row.appendChild(btn);
+      }
+      return row;
+    }
+
+    /** 权限声明确认条（安装前）。 */
+    _buildInstallConfirm(r) {
+      const bar = document.createElement('div');
+      bar.className = 'zmod-mgr-confirm';
+      const text = document.createElement('span');
+      text.className = 'zmod-mgr-confirm-text';
+      text.textContent = `该插件声明权限：${r.permissions.join('、')}`;
+      bar.appendChild(text);
+      const cancel = document.createElement('button');
+      cancel.className = 'zmod-mgr-btn';
+      cancel.textContent = '取消';
+      cancel.addEventListener('click', () => {
+        this._confirmInstallFor = null;
+        this._render();
+      });
+      bar.appendChild(cancel);
+      const go = document.createElement('button');
+      go.className = 'zmod-mgr-btn';
+      go.textContent = '继续安装';
+      go.addEventListener('click', async () => {
+        go.disabled = true;
+        this._confirmInstallFor = null;
+        await this._installRegistry(r);
+      });
+      bar.appendChild(go);
+      return bar;
+    }
+
+    async _installRegistry(r) {
+      try {
+        const res = await api.invoke('plugin.install', { source: 'registry:' + r.id });
+        if (res && res.ok) {
+          this._ui.showToast(`已安装 ${r.name}${res.version ? ` v${res.version}` : ''}`, 'success');
+        } else {
+          this._ui.showToast((res && res.error) || '安装失败', 'error');
+        }
+      } catch (err) {
+        this._ui.showToast(`安装失败：${err?.message || err}`, 'error');
+      }
+      // 安装/更新成功走 plugin-changed 广播自动刷新；失败也要重绘回按钮态
+      if (this._tab === 'market') this._loadMarket();
+      else this._render();
+    }
+
+    async _updateFromMarket(r) {
+      try {
+        const res = await api.invoke('plugin.update', { id: r.id });
+        if (res && res.ok) {
+          this._ui.showToast(
+            res.updated ? `已更新 ${r.name} 到 v${res.version || r.version}` : '已是最新版本',
+            'success'
+          );
+        } else {
+          this._ui.showToast((res && res.error) || '更新失败', 'error');
+        }
+      } catch (err) {
+        this._ui.showToast(`更新失败：${err?.message || err}`, 'error');
+      }
+      if (this._tab === 'market') this._loadMarket();
+      else this._render();
+    }
+
+    /**
+     * URL 安装输入解析。规则：必须 https://；.git（或 GitHub 仓库页自动补 .git）
+     * → git 来源，.zip 直链 → zip 来源；其余拒绝。
+     */
+    _normalizeSourceUrl(raw) {
+      const url = String(raw || '').trim();
+      if (!url) return { error: '请输入安装 URL' };
+      if (!url.startsWith('https://')) return { error: '仅支持 https:// 链接' };
+      const noQuery = url.split(/[?#]/)[0];
+      if (/\.zip$/i.test(noQuery)) return { source: 'zip:' + url };
+      if (/\.git$/i.test(noQuery)) return { source: 'git:' + url };
+      if (/^https:\/\/github\.com\/[^/?#]+\/[^/?#]+\/?$/.test(url)) {
+        return { source: 'git:' + url.replace(/\/+$/, '') + '.git' };
+      }
+      return { error: '仅支持 .git 仓库、.zip 直链或 GitHub 仓库页 URL' };
+    }
+
+    _buildUrlInstallBox() {
+      const box = document.createElement('div');
+      box.className = 'zmod-mgr-urlbox';
+
+      const rowEl = document.createElement('div');
+      rowEl.className = 'zmod-mgr-urlrow';
+      const input = document.createElement('input');
+      input.className = 'zmod-mgr-input';
+      input.placeholder = 'https://github.com/user/repo 或 https://…/plugin.zip';
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') installBtn.click();
+      });
+      const installBtn = document.createElement('button');
+      installBtn.className = 'zmod-mgr-btn';
+      installBtn.textContent = '安装';
+      installBtn.addEventListener('click', async () => {
+        const norm = this._normalizeSourceUrl(input.value);
+        if (norm.error) {
+          this._ui.showToast(norm.error, 'warn');
+          return;
+        }
+        installBtn.disabled = true;
+        try {
+          const res = await api.invoke('plugin.install', { source: norm.source });
+          if (res && res.ok) {
+            this._ui.showToast(`已安装 ${res.id}${res.version ? ` v${res.version}` : ''}`, 'success');
+            input.value = '';
+          } else {
+            this._ui.showToast((res && res.error) || '安装失败', 'error');
+          }
+        } catch (err) {
+          this._ui.showToast(`安装失败：${err?.message || err}`, 'error');
+        } finally {
+          installBtn.disabled = false;
+        }
+      });
+      rowEl.appendChild(input);
+      rowEl.appendChild(installBtn);
+      box.appendChild(rowEl);
+
+      const warn = document.createElement('div');
+      warn.className = 'zmod-mgr-row-desc';
+      warn.textContent = '第三方来源，请仅安装你信任的插件';
+      box.appendChild(warn);
+      return box;
     }
 
     _renderSettings(body) {
@@ -795,7 +1195,11 @@ function main() {
           ui.showToast('插件装载失败,详见控制台', 'error');
         }
       }).then((r) => {
-        if (r.applied) panel.refresh();
+        if (!r.applied) return;
+        // 已装 tab 直接重绘；市场 tab 需重拉 listRemote 才能反映行状态
+        // （update-available → installed），_loadMarket 幂等且自带 loading 态
+        if (panel._tab === 'market') panel._loadMarket();
+        else panel.refresh();
       });
     });
   }
