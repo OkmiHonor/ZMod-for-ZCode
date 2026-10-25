@@ -19,9 +19,10 @@ export function findAsarInHost(hostDir) {
 }
 
 /**
- * Custom install dirs: read the ZCode NSIS uninstall entry's InstallLocation
- * from the registry (HKCU Uninstall\<guid>). Covers installs outside the
- * platform defaults even when nothing is running and config was wiped.
+ * Custom install dirs: read the ZCode NSIS uninstall entry from the registry
+ * (HKCU Uninstall\<guid>) and derive the install dir from UninstallString —
+ * electron-builder does NOT write InstallLocation, but UninstallString
+ * ("<dir>\Uninstall ZCode.exe") is always present.
  */
 function zcodeDirFromUninstallRegistry() {
   if (process.platform !== 'win32') return null;
@@ -40,12 +41,14 @@ function zcodeDirFromUninstallRegistry() {
     ];
     for (const key of keys) {
       try {
-        const kv = execSync(`reg query "${key}" /v InstallLocation`, {
+        const kv = execSync(`reg query "${key}" /v UninstallString`, {
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'ignore']
         });
         const line = kv.split(/\r?\n/).find((l) => l.includes('REG_SZ'));
-        const dir = line?.split('REG_SZ')[1]?.trim();
+        const raw = line?.split('REG_SZ')[1]?.trim() || '';
+        const m = raw.match(/^(?:"(.*)|([^"]*))\bUninstall ZCode\.exe/i);
+        const dir = (m?.[1] || m?.[2] || '').replace(/["\s]+$/, '').replace(/\\$/, '').trim();
         if (dir && findAsarInHost(dir)) return dir;
       } catch {}
     }
