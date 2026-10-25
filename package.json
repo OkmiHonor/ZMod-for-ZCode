@@ -1,6 +1,6 @@
 {
   "name": "zmod",
-  "version": "2.2.7",
+  "version": "2.3.0",
   "description": "Next-generation modular modding framework and loader for ZCode desktop client",
   "private": true,
   "type": "module",

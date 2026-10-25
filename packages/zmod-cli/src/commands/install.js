@@ -5,6 +5,7 @@ import os from 'node:os';
 import { locateZCode, findAsarInHost, findHostExe } from '../locate.js';
 import { findMarkers, extractAll, packAndVerify, getUnpackedSet } from '../lib/asar.js';
 import { isZcodeRunning, killZcode, launchDetached, sleep } from '../lib/process.js';
+import { resolveBaselineCandidate, backfillBaseSnapshot } from '../lib/baseline.js';
 import { MARKERS, V1_MARKERS, patchMainSource, patchPreloadSource, patchIndexHtmlSource } from '../patches/index.js';
 import {
   ensureDirectories,
@@ -176,14 +177,7 @@ export async function install(opts = {}) {
     const v2Hits = findMarkers(asarPath, Object.values(MARKERS));
     let pristineSource;
     if (v2Hits.length > 0) {
-      // Baseline candidates, in priority order. A wiped data dir (uninstall
-      // gone wrong) must not deadlock the reinstall on an already-patched asar.
-      const legacyBackup = path.join(path.dirname(asarPath), 'app.asar.backup1');
-      const candidate = [
-        [baseSnapshot, '基线快照 base/app.asar'],
-        [legacyBackup, `旧版备份 ${legacyBackup}`],
-        [opts.baseline, '--baseline 指定文件']
-      ].find(([p]) => p && fs.existsSync(p));
+      const candidate = resolveBaselineCandidate({ baseSnapshot, asarPath, explicit: opts.baseline });
       if (!candidate) {
         console.error('✖ 当前 asar 已是 ZMod v2 补丁版，且找不到任何官方基线（base/app.asar、app.asar.backup1 均不存在）。');
         console.error('  恢复方式（任选其一）：');
@@ -191,14 +185,9 @@ export async function install(opts = {}) {
         console.error('  2. 重装 ZCode 客户端恢复官方 asar 后重新安装 ZMod');
         process.exit(1);
       }
-      console.log(`• 检测到已安装 v2，基于${candidate[1]}重装`);
-      pristineSource = candidate[0];
-      if (pristineSource !== baseSnapshot) {
-        // rebuild the canonical snapshot so future restore/reinstall self-heal
-        fs.mkdirSync(path.dirname(baseSnapshot), { recursive: true });
-        const snapTmp = `${baseSnapshot}.tmp`;
-        fs.copyFileSync(pristineSource, snapTmp);
-        fs.renameSync(snapTmp, baseSnapshot);
+      console.log(`• 检测到已安装 v2，基于${candidate.label}重装`);
+      pristineSource = candidate.path;
+      if (backfillBaseSnapshot(baseSnapshot, pristineSource)) {
         console.log('• 已回填基线快照 base/app.asar');
       }
     } else {

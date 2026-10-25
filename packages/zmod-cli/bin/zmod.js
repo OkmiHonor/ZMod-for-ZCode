@@ -9,6 +9,7 @@ import { doctor } from '../src/commands/doctor.js';
 import { pluginCommand } from '../src/commands/plugin.js';
 import { install } from '../src/commands/install.js';
 import { restore } from '../src/commands/restore.js';
+import { uninstall } from '../src/commands/uninstall.js';
 
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
@@ -20,6 +21,7 @@ function readFlags(rest) {
     if (rest[i] === '--path') flags.path = rest[++i];
     else if (rest[i] === '--force') flags.force = true;
     else if (rest[i] === '--baseline') flags.baseline = rest[++i];
+    else if (rest[i] === '--wipe-data') flags.wipeData = true;
   }
   return flags;
 }
@@ -60,6 +62,9 @@ async function main() {
       break;
     case 'restore':
       await restore(flags);
+      break;
+    case 'uninstall':
+      await uninstall(flags);
       break;
     case 'help':
     case '--help':

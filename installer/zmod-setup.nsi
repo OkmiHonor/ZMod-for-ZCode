@@ -86,48 +86,56 @@ close_zcode:
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 SectionEnd
 
+; 卸载逻辑主体在 zmod-cli（uninstall 命令，清单驱动）；本段只收集选项、
+; 调 CLI、清注册表，并在 CLI 不可用时退回目录枚举兜底。
 Section "Uninstall"
-  IfFileExists "$INSTDIR\run-install.cmd" 0 un_no_restore
-    MessageBox MB_YESNO|MB_ICONQUESTION "卸载前建议先还原 ZCode 官方客户端（运行 restore）。$\r$\n$\r$\n现在先运行还原吗？" /SD IDNO IDNO un_no_restore
-    ExecWait '"$INSTDIR\run-install.cmd" restore' $0
-    ${If} $0 != 0
-      ; restore 失败时 asar 仍是补丁版，data/base 里的基线是唯一恢复通道，
-      ; 必须让用户知情再决定是否继续（继续勾选保留数据则基线仍在）
-      MessageBox MB_OK|MB_ICONSTOP "还原官方客户端失败（退出码 $0）。$\r$\n$\r$\nZCode 当前仍是 ZMod 补丁版；若继续卸载且不保留数据，将无法自动恢复官方版。" /SD IDOK
-    ${EndIf}
-    Sleep 1000
-  un_no_restore:
+  IfFileExists "$INSTDIR\run-install.cmd" 0 un_fallback
+    StrCmp "$unKeepDataState" "0" un_wipe un_keep
 
-  ${If} $unKeepDataState != "0"
-    ${AndIf} ${FileExists} "$INSTDIR\data"
-    ; 数据目录在安装目录内：逐项删除 data 以外的内容（RMDir /r 会连 data 一起删，
-    ; 而 Rename 到 $TEMP 跨盘会失败，因此不能整目录挪走）
+  un_keep:
+    ExecWait '"$INSTDIR\run-install.cmd" uninstall --keep-data' $0
+    Goto un_after_cli
+  un_wipe:
+    ExecWait '"$INSTDIR\run-install.cmd" uninstall --wipe-data' $0
+    Goto un_after_cli
+
+  un_after_cli:
+    StrCmp "$0" "3" un_fallback un_cleanup
+
+  ; CLI 或清单不可用（用户手删过文件）：目录枚举兜底。
+  ; 以 $1 空串判终；RMDir 失败只置错误标志，不能作为循环终止条件
+  un_fallback:
+    StrCmp "$unKeepDataState" "0" un_fb_wipe un_fb_keep
+  un_fb_keep:
     ClearErrors
     FindFirst $0 $1 "$INSTDIR\*"
-    un_del_loop:
-      ; 以 $1 空串判终：RMDir 删除个别被锁文件失败会置错误标志，
-      ; 若用 IfErrors 判终会提前跳出漏删后续条目
-      StrCmp "$1" "" un_del_done
-      StrCmp "$1" "." un_del_next
-      StrCmp "$1" ".." un_del_next
-      StrCmp "$1" "data" un_del_next
-      ; RMDir /r 只能删目录，顶层散文件（run-install.cmd、Uninstall.exe 等）须走 Delete
+    un_fb_loop:
+      StrCmp "$1" "" un_fb_done
+      StrCmp "$1" "." un_fb_next
+      StrCmp "$1" ".." un_fb_next
+      StrCmp "$1" "data" un_fb_next
       IfFileExists "$INSTDIR\$1\*.*" +3 0
       Delete "$INSTDIR\$1"
-      Goto un_del_next
+      Goto un_fb_next
       ClearErrors
       RMDir /r "$INSTDIR\$1"
-    un_del_next:
+    un_fb_next:
       FindNext $0 $1
-      Goto un_del_loop
-    un_del_done:
+      Goto un_fb_loop
+    un_fb_done:
       FindClose $0
       RMDir "$INSTDIR"
-  ${Else}
+      Goto un_cleanup
+  un_fb_wipe:
     RMDir /r "$INSTDIR"
-  ${EndIf}
-  ; 保留数据时同步保留 InstallDir 注册表，重装自动回到原目录接管 data/
-  ${If} $unKeepDataState == "0"
-    DeleteRegKey HKCU "Software\ZMod"
-  ${EndIf}
+
+  ; run-install.cmd 由 CLI 卸载时保留（执行中），这里补删；Uninstall.exe 自删。
+  ; rmdir.nsh 由构建脚本按清单生成（深优先 RMDir，非空即留），补删 CLI 进程
+  ; 句柄拖住的空目录与安装目录本身
+  un_cleanup:
+    Delete "$INSTDIR\run-install.cmd"
+    !include "${RMDIR_INCLUDE}"
+    ${If} $unKeepDataState == "0"
+      DeleteRegKey HKCU "Software\ZMod"
+    ${EndIf}
 SectionEnd
