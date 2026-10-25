@@ -1,6 +1,7 @@
 import { validateSettings } from './schema.js';
 
 export * from './schema.js';
+export { validateManifestSchema, checkEngine } from './manifest.js';
 
 /**
  * Standard Plugin Definition Specification
