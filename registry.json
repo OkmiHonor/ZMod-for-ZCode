@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-25T14:55:11.817Z",
+  "updated": "2026-10-25T15:16:24.883Z",
   "plugins": [
     {
       "id": "acrylic-window",
@@ -100,13 +100,13 @@
     },
     {
       "id": "quota-popover",
-      "version": "1.4.0",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/quota-popover-1.4.0.zip",
-      "shasum": "41f06467bd533b182f3e003ca80d11f100f140872dd3977807071b790c8a2c20",
+      "version": "1.4.1",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/quota-popover-1.4.1.zip",
+      "shasum": "5d0c22bea738eb602594f97a17c9b559be3b7d8e2068b3421e939ddced7ab81d",
       "manifest": {
         "id": "quota-popover",
         "name": "余量弹窗与模型页余量",
-        "version": "1.4.0",
+        "version": "1.4.1",
         "description": "把数据源实例的余额/配额注入官方界面：输入框「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1）+ 官方设置「模型设置」页注入余量总览（运行时注入，不改官方文件）",
         "author": "ZMod Team",
         "engine": {

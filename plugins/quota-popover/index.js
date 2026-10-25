@@ -1,4 +1,5 @@
 import { definePlugin } from '@zmod/sdk';
+import { matchInstance, matchSelection, parseModelButtonLabel } from './lib.js';
 
 /**
  * Quota popover + provider-detail quota card — runtime-injected parity of v1's
@@ -20,50 +21,6 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   })[c]);
-}
-
-function hostOf(url) {
-  try {
-    return new URL(String(url)).host.toLowerCase();
-  } catch {
-    return '';
-  }
-}
-
-/** longest common substring length of two normalized strings */
-function commonLen(a, b) {
-  let best = 0;
-  const dp = new Array(b.length + 1).fill(0);
-  for (let i = 1; i <= a.length; i++) {
-    let prev = 0;
-    for (let j = 1; j <= b.length; j++) {
-      const tmp = dp[j];
-      dp[j] = a[i - 1] === b[j - 1] ? prev + 1 : 0;
-      best = Math.max(best, dp[j]);
-      prev = tmp;
-    }
-  }
-  return best;
-}
-
-/** provider → instance match: base-URL host(:port) equality wins, then a
-    ≥4-char normalized name overlap (provider display name vs instance name) */
-function matchInstance(providerName, providerBaseUrl, instances) {
-  const ph = hostOf(providerBaseUrl);
-  if (ph) {
-    const byHost = instances.find((i) => hostOf(i.settings?.url) === ph);
-    if (byHost) return byHost;
-  }
-  const pn = String(providerName || '').toLowerCase().replace(/\s+/g, '');
-  if (pn.length < 4) return null;
-  let best = null, bestLen = 3;
-  for (const i of instances) {
-    const n = String(i.name || '').toLowerCase().replace(/\s+/g, '');
-    if (n.length < 4) continue;
-    const l = pn.includes(n) || n.includes(pn) ? Math.min(pn.length, n.length) : commonLen(pn, n);
-    if (l > bestLen) { best = i; bestLen = l; }
-  }
-  return best;
 }
 
 /* ---- v1 detail-card kit (Bento provider quota card, 1:1 of v1
@@ -435,7 +392,7 @@ const REFRESH_MARK = 'zmod-quota-refresh';
 export default definePlugin({
   id: 'quota-popover',
   name: '余量弹窗与模型页余量',
-  version: '1.4.0',
+  version: '1.4.1',
   description: '官方「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1）+ 官方设置模型页供应商详情注入 v1 Bento 账户额度卡（数据源驱动，不改官方文件）',
   author: 'ZMod Team',
 
@@ -509,7 +466,9 @@ export default definePlugin({
 
     /* Current composer selection: the toolbar model-selector button carries
        "供应商名/模型名  effort" in its aria-label — the same display name the
-       settings detail header shows, so instance matching stays consistent. */
+       settings detail header shows, so instance matching stays consistent.
+       Parsing (effort-word stripping, non-model label exclusions) lives in
+       lib.js next to the matching chain it feeds. */
     function currentSelection() {
       for (const gauge of document.querySelectorAll('[data-slot="hover-card-trigger"]')) {
         if (!/上下文/.test(gauge.getAttribute('aria-label') || '')) continue;
@@ -519,43 +478,17 @@ export default definePlugin({
           if (bar.querySelectorAll('button').length > 3) break;
         }
         for (const btn of bar.querySelectorAll('button')) {
-          const label = (btn.getAttribute('aria-label') || '').trim();
-          // the gauge's own label ("上下文已用 12,345 / 总量 …") also contains a
-          // slash — only the model selector has "provider/model effort" shape;
-          // the preset-provider case drops the prefix ("GLM-5.3-Flash 低")
-          if (/上下文已用|^添加上下文$|^切换模式$|^电脑操作$|^发送$/.test(label)) continue;
-          // effort words observed in the wild: 极高/最高/高/中/低/关闭 (关闭 =
-          // thinking off; 最高 seen on Google AI Pro) — a trailing word left in
-          // the model name breaks downstream model matching
-          const m = /^(.+)\/(.+?)\s*(?:极高|最高|高|中|低|关闭)?$/.exec(label);
-          if (m) return { provider: m[1].trim(), model: m[2].trim() };
-          if (/.+\s(?:极高|最高|高|中|低|关闭)$/.test(label)) {
-            return { provider: '', model: label.replace(/\s+(极高|最高|高|中|低|关闭)$/, '').trim() };
-          }
+          const sel = parseModelButtonLabel(btn.getAttribute('aria-label') || '');
+          if (sel) return sel;
         }
       }
       return null;
     }
 
-    /** Which instance follows the current selection: explicit keywords →
-        provider-name overlap → model-name match in antigravity status data. */
-    function matchSelection(sel) {
-      if (!sel) return null;
-      const kw = (i) => String(i.settings?.modelKeywords || '').split(/[,，]/).map((s) => s.trim().toLowerCase()).filter(Boolean);
-      const hay = (sel.provider + ' ' + sel.model).toLowerCase();
-      for (const { inst } of snapshot) {
-        if (kw(inst).some((k) => hay.includes(k))) return inst;
-      }
-      const byName = matchInstance(sel.provider, '', snapshot.map((s) => s.inst));
-      if (byName) return byName;
-      for (const { inst, status } of snapshot) {
-        // bidirectional prefix match: the gateway registers per-variant names
-        // (gemini-3.8-flash-low) while the toolbar shows the base model
-        // (gemini-3.8-flash) — either direction proves the same family
-        const s = sel.model.toLowerCase();
-        if ((status?.models || []).some((m) => m.name === s || (s.length >= 4 && (s.includes(m.name) || m.name.includes(s))))) return inst;
-      }
-      return null;
+    /** Which instance follows the current selection — subscription source
+        (供应商前缀段) decides first; model chain only for prefix-less labels. */
+    function matchCurrentSelection(sel) {
+      return matchSelection(sel, snapshot);
     }
 
     function buildPopoverBlock(hasOfficialBalance) {
@@ -565,7 +498,7 @@ export default definePlugin({
       /* v1 behavior: only the source matching the current provider/model is
          shown; unmatched selections render no balance section at all */
       const sel = currentSelection();
-      const inst = matchSelection(sel);
+      const inst = matchCurrentSelection(sel);
       if (!inst) {
         console.log('[quota-popover] no instance matched selection ' + JSON.stringify(sel));
         return null;
@@ -601,7 +534,7 @@ export default definePlugin({
       if (!justOpened || !s.get('popoverRefresh', true)) return;
       const cooldown = Math.max(0, Number(s.get('refreshCooldown', 8)) || 0) * 1000;
       if (Date.now() - lastHoverRefresh < cooldown) return;
-      const inst = matchSelection(currentSelection());
+      const inst = matchCurrentSelection(currentSelection());
       if (!inst) return;
       lastHoverRefresh = Date.now();
       const st = await ds.getStatus(inst.id, { force: true }).catch(() => null);
