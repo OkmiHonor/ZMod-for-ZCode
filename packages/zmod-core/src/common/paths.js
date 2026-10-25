@@ -19,7 +19,9 @@ export function getUserDataDir() {
 
   const runtimeParent = path.basename(path.dirname(moduleDir));
   if (runtimeParent === 'runtime') {
-    return path.resolve(path.dirname(moduleDir), '..', '..');
+    // deployed runtime: <data>/runtime/{main,common}/… → dirname(moduleDir)
+    // is already <data>/runtime; one level up is the data dir
+    return path.resolve(path.dirname(moduleDir), '..');
   }
 
   let dir = moduleDir;
