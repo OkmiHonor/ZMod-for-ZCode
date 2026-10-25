@@ -1,7 +1,7 @@
 import { definePlugin } from '@zmod/sdk';
 
 function pct(v) {
-  return Math.round(Math.min(Math.max(Number(v) || 82, 30), 100));
+  return Math.round(Math.min(Math.max(Number(v) || 50, 30), 100));
 }
 
 /**
@@ -69,7 +69,7 @@ export default definePlugin({
       type: 'slider',
       title: '面板/卡片透明度',
       description: '聊天区与卡片的底色不透明度（百分比）',
-      default: 82,
+      default: 50,
       min: 30,
       max: 100,
       step: 1
@@ -77,7 +77,7 @@ export default definePlugin({
     sidebarOpacity: {
       type: 'slider',
       title: '侧栏透明度',
-      default: 74,
+      default: 65,
       min: 30,
       max: 100,
       step: 1
@@ -85,7 +85,7 @@ export default definePlugin({
     popoverOpacity: {
       type: 'slider',
       title: '弹层/菜单透明度',
-      default: 90,
+      default: 88,
       min: 30,
       max: 100,
       step: 1
@@ -131,7 +131,7 @@ export default definePlugin({
       }
       u.injectStyle(
         'acrylic-window-theme',
-        acrylicCss(s.get('panelOpacity', 82), s.get('sidebarOpacity', 74), s.get('popoverOpacity', 90))
+        acrylicCss(s.get('panelOpacity', 50), s.get('sidebarOpacity', 65), s.get('popoverOpacity', 88))
       );
     };
 
