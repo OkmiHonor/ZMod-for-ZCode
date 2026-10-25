@@ -8,6 +8,7 @@
 
 import { DataSourceRegistry } from './datasources.js';
 import { createSettingsPageIntegration } from './settings-page.js';
+import { applyPluginChange } from './plugin-bridge.js';
 
 const ZMOD_VERSION = '1.0.0-beta';
 
@@ -485,6 +486,21 @@ function main() {
       this._active.delete(active.def.id);
     }
 
+    /** 移除注册表项；仍在运行（active）时拒绝，调用方须先 disable。 */
+    unregister(id) {
+      if (this._active.has(id)) return false;
+      return this._plugins.delete(id);
+    }
+
+    /** 单插件装载：import → register → 按 config enabled 决定是否 enable。失败抛给调用方。 */
+    async loadOne(item, globalCfg) {
+      const mod = await import(item.entryUrl);
+      const def = mod.default || mod;
+      this.register(def);
+      const enabled = globalCfg?.plugins?.[def.id]?.enabled ?? true;
+      if (enabled) await this.enable(def.id);
+    }
+
     async loadAll() {
       let discovered = [];
       try {
@@ -504,11 +520,7 @@ function main() {
 
       for (const item of discovered) {
         try {
-          const mod = await import(item.entryUrl);
-          const def = mod.default || mod;
-          this.register(def);
-          const enabled = globalCfg.plugins?.[def.id]?.enabled ?? true;
-          if (enabled) await this.enable(def.id);
+          await this.loadOne(item, globalCfg);
         } catch (err) {
           console.error(`[ZMod:Renderer] failed to load plugin "${item?.id}":`, err);
         }
@@ -599,6 +611,11 @@ function main() {
     close() {
       if (this._root) this._root.style.display = 'none';
       this._settingsFor = null;
+    }
+
+    /** 打开状态下重绘；关闭状态跳过（下次 open 自会渲染最新状态）。 */
+    refresh() {
+      if (this._root && this._root.style.display === 'flex') this._render();
     }
 
     _render() {
@@ -760,6 +777,26 @@ function main() {
     api.on('zmod:config-changed', () => {
       dataSourceRegistry.reload().catch(() => {});
       events.emit('zmod:config-changed');
+    });
+  }
+
+  // Main-process plugin install/remove/update broadcast → hot load/unload/reload
+  // in the running client, no restart needed. Each broadcast carries a fresh
+  // entryUrl (?v=version-mtime) so dynamic import() bypasses the module cache.
+  if (typeof api.on === 'function') {
+    api.on('zmod:plugin-changed', (payload) => {
+      applyPluginChange(payload, {
+        registry: plugins,
+        invoke: (method, params) => api.invoke(method, params),
+        importModule: (url) => import(url),
+        getConfig: () => api.invoke('config.get', {}),
+        onError: (err) => {
+          console.error('[ZMod:Renderer] plugin change apply failed:', err);
+          ui.showToast('插件装载失败,详见控制台', 'error');
+        }
+      }).then((r) => {
+        if (r.applied) panel.refresh();
+      });
     });
   }
 
