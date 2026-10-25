@@ -1,0 +1,16 @@
+{
+  "id": "whale-widget",
+  "name": "DeepSeek 余额小鲸鱼（v1 原版移植）",
+  "version": "1.1.0-beta",
+  "description": "桌宠 + 多供应商余额 + 账本记账 + 音效/角色/泡泡自定义 + 模型换装（v1 原样移植）",
+  "author": "ZMod Team",
+  "engine": {
+    "zmod": ">=1.0.0-beta"
+  },
+  "permissions": [
+    "dom.patch",
+    "net.fetch"
+  ],
+  "category": "fun",
+  "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+}

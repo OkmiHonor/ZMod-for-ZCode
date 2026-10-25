@@ -1,11 +1,11 @@
 {
-  "updated": "2026-10-25T14:41:48.718Z",
+  "updated": "2026-10-25T14:46:00.202Z",
   "plugins": [
     {
       "id": "acrylic-window",
       "version": "1.4.0",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/acrylic-window-1.4.0.zip",
-      "shasum": "529484c8afeaa136e3965f998d86943b7c3f600be74abf369b6ff8da917be14f",
+      "shasum": "c10964ac55fd29acbefe61f46208cd2aeab499da1cb679d6a8f54a218c8cda05",
       "manifest": {
         "id": "acrylic-window",
         "name": "亚克力背板与老板键",
@@ -26,7 +26,7 @@
       "id": "bubble-notifications",
       "version": "0.1.0",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/bubble-notifications-0.1.0.zip",
-      "shasum": "b5ed816639439bbf2f9d1ab5ea56f5b34b18817aa638b3db85fbbaf0e1cd2679",
+      "shasum": "c3fba51ec037c71466b625c0fc56eff231ae1ced34e844541905ba8fb6c41edf",
       "manifest": {
         "id": "bubble-notifications",
         "name": "任务气泡通知",
@@ -40,10 +40,27 @@
       }
     },
     {
+      "id": "notification-sounds",
+      "version": "0.1.0",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/notification-sounds-0.1.0.zip",
+      "shasum": "0a72001a4dd9e0b961fb0cce1b4eff2632308b2affad4e0bc43662052b4770fe",
+      "manifest": {
+        "id": "notification-sounds",
+        "name": "通知声音管理",
+        "version": "0.1.0",
+        "description": "接管 ZCode 任务通知声音：音量调节、音色切换、导入自有音频、分事件配音、试听",
+        "author": "ZMod Team",
+        "category": "productivity",
+        "engine": {
+          "zmod": ">=1.1.0-beta"
+        }
+      }
+    },
+    {
       "id": "prompt-snippets",
       "version": "1.1.0-beta",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/prompt-snippets-1.1.0-beta.zip",
-      "shasum": "3632ae3ea8229148c4f79b8ffa5d3cb161d40a478da618539e21227e519f808e",
+      "shasum": "0fb83b97e54f1fd25674775289dddf9f4278b1258b19b70ee2921eaf3e0902ba",
       "manifest": {
         "id": "prompt-snippets",
         "name": "Prompt 片段库",
@@ -64,7 +81,7 @@
       "id": "qcard-fade",
       "version": "1.1.0-beta",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/qcard-fade-1.1.0-beta.zip",
-      "shasum": "ee18900883e0f9bfebb1d7977712a6b712dab21a6c451b9e6ebeff644bfb6838",
+      "shasum": "f3d61fe2ae68da0104890e5968d4f004a341815b32c9ff5c14b65f8d9dc16e94",
       "manifest": {
         "id": "qcard-fade",
         "name": "提问卡智能透明",
@@ -85,7 +102,7 @@
       "id": "quota-popover",
       "version": "1.4.0",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/quota-popover-1.4.0.zip",
-      "shasum": "6f2e771788e36617baf38cc61140058a1f6d68c64caa5a34a1c0ff53e4530f2b",
+      "shasum": "6091144380fd4fa22fa36711722b8087c00e0d93e337db58ffe7d25b35539133",
       "manifest": {
         "id": "quota-popover",
         "name": "余量弹窗与模型页余量",
@@ -106,7 +123,7 @@
       "id": "usage-stats",
       "version": "1.1.0-beta",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/usage-stats-1.1.0-beta.zip",
-      "shasum": "a9abdc64c4962fc2e0d8addc3e72fec1f7d98521ce588856c4316251722e34d9",
+      "shasum": "824c3a4eab043d39d61918f91384167ea7fcc6aba077e92c5d47f9f648a3d6b4",
       "manifest": {
         "id": "usage-stats",
         "name": "Token 用量统计",
@@ -120,6 +137,28 @@
           "dom.patch"
         ],
         "category": "productivity",
+        "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+      }
+    },
+    {
+      "id": "whale-widget",
+      "version": "1.1.0-beta",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/whale-widget-1.1.0-beta.zip",
+      "shasum": "db61f19f9ab127ce782e2c56c19fe705a8ceda25b0fa34dbd2da19e27537848a",
+      "manifest": {
+        "id": "whale-widget",
+        "name": "DeepSeek 余额小鲸鱼（v1 原版移植）",
+        "version": "1.1.0-beta",
+        "description": "桌宠 + 多供应商余额 + 账本记账 + 音效/角色/泡泡自定义 + 模型换装（v1 原样移植）",
+        "author": "ZMod Team",
+        "engine": {
+          "zmod": ">=1.0.0-beta"
+        },
+        "permissions": [
+          "dom.patch",
+          "net.fetch"
+        ],
+        "category": "fun",
         "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
       }
     }

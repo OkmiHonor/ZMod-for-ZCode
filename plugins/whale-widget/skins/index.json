@@ -1,0 +1,67 @@
+{
+  "skins": [
+    {
+      "id": "chatgpt",
+      "name": "chatgpt",
+      "format": "png",
+      "ver": 1791272732595.7253,
+      "pinned": false
+    },
+    {
+      "id": "claude",
+      "name": "claude",
+      "format": "png",
+      "ver": 1791272733743.158,
+      "pinned": false
+    },
+    {
+      "id": "gemini",
+      "name": "gemini",
+      "format": "png",
+      "ver": 1791272730320.9087,
+      "pinned": false
+    },
+    {
+      "id": "glm-fox",
+      "name": "glm-fox",
+      "format": "png",
+      "ver": 1791271484526.6365,
+      "pinned": false
+    },
+    {
+      "id": "glm-fox-ai",
+      "name": "glm-fox-ai",
+      "format": "png",
+      "ver": 1791271485364.6487,
+      "pinned": false
+    },
+    {
+      "id": "grok",
+      "name": "grok",
+      "format": "png",
+      "ver": 1791272735778.0999,
+      "pinned": false
+    },
+    {
+      "id": "kimi",
+      "name": "kimi",
+      "format": "png",
+      "ver": 1791272734821.3088,
+      "pinned": false
+    },
+    {
+      "id": "minimax",
+      "name": "minimax",
+      "format": "png",
+      "ver": 1791272736704.7603,
+      "pinned": false
+    },
+    {
+      "id": "qwen",
+      "name": "qwen",
+      "format": "png",
+      "ver": 1791272731469.2554,
+      "pinned": false
+    }
+  ]
+}
