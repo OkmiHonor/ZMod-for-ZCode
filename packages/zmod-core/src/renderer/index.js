@@ -11,7 +11,7 @@ import { createSettingsPageIntegration } from './settings-page.js';
 import { applyPluginChange } from './plugin-bridge.js';
 import { mergeMarketView } from './market-view.js';
 
-const ZMOD_VERSION = '1.0.0-beta';
+const ZMOD_VERSION = '1.1.0-beta';
 
 if (window.__ZMOD_V2_INITIALIZED__) {
   // Reload safety: a fresh document never has this flag, but double execution

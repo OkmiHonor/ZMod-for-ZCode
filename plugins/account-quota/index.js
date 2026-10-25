@@ -115,7 +115,7 @@ function rowsFromPopover(host) {
 export default definePlugin({
   id: 'account-quota',
   name: '账号额度（零凭据）',
-  version: '1.0.0-beta',
+  version: '1.1.0-beta',
   description: '被动读取官方登录账号的今日余额/配额（官方弹窗打开即刷新），无需任何 API Key',
   author: 'ZMod Team',
 

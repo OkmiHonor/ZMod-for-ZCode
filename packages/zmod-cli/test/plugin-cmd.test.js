@@ -8,10 +8,13 @@ import os from 'node:os';
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-plugin-cmd-'));
 process.env.ZMOD_USER_DATA_DIR = dataRoot;
 
-const { planUpdates, filterSearch, removeDirWithRetry, pluginCommand } = await import(
+const { planUpdates, filterSearch, removeDirWithRetry, pluginCommand, buildScaffold } = await import(
   '../src/commands/plugin.js'
 );
 const { readInstalled } = await import('../../zmod-core/src/common/installed.js');
+const { validateManifestSchema, checkEngine } = await import('../../zmod-sdk/src/manifest.js');
+const { createRequire } = await import('node:module');
+const { version: CLI_VERSION } = createRequire(import.meta.url)('../package.json');
 
 const registryJson = {
   updated: '2026-10-25T00:00:00.000Z',
@@ -130,6 +133,55 @@ test('install 校验: 非法 manifest 拒装, 已装提示 remove/update', async
     await assert.rejects(() => pluginCommand('install', srcDir), /__exit_1/);
     const ledger = readInstalled(dataRoot);
     assert.equal(Object.keys(ledger.plugins).filter((k) => k === 'demo-plugin').length, 1);
+  } finally {
+    process.exit = origExit;
+  }
+});
+
+test('buildScaffold: manifest 过 v2 校验且 engine 对当前 CLI 版本兼容', () => {
+  const files = buildScaffold('my-scaffold');
+  assert.deepEqual(
+    Object.keys(files).sort(),
+    ['README.md', 'index.js', 'manifest.json', 'test/my-scaffold.test.js'],
+    '脚手架固定四件套'
+  );
+
+  const manifest = JSON.parse(files['manifest.json']);
+  const schema = validateManifestSchema(manifest);
+  assert.deepEqual(
+    { ok: schema.ok, errors: schema.errors, warnings: schema.warnings },
+    { ok: true, errors: [], warnings: [] },
+    '脚手架 manifest 应零错误零警告'
+  );
+  assert.equal(checkEngine(manifest, { zmodVersion: CLI_VERSION }).ok, true, 'engine 下限对当前 CLI 兼容');
+  assert.equal(manifest.engine.zmod, `>=${CLI_VERSION}`, 'engine 下限 = 当前 CLI 版本');
+
+  // index.js 的 definePlugin 字面量与 manifest 一致（与 manifest-consistency 同思路）
+  const slice = files['index.js'].slice(files['index.js'].indexOf('definePlugin('));
+  assert.equal(slice.match(/\bid\s*:\s*'([^']+)'/)?.[1], manifest.id);
+  assert.equal(slice.match(/\bversion\s*:\s*'([^']+)'/)?.[1], manifest.version);
+});
+
+test('plugin init: 生成脚手架目录, 重复目录/非法 id 拒绝', async () => {
+  const initRoot = path.join(dataRoot, 'scaffold');
+  await pluginCommand('init', 'demo-hello', ['--dir', initRoot]);
+
+  const pluginDir = path.join(initRoot, 'demo-hello');
+  for (const rel of ['manifest.json', 'index.js', 'README.md', 'test/demo-hello.test.js']) {
+    assert.ok(fs.existsSync(path.join(pluginDir, rel)), `生成 ${rel}`);
+  }
+  const manifest = JSON.parse(fs.readFileSync(path.join(pluginDir, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.id, 'demo-hello');
+  assert.equal(manifest.version, '0.1.0');
+
+  // 目录已存在 → 退出码 1
+  const origExit = process.exit;
+  process.exit = (code) => {
+    throw new Error(`__exit_${code}`);
+  };
+  try {
+    await assert.rejects(() => pluginCommand('init', 'demo-hello', ['--dir', initRoot]), /__exit_1/);
+    await assert.rejects(() => pluginCommand('init', 'Bad_Id', ['--dir', initRoot]), /__exit_1/, '非 kebab id 拒绝');
   } finally {
     process.exit = origExit;
   }

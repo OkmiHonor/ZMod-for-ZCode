@@ -49,6 +49,7 @@ ZMod CLI v${CLI_VERSION} — Next-generation modular mod loader for ZCode
   zmod plugin search [关键词] 搜索官方插件注册表（id / 名称 / 描述）
   zmod plugin enable <id>   启用插件（重启客户端生效）
   zmod plugin disable <id>  禁用插件
+  zmod plugin init <id>     生成插件脚手架（manifest + index.js + README + 测试）[--dir <目录>]
 `;
 
 async function main() {
@@ -58,7 +59,7 @@ async function main() {
       await doctor(flags);
       break;
     case 'plugin':
-      await pluginCommand(args[1], args[2]);
+      await pluginCommand(args[1], args[2], args.slice(3));
       break;
     case 'plugin-install':
       await pluginCommand('install', args[1]);

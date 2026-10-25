@@ -473,7 +473,174 @@ async function runUpdate(arg) {
   }
 }
 
-export async function pluginCommand(subCmd, arg) {
+/**
+ * 插件脚手架文件生成（纯函数，供单测）：返回 { 相对路径: 文件内容 }。
+ * index.js 的注释即第三方作者的 ctx 能力速览；test 骨架把批 3 的
+ * manifest↔definePlugin 一致性校验带给每个新插件。
+ */
+export function buildScaffold(id, { zmodRange } = {}) {
+  // engine 下限缺省 = 当前 CLI 版本，保证脚手架开箱即与本机 ZMod 兼容
+  const engineFloor = zmodRange || `>=${CLI_VERSION}`;
+  const manifest = {
+    id,
+    name: id,
+    version: '0.1.0',
+    // manifest v2 中 description/author 是必填非空字段，生成占位文案保证开箱可安装
+    description: '一句话描述这个插件做什么（改我）',
+    author: '你的名字',
+    engine: { zmod: engineFloor },
+    permissions: [],
+    category: 'productivity'
+  };
+
+  const indexJs = `// ${id} — 由 \`zmod plugin init\` 生成。源码即产物：ESModule 经 zmod-local://
+// 协议直接加载，裸导入 @zmod/sdk 由协议端自动重写，无需任何构建步骤。
+import { definePlugin } from '@zmod/sdk';
+
+export default definePlugin({
+  id: '${id}',
+  name: '${id}',            // 改成用户可读的显示名
+  version: '0.1.0',        // 与 manifest.json.version 保持一致
+  description: '',         // 一句话说明插件做什么
+  author: '',
+
+  // 声明式设置：管理面板自动渲染表单，值自动持久化（secret 类型入加密 Vault）
+  // 控件类型：toggle / slider / select / text / password / secret / color
+  settings: {},
+
+  /**
+   * 插件启动钩子。ctx 能力一览：
+   * - ctx.invoke(method, params)  主进程 RPC（vault.get/set、system.openExternal、window.* 等）
+   * - ctx.ui                      injectStyle(id, css) / removeStyle(id) / showToast(msg, 'success'|'error'|'info'|'warn')
+   * - ctx.events                  全局事件总线 on/off/emit（含 setting:<id>:<key>、plugin:enabled/disabled）
+   * - ctx.patcher                 AOP 补丁器 before/after/instead(obj, method, fn)，禁用时自动 unpatchAll
+   * - ctx.settings                get(key, fallback) / set(key, val) / onChange(key, fn)（禁用时自动解绑）
+   * - ctx.datasources             数据源消费与注册（需 manifest 声明 datasource 权限，否则为 null）
+   * - ctx.cleanup(fn)             注册回收逻辑，禁用时 LIFO 执行
+   */
+  async start(ctx) {
+    ctx.ui.showToast('Hello from ${id}!', 'success');
+  },
+
+  async stop(ctx) {
+    // 停用钩子；ctx.cleanup 注册的逻辑会在此之前 LIFO 自动执行
+  }
+});
+`;
+
+  const readme = `# ${id}
+
+ZMod 插件脚手架（\`zmod plugin init\` 生成）。
+
+## 开发
+
+- 插件根 = 本目录：manifest.json + index.js（ESModule，无需构建步骤）
+- 本地调试：把本目录复制（或建链接）到 ZMod 数据目录的 plugins/${id}/，重启客户端加载
+- 测试骨架：node --test（默认发现 test/ 下的 *.test.js）
+
+## 打包
+
+zip 的解压根必须直接是 manifest.json 与 index.js（不允许多包一层目录）：
+
+\`\`\`
+powershell -Command "Compress-Archive -Path .\\* -DestinationPath ..\\${id}-0.1.0.zip"
+\`\`\`
+
+## 安装
+
+- CLI：\`zmod plugin install <本目录 | zip 路径 | git 仓库 URL>\`
+- 面板：Ctrl+Shift+M → 插件市场 tab 支持 zip 直链 URL 安装
+
+## 发布
+
+提 PR 到官方仓库 plugins/ 目录，或联系维护者登记 registry 条目。
+完整走查见 ZMod 仓库 docs/plugin-author-guide.md。
+`;
+
+  const testJs = `// ${id} 自检：manifest.json 与 index.js definePlugin 声明保持一致。
+// 运行：node --test（默认发现 test/ 下的 *.test.js）
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const root = path.join(__dirname, '..');
+
+test('manifest.json 与 index.js definePlugin 声明一致', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.id, '${id}');
+  assert.match(manifest.version, /^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?$/);
+
+  // 只取 definePlugin( 之后最靠前的 id/version 字面量，避免误配嵌套字段
+  const source = fs.readFileSync(path.join(root, 'index.js'), 'utf8');
+  const slice = source.slice(source.indexOf('definePlugin('));
+  const idInCode = slice.match(/\\bid\\s*:\\s*(['"])((?:(?!\\1).)*)\\1/);
+  const versionInCode = slice.match(/\\bversion\\s*:\\s*(['"])((?:(?!\\1).)*)\\1/);
+  assert.equal(idInCode?.[2], manifest.id, 'definePlugin.id 与 manifest.id 不一致');
+  assert.equal(versionInCode?.[2], manifest.version, 'definePlugin.version 与 manifest.version 不一致');
+});
+`;
+
+  return {
+    'manifest.json': JSON.stringify(manifest, null, 2) + '\n',
+    'index.js': indexJs,
+    'README.md': readme,
+    [`test/${id}.test.js`]: testJs
+  };
+}
+
+/** 解析 plugin init 的 --dir 标志。 */
+function parseInitFlags(rest) {
+  const flags = {};
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '--dir') flags.dir = rest[++i];
+  }
+  return flags;
+}
+
+/** zmod plugin init <kebab-id> [--dir <目标目录>]：生成插件脚手架目录。 */
+function runPluginInit(id, flags = {}) {
+  if (!id) {
+    console.error('用法: zmod plugin init <kebab-id> [--dir <目标目录，缺省 ./>]');
+    process.exit(1);
+  }
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) {
+    console.error(`✖ 非法插件 id: "${id}"（必须 kebab-case：小写字母/数字，连字符分隔）`);
+    process.exit(1);
+  }
+  const baseDir = path.resolve(flags.dir || '.');
+  const pluginDir = path.join(baseDir, id);
+  if (fs.existsSync(pluginDir)) {
+    console.error(`✖ 目录已存在: ${pluginDir}`);
+    process.exit(1);
+  }
+  const files = buildScaffold(id, { zmodRange: `>=${CLI_VERSION}` });
+  fs.mkdirSync(path.join(pluginDir, 'test'), { recursive: true });
+  for (const [rel, content] of Object.entries(files)) {
+    fs.writeFileSync(path.join(pluginDir, rel), content, 'utf8');
+  }
+
+  console.log(`✔ 插件脚手架已生成: ${pluginDir}`);
+  console.log(`  ${id}/`);
+  console.log('  ├── manifest.json   v2 清单（name/description/author 记得改成真实信息）');
+  console.log('  ├── index.js        definePlugin 入口（注释内含 ctx 能力速览）');
+  console.log('  ├── README.md');
+  console.log(`  └── test/${id}.test.js`);
+  console.log('\n下一步:');
+  console.log(`  1. 开发调试: 把 ${id}/ 放入 ZMod 数据目录的 plugins/ 下，重启客户端加载`);
+  console.log('  2. 打包安装: 压成 zip（根级 manifest.json + index.js）后 zmod plugin install <zip>，或面板 URL 安装');
+  console.log('  3. 推到 GitHub 后可直接安装: zmod plugin install https://github.com/you/' + id + '.git');
+  console.log('  发布走查见 docs/plugin-author-guide.md（提 PR 到 plugins/ 或登记 registry 条目）。\n');
+}
+
+export async function pluginCommand(subCmd, arg, rest = []) {
+  if (subCmd === 'init') {
+    runPluginInit(arg, parseInitFlags(rest));
+    return;
+  }
+
   if (subCmd === 'install') {
     if (!arg) {
       console.error('用法: zmod plugin install <本地目录 | xxx.zip | git-url>');
@@ -569,5 +736,5 @@ export async function pluginCommand(subCmd, arg) {
     return;
   }
 
-  console.log('未知子命令。支持: list, install, remove, update, search, enable, disable');
+  console.log('未知子命令。支持: list, install, remove, update, search, enable, disable, init');
 }

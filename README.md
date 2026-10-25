@@ -149,6 +149,36 @@ export default definePlugin({
 | `quota-popover` | 输入框「上下文容量」浮窗追加今日余额卡 + 模型设置页余量总览 |
 | `account-quota` | 官方账号数据源：从客户端自身通道采集账号余量供余额卡消费 |
 
+## 🧩 插件
+
+### 管理面板
+
+启动 ZCode 后 **Ctrl+Shift+M** 唤起独立管理面板，双 tab 结构：
+
+- **已装插件**：本机插件列表，即时启用/禁用（热装载，无需重启）、移除；
+- **插件市场**：拉取官方 registry，一键安装/更新，支持 zip 直链 URL 安装（`registry:` / `git:` / `zip:` 三种来源形态）。
+
+官方设置页侧边栏的 **ZMod → 扩展插件 / 数据源** 分组是同一套能力的原生外观入口。
+
+### CLI 速查
+
+| 命令 | 说明 |
+| --- | --- |
+| `zmod plugin list` | 查看已安装插件 |
+| `zmod plugin install <目录\|.zip\|git-url>` | 安装插件（第三方入口：本地目录 / zip 包 / GitHub 仓库 URL） |
+| `zmod plugin remove <id>` | 卸载（配置保留，重装可恢复） |
+| `zmod plugin update [id]` | 更新（无 id = 遍历全部；registry/git 来源支持自动更新） |
+| `zmod plugin search [关键词]` | 搜索官方插件注册表 |
+| `zmod plugin enable/disable <id>` | 启用 / 禁用（重启客户端生效） |
+| `zmod plugin init <id>` | 生成插件脚手架（manifest + index.js + README + 测试） |
+
+### 插件开发
+
+一行脚手架起步，规范与发布走查见文档：
+
+- [docs/plugin-spec.md](docs/plugin-spec.md) — manifest v2 全字段、权限白名单、engine 版本范围、registry.json 与安装账本
+- [docs/plugin-author-guide.md](docs/plugin-author-guide.md) — 从 `zmod plugin init` 到发布官方 registry 的完整走查
+
 ## 📄 许可证
 
 [MIT](LICENSE)
