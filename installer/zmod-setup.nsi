@@ -26,10 +26,12 @@ UninstallIcon "${__FILEDIR__}\icons\uninstaller.ico"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
-!insertmacro MUI_LANGUAGE "SimpChinese"
-
-; ---- 卸载页：保留用户数据（默认勾选） ----
+; 卸载页面流：确认 → 保留数据勾选 → 卸载进度。
+; 若缺 MUI_UNPAGE 宏，卸载器只剩自绘页孤岛，出现"只有关闭/取消"的空壳窗口
+!insertmacro MUI_UNPAGE_CONFIRM
 UninstPage custom un.PageKeepData un.PageKeepDataLeave
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_LANGUAGE "SimpChinese"
 
 Function un.PageKeepData
   nsDialogs::Create 1018
@@ -97,10 +99,17 @@ Section "Uninstall"
     ClearErrors
     FindFirst $0 $1 "$INSTDIR\*"
     un_del_loop:
-      IfErrors un_del_done
+      ; 以 $1 空串判终：RMDir 删除个别被锁文件失败会置错误标志，
+      ; 若用 IfErrors 判终会提前跳出漏删后续条目
+      StrCmp "$1" "" un_del_done
       StrCmp "$1" "." un_del_next
       StrCmp "$1" ".." un_del_next
       StrCmp "$1" "data" un_del_next
+      ; RMDir /r 只能删目录，顶层散文件（run-install.cmd、Uninstall.exe 等）须走 Delete
+      IfFileExists "$INSTDIR\$1\*.*" +3 0
+      Delete "$INSTDIR\$1"
+      Goto un_del_next
+      ClearErrors
       RMDir /r "$INSTDIR\$1"
     un_del_next:
       FindNext $0 $1
@@ -111,5 +120,8 @@ Section "Uninstall"
   ${Else}
     RMDir /r "$INSTDIR"
   ${EndIf}
-  DeleteRegKey HKCU "Software\ZMod"
+  ; 保留数据时同步保留 InstallDir 注册表，重装自动回到原目录接管 data/
+  ${If} $unKeepDataState == "0"
+    DeleteRegKey HKCU "Software\ZMod"
+  ${EndIf}
 SectionEnd
