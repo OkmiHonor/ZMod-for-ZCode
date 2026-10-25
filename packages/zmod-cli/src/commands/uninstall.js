@@ -5,8 +5,9 @@ import { locateZCode, findAsarInHost } from '../locate.js';
 import { findMarkers } from '../lib/asar.js';
 import { MARKERS } from '../patches/index.js';
 import { resolveBaselineCandidate } from '../lib/baseline.js';
-import { getBaseSnapshotPath, getUserDataDir } from '../../../zmod-core/src/common/paths.js';
+import { getBaseSnapshotPath, getUserDataDir, getLogsDir } from '../../../zmod-core/src/common/paths.js';
 import { sleep } from '../lib/process.js';
+import { teeConsoleTo } from './install.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const MANIFEST = 'install-manifest.json';
@@ -27,18 +28,19 @@ export function planUninstall(manifest, { keepData }) {
   return { files, dirs, wipeData: !keepData };
 }
 
-/** 尽力还原官方 asar：补丁版且找得到基线才动作，失败只警告不阻断卸载。 */
+/** 尽力还原官方 asar：补丁版且找得到基线才动作，失败只警告不阻断卸载。
+ * @returns {'pristine'|'restored'|'nohost'|'nobaseline'|'locked'} */
 async function bestEffortRestore(opts) {
   const hostDir = locateZCode({ explicit: opts.path });
   if (!hostDir) {
     console.log('• 未找到 ZCode 安装目录，跳过 asar 还原（ZMod 补丁如仍在，可用 install --baseline 修复）');
-    return;
+    return 'nohost';
   }
   const asarPath = findAsarInHost(hostDir);
   const hits = findMarkers(asarPath, Object.values(MARKERS));
   if (hits.length === 0) {
     console.log('• asar 已是官方纯净版，无需还原');
-    return;
+    return 'pristine';
   }
   const candidate = resolveBaselineCandidate({
     baseSnapshot: getBaseSnapshotPath(),
@@ -48,7 +50,7 @@ async function bestEffortRestore(opts) {
   if (!candidate) {
     console.warn('⚠ asar 仍是 ZMod 补丁版且无可用基线，无法自动还原官方客户端。');
     console.warn('  重装 ZCode 客户端或用 install --baseline 提供官方原始 app.asar 可恢复。');
-    return;
+    return 'nobaseline';
   }
   console.log(`• 还原官方 asar（来源: ${candidate.label}）…`);
   const swapTmp = `${asarPath}.zmod-restore`;
@@ -57,7 +59,7 @@ async function bestEffortRestore(opts) {
     try {
       fs.renameSync(swapTmp, asarPath);
       console.log(`✔ 已还原: ${asarPath}`);
-      return;
+      return 'restored';
     } catch {
       if (i < 2) await sleep(1500);
     }
@@ -65,13 +67,20 @@ async function bestEffortRestore(opts) {
   try { fs.rmSync(swapTmp, { force: true }); } catch {}
   console.warn(`⚠ 还原失败：${asarPath} 被占用（ZCode 运行中？）。程序文件仍将卸载；`);
   console.warn('  事后可重装 ZCode 客户端或用 install --baseline 恢复官方 asar。');
+  return 'locked';
 }
 
 /**
- * 清单驱动卸载。退出码：0 成功；3 非受管安装（无清单，NSIS 走兜底）。
+ * 清单驱动卸载。退出码：0 成功；3 非受管安装（无清单，NSIS 走兜底）；
+ * 4 卸载完成但官方客户端未能还原（asar 仍是补丁版，NSIS 弹警告）。
  * 注册表由 NSIS 外壳按保留数据选项处置，本命令不碰注册表。
  */
 export async function uninstall(opts = {}) {
+  // 先落日志再输出：NSIS ExecWait 下用户看不到控制台，失败只剩日志可查
+  try {
+    fs.mkdirSync(getLogsDir(), { recursive: true });
+    teeConsoleTo(path.join(getLogsDir(), 'uninstall-latest.log'));
+  } catch {}
   console.log('\n🧹 [ZMod Uninstall] 清单驱动卸载\n');
   const manifestPath = path.join(REPO_ROOT, MANIFEST);
   if (!fs.existsSync(manifestPath)) {
@@ -87,7 +96,7 @@ export async function uninstall(opts = {}) {
   const keepData = opts.wipeData !== true;
   console.log(keepData ? '• 模式: 保留用户数据（data/）' : '• 模式: 彻底清除（含 data/）');
 
-  await bestEffortRestore(opts);
+  const restoreState = await bestEffortRestore(opts);
 
   const plan = planUninstall(manifest, { keepData });
   let missing = 0;
@@ -117,4 +126,7 @@ export async function uninstall(opts = {}) {
   }
   console.log(dirLeft ? `• ${dirLeft} 个目录非空或被占用，保留原样` : '• 安装目录已移除');
   console.log('✔ 卸载完成\n');
+  if (restoreState === 'nobaseline' || restoreState === 'locked' || restoreState === 'nohost') {
+    process.exit(4);
+  }
 }

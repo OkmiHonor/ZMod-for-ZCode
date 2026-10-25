@@ -39,7 +39,7 @@ Function un.PageKeepData
   ${If} $0 == error
     Abort
   ${EndIf}
-  ${NSD_CreateLabel} 0 0 100% 24u "卸载将移除 ZMod 程序文件。用户数据（配置、数据源、插件、基线快照）位于安装目录的 data 子目录。"
+  ${NSD_CreateLabel} 0 0 100% 24u "卸载会先自动还原 ZCode 官方客户端，再移除 ZMod 程序文件。用户数据（配置、数据源、插件、基线快照）位于安装目录的 data 子目录。"
   Pop $0
   ${NSD_CreateCheckbox} 0 30u 100% 12u "保留用户数据（推荐，配置与数据源会保留）"
   Pop $unKeepDataCheckbox
@@ -100,7 +100,13 @@ Section "Uninstall"
     Goto un_after_cli
 
   un_after_cli:
+    StrCmp "$0" "4" un_restore_warn un_check3
+  un_check3:
     StrCmp "$0" "3" un_fallback un_cleanup
+  ; 卸载完成但官方客户端未能还原（asar 仍是补丁版）：必须让用户知情
+  un_restore_warn:
+    MessageBox MB_OK|MB_ICONEXCLAMATION "程序文件已卸载，但官方客户端未能还原（无基线或 asar 被占用）。$\r$\n$\r$\nZCode 当前仍是 ZMod 补丁版，可：$\r$\n· 重装 ZMod 后运行 restore 还原，或$\r$\n· 重装 ZCode 客户端恢复官方版本。$\r$\n详细日志: $INSTDIR\data\logs\uninstall-latest.log" /SD IDOK
+    Goto un_cleanup
 
   ; CLI 或清单不可用（用户手删过文件）：目录枚举兜底。
   ; 以 $1 空串判终；RMDir 失败只置错误标志，不能作为循环终止条件
