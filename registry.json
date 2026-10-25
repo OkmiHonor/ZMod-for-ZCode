@@ -1,0 +1,92 @@
+{
+  "updated": "2026-10-25T09:07:13.241Z",
+  "plugins": [
+    {
+      "id": "account-quota",
+      "version": "1.0.0-beta",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/account-quota-1.0.0-beta.zip",
+      "shasum": "f1bf0545e10aa92c87d82db6ecd1a0acd85f8f7690a8354ea3d333f07e0e96d3",
+      "manifest": {
+        "id": "account-quota",
+        "name": "账号额度（零凭据）",
+        "version": "1.0.0-beta",
+        "description": "被动采集官方登录账号的今日余额/配额，并注册为数据源类型「官方账号额度」——在数据源页添加实例即可像普通数据源一样使用（零凭据、零请求）",
+        "author": "ZMod Team",
+        "engine": {
+          "zmod": ">=1.0.0-beta"
+        },
+        "permissions": [
+          "datasource",
+          "net.fetch"
+        ],
+        "category": "datasource",
+        "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+      }
+    },
+    {
+      "id": "acrylic-window",
+      "version": "1.0.0-beta",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/acrylic-window-1.0.0-beta.zip",
+      "shasum": "2d08ff5c2156a31acb0acee6a658c4618215490389b878d168496b3ec56c2298",
+      "manifest": {
+        "id": "acrylic-window",
+        "name": "亚克力背板与老板键",
+        "version": "1.0.0-beta",
+        "description": "Windows 11 DWM 亚克力/云母模糊全透背板，以及全局快捷键一键隐藏/恢复客户端",
+        "author": "ZMod Team",
+        "engine": {
+          "zmod": ">=1.0.0-beta"
+        },
+        "permissions": [
+          "dom.patch"
+        ],
+        "category": "appearance",
+        "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+      }
+    },
+    {
+      "id": "official-providers",
+      "version": "1.0.0-beta",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/official-providers-1.0.0-beta.zip",
+      "shasum": "28d3d6f4253b22caf5104d58e64454dcd701ed0ea0c3a64f6b416f8b1242f99b",
+      "manifest": {
+        "id": "official-providers",
+        "name": "数据源适配器（官方）",
+        "version": "1.0.0-beta",
+        "description": "提供通用 HTTP 与常用平台预设的数据源类型；凭据全部加密保存，出厂零预配",
+        "author": "ZMod Team",
+        "engine": {
+          "zmod": ">=1.0.0-beta"
+        },
+        "permissions": [
+          "net.fetch",
+          "vault.write",
+          "datasource"
+        ],
+        "category": "datasource",
+        "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+      }
+    },
+    {
+      "id": "quota-popover",
+      "version": "1.0.0-beta",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/quota-popover-1.0.0-beta.zip",
+      "shasum": "258520ea19d5b4b7beec09c810f649359b46ad427e427d77b630ebae6e0497f0",
+      "manifest": {
+        "id": "quota-popover",
+        "name": "余量弹窗与模型页余量",
+        "version": "1.0.0-beta",
+        "description": "把数据源实例的余额/配额注入官方界面：输入框「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1）+ 官方设置「模型设置」页注入余量总览（运行时注入，不改官方文件）",
+        "author": "ZMod Team",
+        "engine": {
+          "zmod": ">=1.0.0-beta"
+        },
+        "permissions": [
+          "datasource"
+        ],
+        "category": "datasource",
+        "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+      }
+    }
+  ]
+}
