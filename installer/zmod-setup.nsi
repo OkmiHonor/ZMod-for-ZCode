@@ -61,7 +61,7 @@ Section "ZMod"
   nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq ZCode.exe" /NH | find /i "ZCode.exe" >nul'
   Pop $0
   ${If} $0 == 0
-    MessageBox MB_OKCANCEL|MB_ICONQUESTION "检测到 ZCode 正在运行。$\r$\n$\r$\n安装需要完全退出 ZCode，点击 [确定] 自动关闭并继续；未保存的会话内容请先处理。" IDOK close_zcode
+    MessageBox MB_OKCANCEL|MB_ICONQUESTION "检测到 ZCode 正在运行。$\r$\n$\r$\n安装需要完全退出 ZCode，点击 [确定] 自动关闭并继续；未保存的会话内容请先处理。" /SD IDOK IDOK close_zcode
     Abort "已取消安装。"
 close_zcode:
     DetailPrint "正在关闭 ZCode ..."
@@ -87,10 +87,16 @@ close_zcode:
 SectionEnd
 
 Section "Uninstall"
-  IfFileExists "$INSTDIR\run-install.cmd" 0 +4
-    MessageBox MB_YESNO|MB_ICONQUESTION "卸载前建议先还原 ZCode 官方客户端（运行 restore）。$\r$\n$\r$\n现在先运行还原吗？" IDNO +3
-    ExecWait '"$INSTDIR\run-install.cmd" restore'
+  IfFileExists "$INSTDIR\run-install.cmd" 0 un_no_restore
+    MessageBox MB_YESNO|MB_ICONQUESTION "卸载前建议先还原 ZCode 官方客户端（运行 restore）。$\r$\n$\r$\n现在先运行还原吗？" /SD IDNO IDNO un_no_restore
+    ExecWait '"$INSTDIR\run-install.cmd" restore' $0
+    ${If} $0 != 0
+      ; restore 失败时 asar 仍是补丁版，data/base 里的基线是唯一恢复通道，
+      ; 必须让用户知情再决定是否继续（继续勾选保留数据则基线仍在）
+      MessageBox MB_OK|MB_ICONSTOP "还原官方客户端失败（退出码 $0）。$\r$\n$\r$\nZCode 当前仍是 ZMod 补丁版；若继续卸载且不保留数据，将无法自动恢复官方版。" /SD IDOK
+    ${EndIf}
     Sleep 1000
+  un_no_restore:
 
   ${If} $unKeepDataState != "0"
     ${AndIf} ${FileExists} "$INSTDIR\data"

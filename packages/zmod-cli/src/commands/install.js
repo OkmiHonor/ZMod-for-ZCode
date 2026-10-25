@@ -176,13 +176,31 @@ export async function install(opts = {}) {
     const v2Hits = findMarkers(asarPath, Object.values(MARKERS));
     let pristineSource;
     if (v2Hits.length > 0) {
-      if (!fs.existsSync(baseSnapshot)) {
-        console.error('✖ 当前 asar 已是 ZMod v2 补丁版，但缺少原始基线快照（base/app.asar），无法安全重装。');
-        console.error('  请先还原官方 asar 到 ' + asarPath + ' 后重试。');
+      // Baseline candidates, in priority order. A wiped data dir (uninstall
+      // gone wrong) must not deadlock the reinstall on an already-patched asar.
+      const legacyBackup = path.join(path.dirname(asarPath), 'app.asar.backup1');
+      const candidate = [
+        [baseSnapshot, '基线快照 base/app.asar'],
+        [legacyBackup, `旧版备份 ${legacyBackup}`],
+        [opts.baseline, '--baseline 指定文件']
+      ].find(([p]) => p && fs.existsSync(p));
+      if (!candidate) {
+        console.error('✖ 当前 asar 已是 ZMod v2 补丁版，且找不到任何官方基线（base/app.asar、app.asar.backup1 均不存在）。');
+        console.error('  恢复方式（任选其一）：');
+        console.error('  1. zmod install --baseline <官方原始 app.asar 路径>');
+        console.error('  2. 重装 ZCode 客户端恢复官方 asar 后重新安装 ZMod');
         process.exit(1);
       }
-      console.log('• 检测到已安装 v2，基于原始基线快照重装');
-      pristineSource = baseSnapshot;
+      console.log(`• 检测到已安装 v2，基于${candidate[1]}重装`);
+      pristineSource = candidate[0];
+      if (pristineSource !== baseSnapshot) {
+        // rebuild the canonical snapshot so future restore/reinstall self-heal
+        fs.mkdirSync(path.dirname(baseSnapshot), { recursive: true });
+        const snapTmp = `${baseSnapshot}.tmp`;
+        fs.copyFileSync(pristineSource, snapTmp);
+        fs.renameSync(snapTmp, baseSnapshot);
+        console.log('• 已回填基线快照 base/app.asar');
+      }
     } else {
       pristineSource = asarPath;
       // snapshot the pristine official asar — future reinstalls and `restore` depend on it

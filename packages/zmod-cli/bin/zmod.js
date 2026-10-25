@@ -19,6 +19,7 @@ function readFlags(rest) {
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === '--path') flags.path = rest[++i];
     else if (rest[i] === '--force') flags.force = true;
+    else if (rest[i] === '--baseline') flags.baseline = rest[++i];
   }
   return flags;
 }
@@ -34,6 +35,7 @@ ZMod CLI v2.0.0 — Next-generation modular mod loader for ZCode
   zmod install              将 ZMod 微内核安装到 ZCode 客户端（外置运行时 + asar 四通道补丁）
       [--path <dir>]          指定 ZCode 安装目录（默认自动探测）
       [--force]               客户端运行中时自动结束进程并在完成后重启
+      [--baseline <file>]     install 专用：指定官方原始 app.asar（基线丢失时的恢复通道）
   zmod restore              还原官方纯净客户端
   zmod plugin list          查看已安装插件
   zmod plugin install <src> 安装插件（本地目录 / .zip / git 仓库 URL）
