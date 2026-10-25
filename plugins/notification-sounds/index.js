@@ -8,7 +8,7 @@ import {
   mergeLibrary,
   base64ToUint8Array
 } from './lib.js';
-import { mountCard } from './card.js';
+import { renderSoundSettings } from './card.js';
 
 const PLUGIN_ID = 'notification-sounds';
 const OFFICIAL_POP_MARK = 'task-notification-pop';
@@ -21,7 +21,7 @@ const FALLBACK_BUILTIN = [
   { id: 'builtin:chime', name: '柔和风铃 Chime', file: 'assets/chime.wav' }
 ];
 
-// definePlugin 的 actions 在 start 之前就定型，运行时句柄通过该槽位交接
+// definePlugin 的 actions/renderSettings 在 start 之前就定型，运行时句柄通过该槽位交接
 let runtime = null;
 
 export default definePlugin({
@@ -69,6 +69,18 @@ export default definePlugin({
         return { ok: true };
       }
     }
+  },
+
+  /**
+   * 内核 renderSettings 钩子：声明式控件渲染完后，把音色库/导入/事件音色
+   * 管理区画进同一张设置表单。运行时快照经 runtime 槽位交接；未启动时
+   * 仅出「已停用」提示。
+   */
+  renderSettings(el, helpers) {
+    const deps = runtime
+      ? { ...runtime.deps, isRunning: true }
+      : { isRunning: false };
+    renderSoundSettings(el, helpers, deps);
   },
 
   async start(ctx) {
@@ -169,17 +181,26 @@ export default definePlugin({
 
     await reloadLibrary();
 
-    /* ---- B3 设置卡句柄：库重载完成后让其重绘（导入/删除后的最终态） ---- */
-    let cardApi = null;
+    /* ---- 自定义设置区句柄：库重载后触发其重绘（导入/删除后的最终态）。
+       监听只在 start 里挂一次；设置区渲染时经 deps.onLibraryChanged 覆盖
+       登记回调，el 已断开（表单关闭）时回调内部自行跳过。 ---- */
+    let cardRefresh = null;
+    const notifyCard = () => {
+      try {
+        cardRefresh?.();
+      } catch (err) {
+        console.error('[ZMod:NotifySounds] card refresh failed:', err);
+      }
+    };
 
-    /* ---- 库变更（B3 设置卡导入/删除音色后广播）→ 清缓存重合并 ---- */
+    /* ---- 库变更（设置区导入/删除音色后广播）→ 清缓存重合并 ---- */
     const offLib = events.on(CHANNELS.libraryChanged, async () => {
       try {
         await reloadLibrary();
       } catch (err) {
         console.error('[ZMod:NotifySounds] library reload failed:', err);
       }
-      cardApi?.rerender?.();
+      notifyCard();
     });
     cleanup(offLib);
 
@@ -219,43 +240,9 @@ export default definePlugin({
         }
       })
     );
-
-    /* ---- B3 设置卡：contribute 到官方设置页「扩展插件」区。
-       内核在 plugins.loadAll() 之前就同步挂好 window.ZMod.settingsPage
-       （renderer/index.js boot 时序），正常时序直接可用；轮询仅为兜底。 ---- */
-    const wireCard = () => {
-      const page = window.ZMod?.settingsPage;
-      if (!page || typeof page.contribute !== 'function') return false;
-      try {
-        cardApi = mountCard({
-          contribute: page.contribute.bind(page),
-          uncontribute: typeof page.uncontribute === 'function' ? page.uncontribute.bind(page) : null,
-          events,
-          invoke,
-          ui: ctx.ui,
-          getLibrary: () => library,
-          getSoundMap: () => snap.soundMap
-        });
-        cleanup(() => cardApi?.dispose?.());
-        return true;
-      } catch (err) {
-        console.error('[ZMod:NotifySounds] card mount failed:', err);
-        return true; // 挂载失败不重试，避免刷错误日志
-      }
-    };
-    if (!wireCard()) {
-      let tries = 0;
-      const poll = setInterval(() => {
-        if (wireCard() || ++tries >= 20) clearInterval(poll);
-      }, 500);
-      cleanup(() => clearInterval(poll));
-    }
-    // 兜底：插件停用（含热更新重载）时务必把卡片从设置页撤下
-    cleanup(() => {
-      try {
-        window.ZMod?.settingsPage?.uncontribute?.(PLUGIN_ID);
-      } catch {}
-    });
+    // soundMap 变更（含设置区下拉框经 s.set 的回写）后重绘设置区，跨表单
+    // 同步下拉框选中态。注册在 refresh 监听之后：重绘时 snap 已是新值。
+    cleanup(s.onChange('soundMap', notifyCard));
 
     /* ---- 官方通知声压制补丁：instead 回调首参为绑定原函数，返回值即结果 ---- */
     const warnedSrcs = new Set();
@@ -299,7 +286,19 @@ export default definePlugin({
       runtime = null;
     });
 
-    runtime = { preview: previewSound };
+    runtime = {
+      preview: previewSound,
+      deps: {
+        invoke,
+        events,
+        ui: ctx.ui,
+        getLibrary: () => library,
+        getSoundMap: () => snap.soundMap,
+        onLibraryChanged: (fn) => {
+          cardRefresh = typeof fn === 'function' ? fn : null;
+        }
+      }
+    };
     console.log(`[ZMod:NotifySounds] armed (events: ${EVENTS.map((e) => e.status).join(', ')})`);
   },
 

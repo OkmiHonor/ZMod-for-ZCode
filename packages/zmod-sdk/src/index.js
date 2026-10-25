@@ -16,6 +16,9 @@ export { validateManifestSchema, checkEngine } from './manifest.js';
  * @param {Function} [def.start] - Start lifecycle hook, receives the plugin ctx
  * @param {Function} [def.stop] - Stop lifecycle hook
  * @param {string} [def.styles] - Optional raw CSS string to inject
+ * @param {Function} [def.renderSettings] - Optional custom settings renderer,
+ *   called by the kernel with (containerEl, helpers) after the declarative
+ *   schema controls; helpers = { onChange, onAction, toast(message, type) }
  *
  * The returned object is intentionally NOT frozen: plugins may attach their own
  * lifecycle state (e.g. `this._cleanup = ...` inside start()). Use ctx.cleanup(fn)
@@ -40,6 +43,9 @@ export function definePlugin(def) {
 
   const validatedSettings = validateSettings(def.settings);
   const validatedActions = validateActions(def.id, def.actions);
+  if (def.renderSettings !== undefined && typeof def.renderSettings !== 'function') {
+    throw new Error(`Plugin "${def.id}" "renderSettings" must be a function when provided`);
+  }
 
   return {
     id: def.id,
@@ -51,7 +57,8 @@ export function definePlugin(def) {
     actions: validatedActions,
     styles: typeof def.styles === 'string' ? def.styles : '',
     start: typeof def.start === 'function' ? def.start : null,
-    stop: typeof def.stop === 'function' ? def.stop : null
+    stop: typeof def.stop === 'function' ? def.stop : null,
+    renderSettings: typeof def.renderSettings === 'function' ? def.renderSettings : null
   };
 }
 

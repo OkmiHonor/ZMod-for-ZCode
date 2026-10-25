@@ -133,4 +133,35 @@ test('ZMod SDK definePlugin & Schema Suite', async (t) => {
       });
     }, /requires a "run" function/);
   });
+
+  await t.test('renderSettings function passes through to the definition', () => {
+    const fn = () => {};
+    const plugin = definePlugin({
+      id: 'custom-settings',
+      name: 'Custom Settings',
+      version: '1.0.0',
+      renderSettings: fn
+    });
+    assert.equal(plugin.renderSettings, fn);
+  });
+
+  await t.test('absent renderSettings normalizes to null', () => {
+    const plugin = definePlugin({
+      id: 'no-custom-settings',
+      name: 'No Custom Settings',
+      version: '1.0.0'
+    });
+    assert.equal(plugin.renderSettings, null);
+  });
+
+  await t.test('non-function renderSettings throws', () => {
+    assert.throws(() => {
+      definePlugin({
+        id: 'bad-render-settings',
+        name: 'Bad Render Settings',
+        version: '1.0.0',
+        renderSettings: 'not-a-function'
+      });
+    }, /"renderSettings" must be a function/);
+  });
 });

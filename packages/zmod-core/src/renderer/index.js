@@ -154,13 +154,20 @@ function main() {
      * color / group (heading) / action (button invoking `onAction(key)`).
      * `secret` never echoes the stored value: the input starts empty and an
      * empty submit keeps the vault entry untouched.
+     *
+     * Custom section: when the plugin def carries a `renderSettings(el, helpers)`
+     * function, it is invoked after all declarative controls with a plain
+     * container <div> and helpers = { onChange, onAction, toast } — the plugin
+     * paints its own settings UI inside the same form flow. A throwing
+     * renderer is logged and dropped; the declarative controls stay intact.
      */
     renderSettingsForm(plugin, activeSettings, onChange, onAction) {
       const form = document.createElement('div');
       form.className = 'flex flex-col';
       const defs = plugin.settings || {};
       const keys = Object.keys(defs);
-      if (keys.length === 0) {
+      const hasCustom = typeof plugin?.renderSettings === 'function';
+      if (keys.length === 0 && !hasCustom) {
         const empty = document.createElement('div');
         empty.className = 'py-2 text-ui-sm text-foreground-subtle';
         empty.textContent = '此插件无需额外设置。';
@@ -292,6 +299,24 @@ function main() {
           row.appendChild(input);
         }
         form.appendChild(row);
+      }
+
+      // Plugin-provided custom settings section: sits inside the same form
+      // flow below the declarative controls, no extra chrome of our own.
+      if (hasCustom) {
+        const container = document.createElement('div');
+        container.className = 'flex flex-col gap-3';
+        form.appendChild(container);
+        try {
+          plugin.renderSettings(container, {
+            onChange,
+            onAction,
+            toast: (msg, type) => this.showToast(msg, type)
+          });
+        } catch (err) {
+          console.error(`[ZMod:Renderer] renderSettings failed for "${plugin?.id || '?'}":`, err);
+          container.remove();
+        }
       }
       return form;
     }
