@@ -463,7 +463,8 @@ export function registerPluginHost(gateway, injected = {}) {
     const removed = await deps.removeDirImpl(dest);
     if (!removed) return { ok: false, error: `目录删除失败（被占用？）: ${dest}` };
     removeInstalled(c.dataDir, id);
-    configManager.setPluginEnabled(id, false);
+    // 移除 = 清掉 enabled 键（重装默认启用）；"关闭但保留" 是 enabled:false，不走这里
+    configManager.deletePluginEnabled(id);
     deps.broadcastImpl({ action: 'removed', id, entryUrl: null, manifest: null });
     return { ok: true };
   });
@@ -576,7 +577,9 @@ export function writeBuiltinRecords(dataDir, pluginIds) {
       recordInstalled(dataDir, id, { version, source: 'builtin', sourceRef: '', shasum: '' });
       recorded.push(id);
     } catch (err) {
-      console.warn(`[ZMod:PluginHost] builtin 记账失败 ${id}: ${err?.message || err}`);
+      // reached from the CLI installer (writeBuiltinRecords is called by
+      // zmod install) — keep console output ASCII for GBK-safe detail pages
+      console.warn(`[ZMod:PluginHost] builtin ledger update failed ${id}: ${err?.message || err}`);
     }
   }
   return recorded;

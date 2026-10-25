@@ -1202,6 +1202,8 @@ function main() {
         // （update-available → installed），_loadMarket 幂等且自带 loading 态
         if (panel._tab === 'market') panel._loadMarket();
         else panel.refresh();
+        // 设置页是插件管理主入口：已装插件管理区同样跟随广播存活刷新
+        settingsPage.refresh();
       });
     });
   }

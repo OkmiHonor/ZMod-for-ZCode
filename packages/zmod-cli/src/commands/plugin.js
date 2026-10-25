@@ -202,14 +202,23 @@ export function filterSearch(registryJson, keyword) {
   );
 }
 
-/** 单源一次 fetch：自管 AbortController 超时（AbortSignal.timeout 在进程退出时有 libuv 断言崩溃，禁用）。 */
+/**
+ * 单源一次 fetch：自管 AbortController 超时（AbortSignal.timeout 在进程退出时有
+ * libuv 断言崩溃，禁用）。网络/HTTP 层失败抛出的错误带 layer:'fetch' 标记——
+ * 代理提示只对这类失败生效，registry 返回格式错误（JSON 解析）不提示代理。
+ */
 async function fetchOnce(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(new Error('timeout 15000ms')), 15000);
   timer.unref?.();
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    let res;
+    try {
+      res = await fetch(url, { signal: ctrl.signal });
+    } catch (err) {
+      throw Object.assign(new Error(err?.message || 'fetch failed'), { layer: 'fetch' });
+    }
+    if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { layer: 'fetch' });
     return await res.json();
   } finally {
     clearTimeout(timer);
@@ -234,14 +243,17 @@ function proxyEnvHint() {
 /** 双源顺序尝试（GitHub raw 主源 + jsdelivr 镜像），先成功者用；全失败返回 null。 */
 async function fetchRegistry() {
   const errors = [];
+  // 仅 fetch/HTTP 层失败才拼代理提示；registry 返回格式错误（JSON 解析）不拼
+  let networkFailure = false;
   for (const url of REGISTRY_URLS) {
     try {
       return await fetchOnce(url);
     } catch (err) {
+      if (err?.layer === 'fetch') networkFailure = true;
       errors.push(`${url}: ${err?.message || err}`);
     }
   }
-  console.error(`✖ 拉取插件注册表失败（双源均不可达）${proxyEnvHint()}:`);
+  console.error(`✖ 拉取插件注册表失败（双源均不可达）${networkFailure ? proxyEnvHint() : ''}:`);
   for (const e of errors) console.error(`  ${e}`);
   return null;
 }
@@ -651,24 +663,19 @@ function runPluginInit(id, flags = {}) {
 }
 
 /**
- * 开发目录判定：cwd 与数据目录同属一个 package.json 根时，视为在 ZMod 开发仓库内
- * 运行——此时 data 会解析到仓库自身的 data/，空列表会误导用户以为插件丢失。
+ * 开发仓库判定：数据目录位于一个 git 检出内（祖先链存在 .git）——此时 data
+ * 会解析到仓库自身的 data/，空列表会误导用户以为插件丢失。与 cwd 无关；
+ * 部署安装（安装目录无 .git）不受影响。
  */
-function isRunningInsideDevRepo() {
-  const findPkgRoot = (start) => {
-    let cur = start;
-    for (let i = 0; i < 8; i++) {
-      if (fs.existsSync(path.join(cur, 'package.json'))) return cur;
-      const parent = path.dirname(cur);
-      if (parent === cur) return null;
-      cur = parent;
-    }
-    return null;
-  };
-  const dataRoot = findPkgRoot(path.dirname(getUserDataDir()));
-  if (!dataRoot) return false;
-  const cwdRoot = findPkgRoot(process.cwd());
-  return cwdRoot != null && path.resolve(cwdRoot) === path.resolve(dataRoot);
+export function isRunningInsideDevRepo() {
+  let cur = getUserDataDir();
+  for (let i = 0; i < 8; i++) {
+    if (fs.existsSync(path.join(cur, '.git'))) return true;
+    const parent = path.dirname(cur);
+    if (parent === cur) return false;
+    cur = parent;
+  }
+  return false;
 }
 
 export async function pluginCommand(subCmd, arg, rest = []) {
@@ -708,8 +715,9 @@ export async function pluginCommand(subCmd, arg, rest = []) {
       process.exit(1);
     }
     if (entry) removeInstalled(dataDir, arg);
-    configManager.setPluginEnabled(arg, false);
-    console.log(`✔ 插件 "${arg}" 已卸载。配置已保留，重装可恢复。\n`);
+    // 移除 = 清掉 enabled 键（重装默认启用）；"关闭但保留" 是 enabled:false，不走这里
+    configManager.deletePluginEnabled(arg);
+    console.log(`✔ 插件 "${arg}" 已卸载。配置已保留，重装后默认启用。\n`);
     return;
   }
 

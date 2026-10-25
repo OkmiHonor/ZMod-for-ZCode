@@ -40,6 +40,30 @@ test('ZMod Paths & Config & Vault Suite', async (t) => {
     assert.equal(configManager.getPluginSetting('test-mod', 'opacity'), 0.5);
   });
 
+  await t.test('deletePluginEnabled: 只删 enabled 键, settings 保留, 空对象顺带删插件键', () => {
+    // enabled + settings 并存：删 enabled 后 settings 保留，重装默认启用
+    configManager.setPluginEnabled('gone-mod', false);
+    configManager.setPluginSetting('gone-mod', 'opacity', 0.7);
+    assert.equal(configManager.deletePluginEnabled('gone-mod'), true);
+    assert.equal(configManager.get().plugins['gone-mod']?.enabled, undefined, 'enabled 键已被删除');
+    assert.equal(configManager.isPluginEnabled('gone-mod'), true, '重装默认启用');
+    assert.equal(configManager.getPluginSetting('gone-mod', 'opacity'), 0.7, 'settings 数据保留');
+
+    // 只有 enabled 时：插件键顺带删除
+    configManager.setPluginEnabled('bare-mod', false);
+    assert.equal(configManager.deletePluginEnabled('bare-mod'), true);
+    assert.equal(configManager.get().plugins['bare-mod'], undefined, '空对象顺带删除');
+
+    // 无 enabled 键：返回 false 且不动配置
+    assert.equal(configManager.deletePluginEnabled('never-mod'), false);
+    assert.equal(configManager.deletePluginEnabled('gone-mod'), false, '已删过返回 false');
+
+    // 持久化检查
+    configManager.reset();
+    assert.equal(configManager.isPluginEnabled('gone-mod'), true);
+    assert.equal(configManager.getPluginSetting('gone-mod', 'opacity'), 0.7);
+  });
+
   await t.test('secret vault operations', () => {
     secretVault.reset();
     secretVault.set('test-secret', 'my-api-key-12345');

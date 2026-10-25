@@ -97,7 +97,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   let navClickHandler = null;
   let overlay = null;
   let activeItem = null;
-  let detail = null; // { kind: 'plugin-settings' | 'ds-edit', ... }
+  let detail = null; // { kind: 'ds-edit', ... }
   const contributions = new Map(); // id -> { id, title, render(el) }
 
   // Config hot reload: live-refresh an open datasources page instead of
@@ -424,12 +424,8 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
 
   /** Page bodies are identical in both modes; only the chrome differs. */
   function renderPage(root) {
-    if (activeItem === 'plugins') {
-      if (detail?.kind === 'plugin-settings') renderPluginDetail(root);
-      else renderPluginsPage(root);
-    } else {
-      renderDatasourcesPage(root);
-    }
+    if (activeItem === 'plugins') renderPluginsPage(root);
+    else renderDatasourcesPage(root);
   }
 
   /* ------------------------------------------------------------ *
@@ -776,7 +772,15 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   }
 
   /* ---------------- extensions page ---------------- */
+
+  // 已装插件管理区的行内展开状态（跨重绘保持，切换开关等重绘不折叠）
+  let settingsOpenId = null;
+  let confirmRemoveId = null;
+
   function renderPluginsPage(root) {
+    renderInstalledPluginsSection(root);
+
+    // 插件自愿贡献的卡片（不动）
     for (const contrib of contributions.values()) {
       const section = document.createElement('section');
       section.className = 'flex flex-col gap-3';
@@ -793,53 +797,151 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       }
       root.appendChild(section);
     }
+  }
 
-    const listTitle = document.createElement('h3');
-    listTitle.className = 'text-ui-sm font-medium text-foreground-subtle';
-    listTitle.textContent = '已安装的扩展';
-    root.appendChild(listTitle);
-
+  /**
+   * 已装插件管理区（设置页是插件管理主入口，浮动面板只是保底）。
+   * 结构沿用数据源页范式：小标题 + 行卡（rounded-xl border bg-surface）、
+   * 官方 Switch、textButton 操作列；移除走行下内联确认条。
+   */
+  function renderInstalledPluginsSection(root) {
     const defs = registry.getAll();
+
+    const section = document.createElement('section');
+    section.className = 'flex flex-col gap-3';
+    const header = document.createElement('div');
+    header.className = 'flex flex-col gap-0.5';
+    const h3 = document.createElement('h3');
+    h3.className = 'text-ui-sm font-medium text-foreground-subtle';
+    h3.textContent = `已装插件 (${defs.length})`;
+    header.appendChild(h3);
+    const desc = document.createElement('div');
+    desc.className = 'text-ui-xs text-foreground-subtle/80';
+    desc.textContent = '开关与设置即时生效；移除后配置保留，重新安装默认启用。';
+    header.appendChild(desc);
+    section.appendChild(header);
+    root.appendChild(section);
+
     if (defs.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'rounded-xl border border-dashed border-border px-4 py-6 text-center text-ui-sm text-foreground-subtle';
-      empty.textContent = '未发现任何插件。将插件放入 ZMod 数据目录下的 plugins 子目录后重启客户端。';
-      root.appendChild(empty);
+      empty.textContent = '暂无插件';
+      section.appendChild(empty);
       return;
     }
 
     for (const def of defs) {
-      root.appendChild(pluginRow(def));
+      section.appendChild(installedPluginRow(def));
+      if (confirmRemoveId === def.id) section.appendChild(removeConfirmBar(def));
+      if (settingsOpenId === def.id) section.appendChild(pluginSettingsForm(def));
     }
   }
 
-  function pluginRow(def) {
+  function installedPluginRow(def) {
+    const isBuiltin = def._installed?.source === 'builtin';
     const row = document.createElement('div');
     row.className = 'flex items-center gap-4 rounded-xl border border-border bg-surface px-4 py-3';
     row.innerHTML = `
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2">
           <span class="truncate text-ui-base font-medium text-foreground">${esc(def.name || def.id)}</span>
-          <span class="shrink-0 rounded-sm bg-tag px-1.5 py-0.5 text-ui-xs font-medium text-foreground-subtle">v${esc(def.version || '1.0.0')}</span>
-          ${registry.isActive(def.id) ? '' : '<span class="shrink-0 text-ui-xs text-foreground-subtle">已停用</span>'}
+          <span class="shrink-0 text-ui-xs text-foreground-subtle">v${esc(def.version || '1.0.0')}</span>
+          ${isBuiltin ? '<span class="shrink-0 rounded-sm bg-tag px-1.5 py-0.5 text-ui-xs font-medium text-foreground-subtle">随基座</span>' : ''}
         </div>
         ${def.description ? `<div class="mt-0.5 truncate text-ui-sm text-foreground-subtle">${esc(def.description)}</div>` : ''}
       </div>`;
 
-    const hasSettings = def.settings && Object.keys(def.settings).length > 0;
-    const hasActions = def.actions && Object.keys(def.actions).length > 0;
-    if (hasSettings || hasActions) {
-      row.appendChild(iconButton('gear', `打开 ${def.name || def.id} 设置`, async () => {
-        detail = { kind: 'plugin-settings', id: def.id, title: `${def.name || def.id} · 设置` };
+    const actions = document.createElement('div');
+    actions.className = 'flex shrink-0 items-center gap-1';
+    if (def.settings && Object.keys(def.settings).length > 0) {
+      actions.appendChild(textButton('设置', 'gear', () => {
+        settingsOpenId = settingsOpenId === def.id ? null : def.id;
         renderContent();
       }));
     }
-    row.appendChild(makeSwitch(registry.isActive(def.id), async (checked) => {
+    const removeBtn = textButton('移除', 'trash', () => {
+      confirmRemoveId = confirmRemoveId === def.id ? null : def.id;
+      settingsOpenId = null;
+      renderContent();
+    });
+    // 危险色：destructive 是官方主题 token（Switch 轨道类里已引用），带兜底色
+    removeBtn.classList.remove('text-foreground');
+    removeBtn.style.color = 'var(--color-destructive, #ef4444)';
+    actions.appendChild(removeBtn);
+    actions.appendChild(makeSwitch(registry.isActive(def.id), async (checked) => {
       if (checked) await registry.enable(def.id, { persist: true });
       else await registry.disable(def.id, { persist: true });
       renderContent();
     }));
+    row.appendChild(actions);
     return row;
+  }
+
+  /** 移除确认条（面板 zmod-mgr-confirm 的官方风格版）：行下内联展开，不走 window.confirm。 */
+  function removeConfirmBar(def) {
+    const isBuiltin = def._installed?.source === 'builtin';
+    const bar = document.createElement('div');
+    bar.className = 'flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5';
+    const text = document.createElement('span');
+    text.className = 'min-w-0 flex-1 text-ui-sm text-foreground-subtle';
+    text.textContent =
+      `确认移除 ${def.name || def.id}？配置将保留，重新安装后默认启用` +
+      (isBuiltin ? '（随基座发布，重跑安装器会重新部署）' : '');
+    bar.appendChild(text);
+    bar.appendChild(textButton('取消', null, () => {
+      confirmRemoveId = null;
+      renderContent();
+    }));
+    const ok = primaryButton('确认移除', async () => {
+      try {
+        const res = await api.invoke('plugin.remove', { id: def.id });
+        confirmRemoveId = null;
+        settingsOpenId = null;
+        if (res && res.ok) ui.showToast('已移除', 'success');
+        else ui.showToast((res && res.error) || '移除失败', 'error');
+      } catch (err) {
+        confirmRemoveId = null;
+        ui.showToast(`移除失败：${err?.message || err}`, 'error');
+      }
+      renderContent();
+    });
+    ok.style.background = 'var(--color-destructive, #dc2626)';
+    bar.appendChild(ok);
+    return bar;
+  }
+
+  /** 内联设置表单：与 ManagerPanel._renderSettings 同款 renderSettingsForm 调用范式。 */
+  function pluginSettingsForm(def) {
+    const id = def.id;
+    const wrap = document.createElement('div');
+    wrap.className = 'flex flex-col gap-2 rounded-xl border border-border bg-surface px-4 py-3';
+    wrap.appendChild(
+      ui.renderSettingsForm(def, registry.getActiveSettings(id), async (key, value) => {
+        const active = registry._active.get(id);
+        if (active) {
+          // route through the registry ctx so plugin onChange listeners fire
+          await active.ctx.settings.set(key, value);
+        } else {
+          await api.invoke('config.setPluginSetting', { pluginId: id, key, value });
+        }
+      }, async (actionKey) => {
+        const action = def.actions?.[actionKey];
+        const active = registry._active.get(id);
+        if (!action) return;
+        if (!active) {
+          ui.showToast('请先启用该插件再执行操作', 'warn');
+          return;
+        }
+        try {
+          const res = await action.run(active.ctx);
+          if (res && res.message) ui.showToast(res.message, res.ok === false ? 'warn' : 'success');
+          else if (res?.ok) ui.showToast('完成', 'success');
+        } catch (err) {
+          ui.showToast(`执行失败：${err?.message || err}`, 'error');
+        }
+      })
+    );
+    return wrap;
   }
 
   function iconButton(icon, label, onClick) {
@@ -901,40 +1003,6 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       }
     });
     return btn;
-  }
-
-  function renderPluginDetail(root) {
-    const def = registry.getAll().find((d) => d.id === detail.id);
-    if (!def) {
-      detail = null;
-      renderContent();
-      return;
-    }
-    const card = document.createElement('div');
-    card.className = 'flex flex-col gap-1 rounded-xl border border-border bg-surface px-4 py-4';
-    root.appendChild(card);
-    card.appendChild(
-      ui.renderSettingsForm(def, registry.getActiveSettings(def.id), async (key, value) => {
-        const active = registry._active.get(def.id);
-        if (active) await active.ctx.settings.set(key, value);
-        else await api.invoke('config.setPluginSetting', { pluginId: def.id, key, value });
-      }, async (actionKey) => {
-        const action = def.actions?.[actionKey];
-        const active = registry._active.get(def.id);
-        if (!action) return;
-        if (!active) {
-          ui.showToast('请先启用该插件再执行操作', 'warn');
-          return;
-        }
-        try {
-          const res = await action.run(active.ctx);
-          if (res && res.message) ui.showToast(res.message, res.ok === false ? 'warn' : 'success');
-          else if (res?.ok) ui.showToast('完成', 'success');
-        } catch (err) {
-          ui.showToast(`执行失败：${err?.message || err}`, 'error');
-        }
-      })
-    );
   }
 
   /* ---------------- datasources page ---------------- */
@@ -1214,7 +1282,8 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     btn.type = 'button';
     btn.className =
       'inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-border px-3 text-ui-base text-foreground transition-colors hover:bg-surface-hover';
-    btn.innerHTML = `${iconHtml(icon, 'size-3.5')}<span>${esc(label)}</span>`;
+    // icon 为空时渲染纯文字（如确认条里的「取消」）
+    btn.innerHTML = icon ? `${iconHtml(icon, 'size-3.5')}<span>${esc(label)}</span>` : `<span>${esc(label)}</span>`;
     btn.addEventListener('click', onClick);
     return btn;
   }
@@ -1283,6 +1352,15 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   return {
     start,
     destroy,
+    /**
+     * 安装/移除/更新广播后的存活刷新：仅当设置页打开且正停在插件页时重绘，
+     * 未打开时不做无谓渲染（与 zmod:config-changed 的处理同判据）。
+     */
+    refresh() {
+      if (!dialogOpen || activeItem !== 'plugins' || detail) return;
+      if (mode !== 'native' && (!overlay || !overlay.isConnected)) return;
+      try { renderContent(); } catch {}
+    },
     /** Plugins may add overview sections on the 扩展插件 page. */
     contribute(def) {
       if (!def?.id || typeof def.render !== 'function') return false;

@@ -32,7 +32,7 @@ function installedPath(dataDir) {
 export function readInstalled(dataDir) {
   const filePath = installedPath(dataDir);
   if (!fs.existsSync(filePath)) {
-    console.warn(`[ZMod:Installed] ${filePath} 不存在，返回空账本`);
+    console.warn(`[ZMod:Installed] ${filePath} not found, returning empty ledger`);
     return { plugins: {} };
   }
   try {
@@ -41,12 +41,12 @@ export function readInstalled(dataDir) {
       !parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
       !parsed.plugins || typeof parsed.plugins !== 'object' || Array.isArray(parsed.plugins)
     ) {
-      console.warn(`[ZMod:Installed] ${filePath} 结构异常（缺少 plugins 对象），返回空账本`);
+      console.warn(`[ZMod:Installed] ${filePath} malformed (missing plugins object), returning empty ledger`);
       return { plugins: {} };
     }
     return { plugins: parsed.plugins };
   } catch (err) {
-    console.warn(`[ZMod:Installed] ${filePath} 解析失败，返回空账本: ${err?.message || err}`);
+    console.warn(`[ZMod:Installed] failed to parse ${filePath}, returning empty ledger: ${err?.message || err}`);
     return { plugins: {} };
   }
 }
@@ -66,13 +66,13 @@ export function getInstalledEntry(dataDir, id) {
  */
 export function recordInstalled(dataDir, id, entry) {
   if (typeof id !== 'string' || id.length === 0) {
-    throw new Error('[ZMod:Installed] recordInstalled 需要非空字符串 id');
+    throw new Error('[ZMod:Installed] recordInstalled requires a non-empty string id');
   }
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-    throw new Error('[ZMod:Installed] recordInstalled 需要 entry 对象');
+    throw new Error('[ZMod:Installed] recordInstalled requires an entry object');
   }
   if (!KNOWN_SOURCES.has(entry.source)) {
-    throw new Error(`[ZMod:Installed] source 必须是 ${[...KNOWN_SOURCES].join(' | ')} 之一，当前为 ${JSON.stringify(entry.source)}`);
+    throw new Error(`[ZMod:Installed] source must be one of ${[...KNOWN_SOURCES].join(' | ')}, got ${JSON.stringify(entry.source)}`);
   }
   const ledger = readInstalled(dataDir);
   ledger.plugins[id] = {

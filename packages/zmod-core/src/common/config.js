@@ -82,6 +82,27 @@ class ConfigManager {
     this.save(config);
   }
 
+  /**
+   * 清除插件的 enabled 开关键（remove 语义）：配置里不再留开关记录，重装后
+   * 回到默认启用。"关闭但保留" 语义走 setPluginEnabled(id, false)，不走这里。
+   * settings 数据与插件配置整体保留；除空 settings 外无任何残留时顺带删插件键
+   * （setPluginEnabled 会播种 settings:{}，这类空壳不视为有效配置）。
+   * @returns {boolean} 是否实际删除了 enabled 键
+   */
+  deletePluginEnabled(pluginId) {
+    const config = structuredClone(this.get());
+    const entry = config.plugins[pluginId];
+    if (!entry || entry.enabled === undefined) return false;
+    delete entry.enabled;
+    const hasPayload = Object.keys(entry).some((k) => k !== 'settings') ||
+      (entry.settings && typeof entry.settings === 'object' && Object.keys(entry.settings).length > 0);
+    if (!hasPayload) {
+      delete config.plugins[pluginId];
+    }
+    this.save(config);
+    return true;
+  }
+
   getPluginSetting(pluginId, key, defaultValue = undefined) {
     const p = this.getPluginConfig(pluginId);
     if (p.settings && p.settings[key] !== undefined) {

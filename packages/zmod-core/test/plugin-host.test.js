@@ -20,6 +20,7 @@ const { registerPluginHost, writeBuiltinRecords, PLUGIN_CHANGED_CHANNEL } = awai
 const { recordInstalled, readInstalled, getInstalledEntry } = await import(
   '../src/common/installed.js'
 );
+const { configManager } = await import('../src/common/config.js');
 
 const REGISTRY_PRIMARY = 'raw.githubusercontent.com';
 const REGISTRY_MIRROR = 'cdn.jsdelivr.net';
@@ -361,12 +362,16 @@ test('install: 无效 source 形态报错', async () => {
 // plugin.remove
 // ---------------------------------------------------------------------------
 
-test('remove: 目录+账本双清，广播 removed；不存在的 id 报错', async () => {
+test('remove: 目录+账本双清, enabled 键删除(重装默认启用), settings 保留; 不存在的 id 报错', async () => {
   const { deps, broadcasts } = makeDeps();
   const pluginDir = path.join(deps.dataDir, 'plugins', 'gone-plugin');
   fs.mkdirSync(pluginDir, { recursive: true });
   fs.writeFileSync(path.join(pluginDir, 'index.js'), 'export default {};\n');
   recordInstalled(deps.dataDir, 'gone-plugin', { version: '0.2.0', source: 'registry' });
+
+  // 用户先关掉插件并写过设置，再移除：enabled 键应被清掉，settings 保留
+  configManager.setPluginEnabled('gone-plugin', false);
+  configManager.setPluginSetting('gone-plugin', 'opacity', 0.7);
 
   const gw = makeGateway();
   registerPluginHost(gw, { ...deps });
@@ -379,6 +384,8 @@ test('remove: 目录+账本双清，广播 removed；不存在的 id 报错', as
   assert.deepEqual(r, { ok: true });
   assert.equal(fs.existsSync(pluginDir), false, '插件目录已删');
   assert.equal(getInstalledEntry(deps.dataDir, 'gone-plugin'), null, '账本已移除');
+  assert.equal(configManager.get().plugins['gone-plugin']?.enabled, undefined, 'enabled 键已删除（重装默认启用）');
+  assert.equal(configManager.getPluginSetting('gone-plugin', 'opacity'), 0.7, 'settings 数据保留');
   assert.equal(broadcasts.length, 1);
   assert.equal(broadcasts[0].action, 'removed');
   assert.equal(broadcasts[0].id, 'gone-plugin');

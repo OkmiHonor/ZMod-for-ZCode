@@ -8,10 +8,11 @@ import os from 'node:os';
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-plugin-cmd-'));
 process.env.ZMOD_USER_DATA_DIR = dataRoot;
 
-const { planUpdates, filterSearch, removeDirWithRetry, pluginCommand, buildScaffold } = await import(
+const { planUpdates, filterSearch, removeDirWithRetry, pluginCommand, buildScaffold, isRunningInsideDevRepo } = await import(
   '../src/commands/plugin.js'
 );
-const { readInstalled } = await import('../../zmod-core/src/common/installed.js');
+const { readInstalled, getInstalledEntry } = await import('../../zmod-core/src/common/installed.js');
+const { configManager } = await import('../../zmod-core/src/common/config.js');
 const { validateManifestSchema, checkEngine } = await import('../../zmod-sdk/src/manifest.js');
 const { createRequire } = await import('node:module');
 const { version: CLI_VERSION } = createRequire(import.meta.url)('../package.json');
@@ -136,6 +137,56 @@ test('install 校验: 非法 manifest 拒装, 已装提示 remove/update', async
   } finally {
     process.exit = origExit;
   }
+});
+
+test('isRunningInsideDevRepo: 数据目录位于 git 检出内 → true, 无 .git → false, 与 cwd 无关', () => {
+  const makeFixture = (name, withGit) => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), `zmod-devrepo-${name}-`));
+    const dataDir = path.join(repoRoot, 'data');
+    fs.mkdirSync(dataDir, { recursive: true });
+    if (withGit) fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true });
+    return { repoRoot, dataDir };
+  };
+  const withGit = makeFixture('git', true);
+  const withoutGit = makeFixture('plain', false);
+  const prevData = process.env.ZMOD_USER_DATA_DIR;
+  const prevCwd = process.cwd();
+  try {
+    // cwd 指向与仓库无关的目录：判定只看数据目录祖先链
+    process.chdir(os.tmpdir());
+    process.env.ZMOD_USER_DATA_DIR = withGit.dataDir;
+    assert.equal(isRunningInsideDevRepo(), true, '祖先链存在 .git → dev 模式');
+
+    process.env.ZMOD_USER_DATA_DIR = withoutGit.dataDir;
+    assert.equal(isRunningInsideDevRepo(), false, '无 .git（部署安装布局）→ 非 dev 模式');
+  } finally {
+    process.env.ZMOD_USER_DATA_DIR = prevData;
+    process.chdir(prevCwd);
+    fs.rmSync(withGit.repoRoot, { recursive: true, force: true });
+    fs.rmSync(withoutGit.repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('remove: 目录+账本清理, enabled 键删除(重装默认启用), settings 保留', async () => {
+  const srcDir = path.join(dataRoot, 'fixture-src', 'rem-plugin');
+  fs.mkdirSync(srcDir, { recursive: true });
+  fs.writeFileSync(path.join(srcDir, 'index.js'), 'export default {};\n');
+  fs.writeFileSync(
+    path.join(srcDir, 'manifest.json'),
+    JSON.stringify({ id: 'rem-plugin', name: 'Rem', version: '0.3.0', description: 'remove fixture', author: 't' })
+  );
+  await pluginCommand('install', srcDir);
+
+  // 用户先关掉并写过设置，再移除：enabled 键应被清掉，settings 保留
+  configManager.setPluginEnabled('rem-plugin', false);
+  configManager.setPluginSetting('rem-plugin', 'opacity', 0.7);
+  await pluginCommand('remove', 'rem-plugin');
+
+  assert.equal(configManager.get().plugins['rem-plugin']?.enabled, undefined, 'enabled 键已被删除');
+  assert.equal(configManager.isPluginEnabled('rem-plugin'), true, '重装默认启用');
+  assert.equal(configManager.getPluginSetting('rem-plugin', 'opacity'), 0.7, 'settings 数据保留');
+  assert.ok(!fs.existsSync(path.join(dataRoot, 'plugins', 'rem-plugin')), '插件目录已删');
+  assert.equal(getInstalledEntry(dataRoot, 'rem-plugin'), null, '账本已移除');
 });
 
 test('buildScaffold: manifest 过 v2 校验且 engine 对当前 CLI 版本兼容', () => {

@@ -40,11 +40,12 @@ export function getHostVersion(hostDir, findHostExe) {
  */
 export function resolveBaselineCandidate({ baseSnapshot, asarPath, explicit, globalBaseline }) {
   const legacyBackup = path.join(path.dirname(asarPath), 'app.asar.backup1');
+  // labels land in console output (install/uninstall detail pages) — keep ASCII
   const candidates = [
-    [baseSnapshot, '基线快照 base/app.asar'],
-    [globalBaseline, `机器级缓存 ${globalBaseline}`],
-    [legacyBackup, `旧版备份 ${legacyBackup}`],
-    [explicit, `指定基线 ${explicit}`]
+    [baseSnapshot, 'baseline snapshot base/app.asar'],
+    [globalBaseline, `machine-level cache ${globalBaseline}`],
+    [legacyBackup, `legacy backup ${legacyBackup}`],
+    [explicit, `explicit baseline ${explicit}`]
   ];
   const hit = candidates.find(([p]) => p && fs.existsSync(p));
   return hit ? { path: hit[0], label: hit[1] } : null;
