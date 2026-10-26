@@ -80,6 +80,22 @@ test('订阅源前缀按关键字或名称命中对应实例', () => {
   assert.deepEqual(matchSelection({ provider: 'Antigravity', model: 'gemini-3.8-flash' }, snapshot), antigravityInst);
 });
 
+test('Google 与 Google AI Pro 供应商前缀命中 Antigravity 网关实例', () => {
+  const snapshot = snapOf([bailianInst, deepseekInst, antigravityInst]);
+  assert.deepEqual(
+    matchSelection(parseModelButtonLabel('Google AI Pro/gemini-3.8-flash 极高'), snapshot),
+    antigravityInst
+  );
+  assert.deepEqual(
+    matchSelection(parseModelButtonLabel('Google AI Pro/claude-sonnet-5-5 极高'), snapshot),
+    antigravityInst
+  );
+  assert.deepEqual(
+    matchSelection(parseModelButtonLabel('Google/gemini-4-argon'), snapshot),
+    antigravityInst
+  );
+});
+
 test('无前缀 GLM 预设：原模型名匹配链不变', () => {
   // 关键字链：模型名命中某实例关键字
   const mimoInst = { id: 'mimo', type: 'mimo', name: '小米 MiMo', settings: { modelKeywords: 'mimo' } };

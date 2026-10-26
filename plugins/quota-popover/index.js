@@ -342,17 +342,18 @@ function renderV1Section(type, status, sel, instName) {
   if (type === 'antigravity') {
     const groups = status.groups || [];
     const model = String((sel && sel.model) || '').toLowerCase();
-    const wantArgon = /argon/.test(model);
-    const wantC = /claude|gpt|opus|sonnet/.test(model);
-    const wantG = /gemini/.test(model);
+    const wantArgon = /argon/i.test(model);
+    const wantC = /claude|gpt|opus|sonnet/i.test(model);
+    const wantG = /gemini|google/i.test(model);
     let selGroup = null;
-    if (wantArgon || wantC || wantG) {
-      for (const g of groups) {
-        const gn = String(g.name || '').toLowerCase();
-        if (wantArgon && /argon/.test(gn)) { selGroup = g; break; }
-        if (wantC && /claude|gpt/.test(gn)) { selGroup = g; break; }
-        if (wantG && /gemini/.test(gn) && !/argon/.test(gn)) { selGroup = g; break; }
-      }
+    if (wantArgon) {
+      selGroup = groups.find((g) => /argon/i.test(g.name));
+    }
+    if (!selGroup && wantC) {
+      selGroup = groups.find((g) => /claude|gpt/i.test(g.name));
+    }
+    if (!selGroup && wantG) {
+      selGroup = groups.find((g) => /gemini|google/i.test(g.name) && !/argon/i.test(g.name));
     }
     const cards = [];
     if (selGroup) {

@@ -79,10 +79,22 @@ export function parseModelButtonLabel(label) {
 const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, '');
 
 function keywordsOf(inst) {
-  return String(inst.settings?.modelKeywords || '')
+  const custom = String(inst?.settings?.modelKeywords || '')
     .split(/[,，]/)
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
+  if (inst?.type === 'antigravity') {
+    for (const k of ['google', 'gemini', 'claude', 'gpt', 'antigravity']) {
+      if (!custom.includes(k)) custom.push(k);
+    }
+  } else if (inst?.type === 'deepseek') {
+    if (!custom.includes('deepseek')) custom.push('deepseek');
+  } else if (inst?.type === 'bailian-bss') {
+    for (const k of ['百炼', 'bailian', 'qwen', 'dashscope']) {
+      if (!custom.includes(k)) custom.push(k);
+    }
+  }
+  return custom;
 }
 
 /** Which datasource instance follows the current composer selection.

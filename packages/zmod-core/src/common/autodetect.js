@@ -82,7 +82,7 @@ export function autodetectDatasources({ homeDir, existingTypes = [] }) {
           type: 'antigravity',
           name: 'Antigravity 网关',
           status: 'ready',
-          settings: { url: 'http://127.0.0.1:8045', accountId, modelKeywords: 'gemini, claude, gpt, antigravity' },
+          settings: { url: 'http://127.0.0.1:8045', accountId, modelKeywords: 'google, gemini, claude, gpt, antigravity' },
           secrets: { token: key },
           reason: `检测到本地 Antigravity 网关供应商「${name}」`
         });
