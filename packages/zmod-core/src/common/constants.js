@@ -16,6 +16,16 @@ export const GITHUB_RELEASE_MIRRORS = [
   'https://mirror.ghproxy.com/'
 ];
 
+let lastWinningMirror = '';
+
+export function getLastWinningMirror() {
+  return lastWinningMirror;
+}
+
+export function setLastWinningMirror(mirror) {
+  lastWinningMirror = typeof mirror === 'string' ? mirror.trim() : '';
+}
+
 export function buildDownloadCandidateUrls(rawUrl, customMirror = process.env.ZMOD_GITHUB_MIRROR) {
   const url = String(rawUrl || '').trim();
   if (!url) return [];
@@ -24,9 +34,17 @@ export function buildDownloadCandidateUrls(rawUrl, customMirror = process.env.ZM
   if (!isGithubEligible) return [url];
 
   const custom = typeof customMirror === 'string' ? customMirror.trim() : '';
+  const winning = lastWinningMirror && lastWinningMirror.endsWith('/') ? lastWinningMirror : (lastWinningMirror ? `${lastWinningMirror}/` : '');
+  const basePrefixes = [...GITHUB_RELEASE_MIRRORS];
+  if (winning && basePrefixes.includes(winning)) {
+    const idx = basePrefixes.indexOf(winning);
+    basePrefixes.splice(idx, 1);
+    basePrefixes.unshift(winning);
+  }
+
   const prefixes = custom
-    ? [custom.endsWith('/') ? custom : `${custom}/`, ...GITHUB_RELEASE_MIRRORS]
-    : [...GITHUB_RELEASE_MIRRORS];
+    ? [custom.endsWith('/') ? custom : `${custom}/`, ...basePrefixes]
+    : basePrefixes;
 
   const seen = new Set();
   const candidates = [];

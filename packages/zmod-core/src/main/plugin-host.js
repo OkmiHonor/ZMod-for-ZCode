@@ -3,7 +3,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { getUserDataDir } from '../common/paths.js';
-import { REGISTRY_URLS, buildDownloadCandidateUrls } from '../common/constants.js';
+import { REGISTRY_URLS, buildDownloadCandidateUrls, setLastWinningMirror } from '../common/constants.js';
 import {
   readInstalled,
   getInstalledEntry,
@@ -47,6 +47,7 @@ const compareVersions = sdkManifest?.compareVersions ?? null;
 const parseVersion = sdkManifest?.parseVersion ?? null;
 
 export const PLUGIN_CHANGED_CHANNEL = 'zmod:plugin-changed';
+export const PLUGIN_PROGRESS_CHANNEL = 'zmod:plugin-progress';
 
 const REGISTRY_TTL_MS = 10 * 60 * 1000;
 const REGISTRY_TIMEOUT_MS = 15000;
@@ -249,14 +250,21 @@ async function defaultResolveSource(rawSource, deps) {
   if (rawSource.startsWith('registry:')) {
     const id = rawSource.slice('registry:'.length).trim();
     if (!id) throw new Error('registry 来源缺少插件 id');
-    const r = await fetchRegistry(deps, { force: true });
-    if (!r.ok) throw new Error(`获取注册表失败: ${r.error}`);
-    const entry = r.data.plugins.find((p) => p && p.id === id);
+    deps.onProgress?.({ id, stage: 'fetching_meta', percent: 5, text: '正在获取插件信息...' });
+    let r = await fetchRegistry(deps, { force: false });
+    let entry = r.ok && Array.isArray(r.data?.plugins) ? r.data.plugins.find((p) => p && p.id === id) : null;
+    if (!entry) {
+      r = await fetchRegistry(deps, { force: true });
+      entry = r.ok && Array.isArray(r.data?.plugins) ? r.data.plugins.find((p) => p && p.id === id) : null;
+    }
     if (!entry || !entry.url) throw new Error(`注册表中不存在该插件: ${id}`);
     let holder = makeHolder(deps.dataDir, id);
     try {
       const zipPath = path.join(holder.root, 'plugin.zip');
-      const { shasum } = await downloadVerifiedFile(deps, entry.url, zipPath, entry.shasum || '');
+      const { shasum } = await downloadVerifiedFile(deps, entry.url, zipPath, entry.shasum || '', {
+        onProgress: (p) => deps.onProgress?.({ id, ...p })
+      });
+      deps.onProgress?.({ id, stage: 'unpacking', percent: 92, text: '正在解压插件包...' });
       const dir = extractZip(zipPath, path.join(holder.root, 'x'));
       assertSourceShape(dir);
       const kept = holder;
@@ -312,7 +320,8 @@ function assertSourceShape(dir) {
   }
 }
 
-export async function downloadVerifiedFile(deps, url, destPath, expectedShasum = '') {
+export async function downloadVerifiedFile(deps, url, destPath, expectedShasum = '', options = {}) {
+  const onProgress = typeof options === 'function' ? options : options?.onProgress;
   const candidates = buildDownloadCandidateUrls(url, deps?.customMirror);
   if (candidates.length === 0) {
     throw new Error('下载失败: URL 为空');
@@ -320,14 +329,60 @@ export async function downloadVerifiedFile(deps, url, destPath, expectedShasum =
   const fetchFn = deps?.fetchImpl || defaultFetch;
   const timeoutMs = deps?.downloadTimeoutMs || MIRROR_DOWNLOAD_TIMEOUT_MS;
   const errors = [];
-  for (const cand of candidates) {
+  for (let idx = 0; idx < candidates.length; idx++) {
+    const cand = candidates[idx];
+    const isDirectGithub = cand === url;
+    // 直连官方 GitHub 在受限网络环境下 3.5 秒快速失败，立即回退高速镜像
+    const timeout = isDirectGithub ? Math.min(timeoutMs, 3500) : timeoutMs;
+    const mirrorName = isDirectGithub ? 'GitHub 官方源' : (cand.match(/^https?:\/\/([^/]+)/)?.[1] || '加速镜像');
+    onProgress?.({
+      stage: 'connecting',
+      text: `正在连接 ${mirrorName} (${idx + 1}/${candidates.length})...`,
+      cand,
+      mirrorIndex: idx + 1,
+      totalMirrors: candidates.length,
+      percent: 10
+    });
     try {
-      const res = await timedFetch(fetchFn, cand, timeoutMs);
+      const res = await timedFetch(fetchFn, cand, timeout);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf = Buffer.from(await res.arrayBuffer());
+      const totalBytes = Number(res.headers?.get?.('content-length')) || 0;
+      let buf;
+      // 支持流式进度分块读取
+      if (res.body && typeof res.body.getReader === 'function' && typeof onProgress === 'function') {
+        const reader = res.body.getReader();
+        const chunks = [];
+        let loaded = 0;
+        let lastReport = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            loaded += value.length;
+            const now = Date.now();
+            if (now - lastReport > 80 || loaded === totalBytes) {
+              lastReport = now;
+              const percent = totalBytes > 0 ? Math.min(88, Math.round(15 + (loaded / totalBytes) * 73)) : null;
+              const loadedMB = (loaded / 1048576).toFixed(1);
+              const totalMB = totalBytes > 0 ? (totalBytes / 1048576).toFixed(1) : null;
+              const text = totalMB
+                ? `正在下载 ${percent}% (${loadedMB}/${totalMB} MB)...`
+                : `正在下载 (${loadedMB} MB)...`;
+              onProgress({ stage: 'downloading', loaded, total: totalBytes, percent, text });
+            }
+          }
+        }
+        buf = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+      } else {
+        onProgress?.({ stage: 'downloading', percent: 50, text: '正在下载插件包...' });
+        buf = Buffer.from(await res.arrayBuffer());
+      }
+
       if (buf.length > MAX_DOWNLOAD_BYTES) {
         throw new Error(`下载超过大小上限: ${buf.length} > ${MAX_DOWNLOAD_BYTES} bytes`);
       }
+      onProgress?.({ stage: 'verifying', percent: 90, text: '正在校验文件完整性 (SHA-256)...' });
       fs.writeFileSync(destPath, buf);
       const shasum = sha256File(destPath);
       if (expectedShasum && shasum !== expectedShasum) {
@@ -335,6 +390,11 @@ export async function downloadVerifiedFile(deps, url, destPath, expectedShasum =
           fs.rmSync(destPath, { force: true });
         } catch {}
         throw new Error(`sha256 校验不匹配，拒绝安装: 期望 ${expectedShasum}，实际 ${shasum}`);
+      }
+      // 成功下载：记忆本次成功的镜像前缀（去除目标 url 后的前缀）
+      if (!isDirectGithub) {
+        const prefix = cand.slice(0, cand.length - url.length);
+        setLastWinningMirror(prefix);
       }
       return { bytes: buf.length, shasum, usedUrl: cand };
     } catch (err) {
@@ -838,11 +898,28 @@ export function registerPluginHost(gateway, injected = {}) {
       } catch {}
     }
   }
+
+  function defaultProgress(payload) {
+    if (!electronBrowserWindow) return;
+    for (const w of electronBrowserWindow.getAllWindows()) {
+      try {
+        w.webContents?.send?.(PLUGIN_PROGRESS_CHANNEL, payload);
+      } catch {}
+    }
+  }
+
   // 注入的 broadcastImpl 优先；未注入且在非 Electron 环境则退化为 no-op
   deps.broadcastImpl = injected.broadcastImpl || defaultBroadcast;
+  deps.progressImpl = injected.progressImpl || defaultProgress;
   deps.cloneImpl = injected.cloneImpl || defaultClone;
   deps.removeDirImpl = injected.removeDirImpl ||
     ((dir) => removeDirWithRetry(dir, { sleepImpl: deps.sleepImpl }));
+
+  const notifyProgress = (data) => {
+    try {
+      deps.progressImpl?.(data);
+    } catch {}
+  };
 
   // ---- 市场列表（双源 + TTL 缓存 + stale 回退）----
   gateway.register('plugin.listRemote', async (params = {}) => {
@@ -868,11 +945,13 @@ export function registerPluginHost(gateway, injected = {}) {
     const raw = String(source || '').trim();
     if (!raw) return { ok: false, error: '缺少 source 参数（registry:<id> | git:<https url> | zip:<http(s) url>）' };
     const c = ctx();
-    const d = { ...deps, ...c };
+    const d = { ...deps, ...c, onProgress: notifyProgress };
     let src = null;
     try {
       src = deps.resolveSource ? await deps.resolveSource(raw, d) : await defaultResolveSource(raw, d);
+      notifyProgress({ id: src.dir ? path.basename(src.dir) : '', stage: 'activating', percent: 96, text: '正在激活并注册...' });
       const { id, version } = await materializeInstalled(d, src, { mode: 'install' });
+      notifyProgress({ id, stage: 'done', percent: 100, text: '安装完成' });
       return { ok: true, id, ...(version ? { version } : {}) };
     } catch (err) {
       return { ok: false, error: String(err?.message || err) };
@@ -1018,12 +1097,18 @@ export function registerPluginHost(gateway, injected = {}) {
         const holder = makeHolder(c.dataDir, id);
         try {
           const zipPath = path.join(holder.root, 'plugin.zip');
-          const { shasum } = await downloadVerifiedFile(d, entry.url, zipPath, entry.shasum || '');
+          notifyProgress({ id, stage: 'connecting', percent: 10, text: '正在连接更新源...' });
+          const { shasum } = await downloadVerifiedFile(d, entry.url, zipPath, entry.shasum || '', {
+            onProgress: (p) => notifyProgress({ id, ...p })
+          });
+          notifyProgress({ id, stage: 'unpacking', percent: 92, text: '正在解压更新包...' });
           const dir = extractZip(zipPath, path.join(holder.root, 'x'));
           assertSourceShape(dir);
+          notifyProgress({ id, stage: 'activating', percent: 96, text: '正在替换并重载...' });
           const { version } = await materializeInstalled(d, {
             dir, cleanup: holder.cleanup, source: 'registry', sourceRef: entry.url, shasum
           }, { mode: 'update' });
+          notifyProgress({ id, stage: 'done', percent: 100, text: '更新完成' });
           return { ok: true, updated: true, ...(version ? { version } : {}) };
         } finally {
           holder.cleanup();

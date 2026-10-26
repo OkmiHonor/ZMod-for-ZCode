@@ -51,7 +51,9 @@ const ICONS = {
   trash:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>',
   chevronRight:
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>',
+  spinner:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>'
 };
 
 function iconHtml(name, cls = 'size-4') {
@@ -277,9 +279,53 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     category: 'all',
     keyword: '',
     confirmInstallId: null,
-    confirmRemoveId: null
+    confirmRemoveId: null,
+    installing: new Map() // id -> { stage, percent, text }
   };
   let remoteCheckedOnce = false;
+
+  function handleInstallProgress(payload) {
+    if (!payload?.id) return;
+    if (payload.stage === 'done' || payload.stage === 'error') {
+      marketState.installing.delete(payload.id);
+    } else {
+      marketState.installing.set(payload.id, payload);
+    }
+    updateMarketRowProgress(payload.id);
+  }
+
+  if (typeof api?.on === 'function') {
+    api.on('zmod:plugin-progress', handleInstallProgress);
+  }
+  events.on('zmod:plugin-progress', handleInstallProgress);
+
+  function updateMarketRowProgress(id) {
+    const row = document.querySelector(`[data-zmod-market-row="${id}"]`);
+    if (!row) return;
+    const prog = marketState.installing.get(id);
+    const actionsBox = row.querySelector('[data-zmod-market-actions]');
+    let progBar = row.querySelector(`[data-zmod-progress-bar="${id}"]`);
+
+    if (prog) {
+      if (actionsBox) {
+        actionsBox.innerHTML = `
+          <div class="inline-flex h-7 items-center gap-2 rounded-lg bg-surface-hover px-2.5 text-ui-xs font-medium text-foreground">
+            <span class="text-primary">${iconHtml('spinner', 'size-3.5 zmod-spin')}</span>
+            <span class="max-w-[150px] truncate">${esc(prog.text || '安装中…')}</span>
+          </div>`;
+      }
+      if (!progBar) {
+        progBar = document.createElement('div');
+        progBar.className = 'absolute bottom-0 left-0 right-0 h-0.5 bg-border overflow-hidden';
+        progBar.setAttribute('data-zmod-progress-bar', id);
+        row.appendChild(progBar);
+      }
+      const p = prog.percent != null ? prog.percent : 100;
+      progBar.innerHTML = `<div class="h-full bg-primary transition-all duration-300" style="width: ${p}%; background: var(--color-primary, #3b82f6);"></div>`;
+    } else {
+      progBar?.remove();
+    }
+  }
 
   async function loadMarketData({ force = false } = {}) {
     marketState.loading = true;
@@ -1522,7 +1568,8 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
 
   function marketPluginRow(r, renderList) {
     const row = document.createElement('div');
-    row.className = 'flex items-center gap-4 rounded-xl border border-border bg-surface px-4 py-3';
+    row.setAttribute('data-zmod-market-row', r.id);
+    row.className = 'relative overflow-hidden flex items-center gap-4 rounded-xl border border-border bg-surface px-4 py-3';
 
     const catLabel = r.category ? CATEGORY_LABELS[r.category] || r.category : null;
     const permBadges = (r.permissions || [])
@@ -1548,8 +1595,27 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
 
     const actions = document.createElement('div');
     actions.className = 'flex shrink-0 items-center gap-1';
+    actions.setAttribute('data-zmod-market-actions', r.id);
 
-    if (!r.engineOk) {
+    const isInstalling = marketState.installing.has(r.id);
+    const prog = isInstalling ? marketState.installing.get(r.id) : null;
+
+    if (isInstalling) {
+      const capsule = document.createElement('div');
+      capsule.className =
+        'inline-flex h-7 items-center gap-2 rounded-lg bg-surface-hover px-2.5 text-ui-xs font-medium text-foreground';
+      capsule.innerHTML = `
+        <span class="text-primary">${iconHtml('spinner', 'size-3.5 zmod-spin')}</span>
+        <span class="max-w-[150px] truncate" data-zmod-progress-text="${r.id}">${esc(prog?.text || '安装中…')}</span>`;
+      actions.appendChild(capsule);
+
+      const barWrap = document.createElement('div');
+      barWrap.className = 'absolute bottom-0 left-0 right-0 h-0.5 bg-border overflow-hidden';
+      barWrap.setAttribute('data-zmod-progress-bar', r.id);
+      const p = prog?.percent != null ? prog.percent : 100;
+      barWrap.innerHTML = `<div data-zmod-progress-fill="${r.id}" class="h-full bg-primary transition-all duration-300" style="width: ${p}%; background: var(--color-primary, #3b82f6);"></div>`;
+      row.appendChild(barWrap);
+    } else if (!r.engineOk) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.disabled = true;
@@ -1571,6 +1637,8 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     } else if (r.state === 'update-available') {
       actions.appendChild(
         primaryButton(`更新 v${r.installedVersion} → v${r.version}`, async () => {
+          marketState.installing.set(r.id, { stage: 'connecting', percent: 10, text: '准备更新...' });
+          updateMarketRowProgress(r.id);
           try {
             const res = await api.invoke('plugin.update', { id: r.id });
             if (res && res.ok) {
@@ -1581,9 +1649,11 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
             } else {
               ui.showToast((res && res.error) || '更新失败', 'error');
             }
-            await loadMarketData({ force: false });
           } catch (err) {
             ui.showToast(`更新失败：${err?.message || err}`, 'error');
+          } finally {
+            marketState.installing.delete(r.id);
+            await loadMarketData({ force: false });
           }
         })
       );
@@ -1602,18 +1672,21 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   }
 
   async function doInstallFromMarket(r) {
+    marketState.confirmInstallId = null;
+    marketState.installing.set(r.id, { stage: 'connecting', percent: 10, text: '准备连接...' });
+    updateMarketRowProgress(r.id);
     try {
       const res = await api.invoke('plugin.install', { source: 'registry:' + r.id });
-      marketState.confirmInstallId = null;
       if (res && res.ok) {
         ui.showToast(`已安装 ${r.name}${res.version ? ` v${res.version}` : ''}`, 'success');
       } else {
         ui.showToast((res && res.error) || '安装失败', 'error');
       }
-      await loadMarketData({ force: false });
     } catch (err) {
-      marketState.confirmInstallId = null;
       ui.showToast(`安装失败：${err?.message || err}`, 'error');
+    } finally {
+      marketState.installing.delete(r.id);
+      await loadMarketData({ force: false });
     }
   }
 
@@ -2120,6 +2193,8 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       const st = document.createElement('style');
       st.id = 'zmod-settings-overlay-style';
       st.textContent = [
+        '@keyframes zmod-spin{to{transform:rotate(360deg)}}',
+        '.zmod-spin{animation:zmod-spin 0.8s linear infinite}',
         '[data-settings-panel-frame]:has(> [data-zmod-settings-overlay]) main{visibility:hidden !important}',
         '[data-active-section]:has([data-zmod-settings-overlay]) nav [data-settings-section-nav][aria-current="page"]{background-color:transparent !important}',
         '[data-settings-panel-frame]:has([data-zmod-native-crumb]) main h2{display:none !important}'
