@@ -191,6 +191,55 @@ const NATIVE_SECTIONS = [
   { id: 'zmod-datasources', itemId: 'datasources', label: '数据源', icon: 'database', titleId: 'zmod.settings.datasources.title' }
 ];
 
+/* Official Switch/primary-button classes, verbatim from the host bundle —
+   injected classes only have CSS if the official bundle generated it, so
+   these must stay byte-identical to the captured strings (with data-size
+   and data-state attributes driving the variants). Our earlier hand-rolled
+   bg-foreground/text-background pair turned invisible under acrylic because
+   text-background is translucent. */
+export const OFFICIAL_SWITCH_TRACK =
+  'p-px peer group/switch relative inline-flex shrink-0 items-center cursor-pointer rounded-full transition-all outline-none ' +
+  'after:absolute after:-inset-x-3 after:-inset-y-2 focus-visible:ring-2 focus-visible:ring-input-border-focused/30 ' +
+  'data-[size=default]:h-[18px] data-[size=default]:w-[32px] data-[size=sm]:h-[16px] data-[size=sm]:w-[28px] ' +
+  'dark:aria-invalid:ring-destructive/40 data-checked:bg-primary data-unchecked:bg-primary/30 ' +
+  'data-disabled:cursor-not-allowed data-disabled:opacity-50';
+export const OFFICIAL_SWITCH_KNOB =
+  'pointer-events-none block rounded-full bg-primary-foreground ring-0 transition-transform ' +
+  'group-data-[size=default]/switch:size-4 group-data-[size=sm]/switch:size-3.5 ' +
+  'group-data-[size=default]/switch:data-checked:translate-x-[calc(100%-2px)] group-data-[size=sm]/switch:data-checked:translate-x-[calc(100%-2px)] ' +
+  'group-data-[size=default]/switch:data-unchecked:translate-x-0 group-data-[size=sm]/switch:data-unchecked:translate-x-0';
+
+export function makeSwitch(checked, onChange, toast) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.setAttribute('role', 'switch');
+  btn.setAttribute('data-size', 'default');
+  const knob = document.createElement('span');
+  knob.className = OFFICIAL_SWITCH_KNOB;
+  btn.appendChild(knob);
+  // knob 的 translate 规则匹配滑块自身的 [data-state]（Ark/Radix thumb
+  // 协议），track 上的状态属性不会被那组选择器继承——两处都要设
+  const render = (on) => {
+    const state = on ? 'checked' : 'unchecked';
+    btn.setAttribute('data-state', state);
+    btn.setAttribute('aria-checked', String(on));
+    knob.setAttribute('data-state', state);
+    btn.className = OFFICIAL_SWITCH_TRACK;
+  };
+  render(checked);
+  btn.addEventListener('click', async () => {
+    const next = btn.getAttribute('aria-checked') !== 'true';
+    render(next);
+    try {
+      await onChange(next);
+    } catch (err) {
+      render(!next);
+      toast?.(`操作失败：${err?.message || err}`, 'error');
+    }
+  });
+  return btn;
+}
+
 export function createSettingsPageIntegration({ api, events, registry, datasources, ui }) {
   let observer = null;
   let dialogOpen = false;
@@ -1128,7 +1177,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       if (checked) await registry.enable(def.id, { persist: true });
       else await registry.disable(def.id, { persist: true });
       renderContent();
-    }));
+    }, (m, l) => ui.showToast(m, l)));
     row.appendChild(actions);
     return row;
   }
@@ -1212,58 +1261,10 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     return btn;
   }
 
-  /* Official Switch/primary-button classes, verbatim from the host bundle —
-     injected classes only have CSS if the official bundle generated it, so
-     these must stay byte-identical to the captured strings (with data-size
-     and data-state attributes driving the variants). Our earlier hand-rolled
-     bg-foreground/text-background pair turned invisible under acrylic because
-     text-background is translucent. */
-  const OFFICIAL_SWITCH_TRACK =
-    'p-px peer group/switch relative inline-flex shrink-0 items-center cursor-pointer rounded-full transition-all outline-none ' +
-    'after:absolute after:-inset-x-3 after:-inset-y-2 focus-visible:ring-2 focus-visible:ring-input-border-focused/30 ' +
-    'data-[size=default]:h-[18px] data-[size=default]:w-[32px] data-[size=sm]:h-[16px] data-[size=sm]:w-[28px] ' +
-    'dark:aria-invalid:ring-destructive/40 data-checked:bg-primary data-unchecked:bg-primary/30 ' +
-    'data-disabled:cursor-not-allowed data-disabled:opacity-50';
-  const OFFICIAL_SWITCH_KNOB =
-    'pointer-events-none block rounded-full bg-primary-foreground ring-0 transition-transform ' +
-    'group-data-[size=default]/switch:size-4 group-data-[size=sm]/switch:size-3.5 ' +
-    'group-data-[size=default]/switch:data-checked:translate-x-[calc(100%-2px)] group-data-[size=sm]/switch:data-checked:translate-x-[calc(100%-2px)] ' +
-    'group-data-[size=default]/switch:data-unchecked:translate-x-0 group-data-[size=sm]/switch:data-unchecked:translate-x-0';
   const OFFICIAL_PRIMARY_BTN =
     'group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding whitespace-nowrap ' +
     'transition-colors outline-none select-none disabled:pointer-events-none disabled:opacity-50 ' +
     'bg-primary text-primary-foreground hover:bg-primary/80 h-7 gap-1 px-2 text-ui-base rounded-lg';
-
-  function makeSwitch(checked, onChange) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.setAttribute('role', 'switch');
-    btn.setAttribute('data-size', 'default');
-    const knob = document.createElement('span');
-    knob.className = OFFICIAL_SWITCH_KNOB;
-    btn.appendChild(knob);
-    // knob 的 translate 规则匹配滑块自身的 [data-state]（Ark/Radix thumb
-    // 协议），track 上的状态属性不会被那组选择器继承——两处都要设
-    const render = (on) => {
-      const state = on ? 'checked' : 'unchecked';
-      btn.setAttribute('data-state', state);
-      btn.setAttribute('aria-checked', String(on));
-      knob.setAttribute('data-state', state);
-      btn.className = OFFICIAL_SWITCH_TRACK;
-    };
-    render(checked);
-    btn.addEventListener('click', async () => {
-      const next = btn.getAttribute('aria-checked') !== 'true';
-      render(next);
-      try {
-        await onChange(next);
-      } catch (err) {
-        render(!next);
-        ui.showToast(`操作失败：${err?.message || err}`, 'error');
-      }
-    });
-    return btn;
-  }
 
   /* ---------------- datasources page ---------------- */
   async function renderDatasourcesPage(root) {

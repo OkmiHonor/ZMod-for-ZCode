@@ -8,7 +8,7 @@
 
 import { DataSourceRegistry } from './datasources.js';
 import { registerBuiltinProviders } from './builtin-providers.js';
-import { createSettingsPageIntegration } from './settings-page.js';
+import { createSettingsPageIntegration, makeSwitch } from './settings-page.js';
 import { applyPluginChange } from './plugin-bridge.js';
 import { mergeMarketView } from './market-view.js';
 
@@ -236,7 +236,7 @@ function main() {
         const value = activeSettings?.[key] ?? def.default;
 
         if (def.type === 'switch') {
-          row.appendChild(makeFormSwitch(Boolean(value), (next) => onChange(key, next)));
+          row.appendChild(makeSwitch(Boolean(value), (next) => onChange(key, next), (m, l) => this.showToast(m, l)));
         } else if (def.type === 'slider') {
           const wrap = document.createElement('div');
           wrap.className = 'mt-1 flex items-center gap-3';
@@ -320,33 +320,6 @@ function main() {
       }
       return form;
     }
-  }
-
-  function makeFormSwitch(checked, onChange) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.setAttribute('role', 'switch');
-    btn.setAttribute('aria-checked', String(Boolean(checked)));
-    btn.className =
-      'peer inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors ' +
-      (checked ? 'border-transparent bg-foreground' : 'border-border bg-transparent');
-    const knob = document.createElement('span');
-    knob.className =
-      'pointer-events-none block size-4 rounded-full transition-transform ' +
-      (checked ? 'translate-x-4 bg-background' : 'translate-x-0 bg-foreground-subtle');
-    btn.appendChild(knob);
-    btn.addEventListener('click', () => {
-      const next = btn.getAttribute('aria-checked') !== 'true';
-      btn.setAttribute('aria-checked', String(next));
-      btn.className =
-        'peer inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors ' +
-        (next ? 'border-transparent bg-foreground' : 'border-border bg-transparent');
-      knob.className =
-        'pointer-events-none block size-4 rounded-full transition-transform ' +
-        (next ? 'translate-x-4 bg-background' : 'translate-x-0 bg-foreground-subtle');
-      onChange(next);
-    });
-    return btn;
   }
 
   /* ------------------------------------------------------------------ *
