@@ -223,7 +223,8 @@ async function fetchRegistry(deps, { force = false } = {}) {
   const errors = [];
   for (const url of REGISTRY_URLS) {
     try {
-      const res = await timedFetch(deps.fetchImpl, url, REGISTRY_TIMEOUT_MS);
+      const bustUrl = `${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}`;
+      const res = await timedFetch(deps.fetchImpl, bustUrl, REGISTRY_TIMEOUT_MS);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (!data || !Array.isArray(data.plugins)) throw new Error('registry 格式异常（缺少 plugins 数组）');
