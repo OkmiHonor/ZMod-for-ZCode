@@ -441,22 +441,32 @@ export default definePlugin({
 
     let snapshot = []; // { inst, status? }
     let snapshotAt = 0;
-    async function refreshSnapshot(force) {
-      const insts = ds.getInstances();
-      snapshot = await Promise.all(
-        insts.map(async (inst) => ({
-          inst,
-          status: await ds.getStatus(inst.id, force ? { force: true } : undefined).catch(() => null)
-        }))
-      );
-      snapshotAt = Date.now();
-      console.log(
-        '[quota-popover] snapshot: ' +
-        snapshot.map((s) => `${s.inst.id}=${s.status ? (s.status.ok ? 'ok' + (s.status.models ? '+models(' + s.status.models.length + ')' : '') : 'err') : 'null'}`).join(', ')
-      );
+    let refreshPromise = null;
+    function refreshSnapshot(force) {
+      if (refreshPromise && !force) return refreshPromise;
+      const p = (async () => {
+        const insts = ds.getInstances();
+        snapshot = await Promise.all(
+          insts.map(async (inst) => ({
+            inst,
+            status: await ds.getStatus(inst.id, force ? { force: true } : undefined).catch(() => null)
+          }))
+        );
+        snapshotAt = Date.now();
+        console.log(
+          '[quota-popover] snapshot: ' +
+          snapshot.map((s) => `${s.inst.id}=${s.status ? (s.status.ok ? 'ok' + (s.status.models ? '+models(' + s.status.models.length + ')' : '') : 'err') : 'null'}`).join(', ')
+        );
+      })().finally(() => {
+        if (refreshPromise === p) refreshPromise = null;
+      });
+      refreshPromise = p;
+      return p;
     }
-    const snapAfter = async (minAgeMs) => {
-      if (Date.now() - snapshotAt > minAgeMs) await refreshSnapshot(false).catch(() => {});
+    const snapAfter = (minAgeMs, onDone) => {
+      if (Date.now() - snapshotAt > minAgeMs) {
+        refreshSnapshot(false).then(() => onDone?.()).catch(() => {});
+      }
     };
 
     /* ================= Surface 1: composer hover-card ================= */
@@ -492,6 +502,15 @@ export default definePlugin({
       return matchSelection(sel, snapshot);
     }
 
+    function bindPopoverLinks(wrap) {
+      for (const a of wrap.querySelectorAll('.zmod-bal-pl a[data-zmod-url]')) {
+        a.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ctx.invoke('system.openExternal', { url: a.dataset.zmodUrl }).catch(() => {});
+        });
+      }
+    }
+
     function buildPopoverBlock(hasOfficialBalance) {
       /* v1 whitelist parity: when the official GLM 今日余额 card renders,
          v1's patch returned early — no ZMod balance section alongside it */
@@ -509,13 +528,31 @@ export default definePlugin({
       wrap.className = 'flex flex-col gap-2.5 border-t border-border pt-2 mt-2';
       wrap.setAttribute('data-' + POPOVER_MARK, inst.id);
       wrap.innerHTML = renderV1Section(inst.type, status, sel, inst.name);
-      for (const a of wrap.querySelectorAll('.zmod-bal-pl a[data-zmod-url]')) {
-        a.addEventListener('click', (ev) => {
-          ev.preventDefault();
-          ctx.invoke('system.openExternal', { url: a.dataset.zmodUrl }).catch(() => {});
-        });
-      }
+      bindPopoverLinks(wrap);
       return wrap;
+    }
+
+    function rerenderPopover() {
+      const existing = document.querySelector(`[data-${POPOVER_MARK}]`);
+      if (!existing || !existing.isConnected) return;
+      const pop = existing.closest(POPOVER_SELECTOR);
+      const text = pop?.textContent || '';
+      if (/今日余额/.test(text) && /\d{1,2}月\d{1,2}日/.test(text)) {
+        existing.remove();
+        return;
+      }
+      const sel = currentSelection();
+      const inst = matchCurrentSelection(sel);
+      if (!inst) {
+        existing.remove();
+        return;
+      }
+      if (existing.getAttribute('data-' + POPOVER_MARK) !== inst.id) {
+        existing.setAttribute('data-' + POPOVER_MARK, inst.id);
+      }
+      const status = snapshot.find((s) => s.inst.id === inst.id)?.status;
+      existing.innerHTML = renderV1Section(inst.type, status, sel, inst.name);
+      bindPopoverLinks(existing);
     }
 
     /* one enhance cycle at a time + re-check the mark right before append:
@@ -528,7 +565,7 @@ export default definePlugin({
        hovers can't hammer provider APIs; off via settings. */
     let popWasOpen = false;
     let lastHoverRefresh = 0;
-    async function hoverOpenRefresh(pops) {
+    function hoverOpenRefresh(pops) {
       const openNow = pops.some((p) => p.getAttribute('data-state') === 'open');
       const justOpened = openNow && !popWasOpen;
       popWasOpen = openNow;
@@ -538,25 +575,31 @@ export default definePlugin({
       const inst = matchCurrentSelection(currentSelection());
       if (!inst) return;
       lastHoverRefresh = Date.now();
-      const st = await ds.getStatus(inst.id, { force: true }).catch(() => null);
-      const entry = snapshot.find((x) => x.inst.id === inst.id);
-      if (entry) entry.status = st;
-      else snapshot.push({ inst, status: st });
-      console.log('[quota-popover] hover-triggered forced refresh:', inst.id);
+      ds.getStatus(inst.id, { force: true })
+        .then((st) => {
+          const entry = snapshot.find((x) => x.inst.id === inst.id);
+          if (entry) entry.status = st;
+          else snapshot.push({ inst, status: st });
+          console.log('[quota-popover] hover-triggered forced refresh:', inst.id);
+          rerenderPopover();
+        })
+        .catch(() => {});
     }
-    async function enhancePopovers() {
+    function enhancePopovers() {
       if (enhancing) return;
       enhancing = true;
       try {
         // defensive dedupe: pre-races may have left more than one block
         const existing = [...document.querySelectorAll(`[data-${POPOVER_MARK}]`)];
         for (let i = 1; i < existing.length; i++) existing[i].remove();
-        const pops = [...document.querySelectorAll(POPOVER_SELECTOR)].filter(
-          (p) => p.isConnected && !p.querySelector(`[data-${POPOVER_MARK}]`) && /上下文|今日余额|命中率/.test(p.textContent || '')
+        const allPops = [...document.querySelectorAll(POPOVER_SELECTOR)].filter(
+          (p) => p.isConnected && /上下文|今日余额|命中率/.test(p.textContent || '')
         );
-        if (pops.length === 0) return;
-        await hoverOpenRefresh(pops);
-        await snapAfter(15000);
+        if (allPops.length === 0) {
+          popWasOpen = false;
+          return;
+        }
+        const pops = allPops.filter((p) => !p.querySelector(`[data-${POPOVER_MARK}]`));
         for (const pop of pops) {
           if (!pop.isConnected || pop.querySelector(`[data-${POPOVER_MARK}]`)) continue;
           const text = pop.textContent || '';
@@ -570,6 +613,8 @@ export default definePlugin({
           host.appendChild(block);
           console.log('[quota-popover] appended balance cards to official popover (inst=' + block.getAttribute('data-' + POPOVER_MARK) + ')');
         }
+        hoverOpenRefresh(allPops);
+        snapAfter(15000, rerenderPopover);
       } finally {
         enhancing = false;
       }
@@ -650,10 +695,9 @@ export default definePlugin({
       }
     }
 
-    async function enhanceSettings() {
+    function enhanceSettings() {
       const targets = detailTargets();
       if (targets.length === 0) return;
-      await snapAfter(15000);
       for (const t of targets) {
         if (!t.name && !t.baseUrl) continue;
         const inst = matchInstance(t.name, t.baseUrl, snapshot.map((s) => s.inst));
@@ -671,6 +715,7 @@ export default definePlugin({
           console.log('[quota-popover] injected account-quota card for provider', t.name, '→ instance', inst.id);
         }
       }
+      snapAfter(15000, rerenderDetail);
     }
 
     /* re-render pass shared by both surfaces; snapshot refresh is TTL-gated so
@@ -681,7 +726,12 @@ export default definePlugin({
       scheduled = true;
       queueMicrotask(() => {
         scheduled = false;
-        Promise.allSettled([enhancePopovers(), enhanceSettings()]).catch(() => {});
+        try {
+          enhancePopovers();
+          enhanceSettings();
+        } catch (e) {
+          console.error('[quota-popover] error in mutation handler:', e);
+        }
       });
     }
     const observer = new MutationObserver(onMutation);
