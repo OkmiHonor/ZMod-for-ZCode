@@ -6,6 +6,15 @@ import { ensureDirectories } from '../common/paths.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+let electronModule = null;
+let electronApp = null;
+try {
+  electronModule = await import('electron');
+  electronApp = electronModule.app ?? electronModule.default?.app;
+} catch {
+  // Not in Electron (unit tests)
+}
+
 function installAgentRouterHook() {
   try {
     const currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -15,17 +24,25 @@ function installAgentRouterHook() {
       process.env.NODE_OPTIONS = `${existing} --require "${hookPath}"`.trim();
       console.log('[ZMod:Core] agent router preload hook installed in NODE_OPTIONS');
     }
+
+    const up = electronModule?.utilityProcess ?? electronModule?.default?.utilityProcess;
+    if (up && typeof up.fork === 'function' && !up.__zmod_hooked) {
+      const origFork = up.fork;
+      up.fork = function (modulePath, options = {}) {
+        const opts = { ...options };
+        const env = { ...(opts.env || process.env) };
+        if (!env.NODE_OPTIONS || !env.NODE_OPTIONS.includes('agent-router.cjs')) {
+          env.NODE_OPTIONS = `${env.NODE_OPTIONS || ''} --require "${hookPath}"`.trim();
+        }
+        opts.env = env;
+        return origFork.call(this, modulePath, opts);
+      };
+      up.__zmod_hooked = true;
+      console.log('[ZMod:Core] utilityProcess.fork hooked for subagent router');
+    }
   } catch (err) {
     console.error('[ZMod:Core] failed to install agent router hook:', err);
   }
-}
-
-let electronApp = null;
-try {
-  const electron = await import('electron');
-  electronApp = electron.app ?? electron.default?.app;
-} catch {
-  // Not in Electron (unit tests)
 }
 
 let initialized = false;

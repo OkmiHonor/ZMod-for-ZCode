@@ -1,13 +1,19 @@
 /**
  * ZMod Agent Dynamic Tier Router & In-Memory Preload Hook
  * 
- * 方案 2：纯内存透明注入。
- * 1. 作为 --require 模块加载于 Node.js 子进程中；
- * 2. 仅当目标为 zcode.cjs 进程时生效，通过 Module.prototype._compile 在内存中完成热补丁；
- * 3. 物理磁盘上的 zcode.cjs 保持 100% 原版，零侵入、热插拔、随 ZMod 启停。
+ * smart-subagent 插件底层运行时。
+ * 1. 作为 --require 模块预加载于 Node.js 进程链（Host 进程与 Agent 进程）；
+ * 2. 具备自传播（Self-Propagating）能力：在 Host 进程中拦截 child_process.spawn，
+ *    向启动 zcode.cjs 的命令行参数自动注入 ["-r", hookPath]，穿透宿主硬编码的 env 隔离；
+ * 3. 当目标为 zcode.cjs 进程且 smart-subagent 插件开启时，在内存中动态完成模型分档热补丁；
+ * 4. 物理磁盘上的 zcode.cjs 保持 100% 原版，零侵入、热插拔、受插件生命周期管控。
  */
 
 "use strict";
+
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
 
 /**
  * 已知官方提供商与官方系列的 Flash / 轻量模型映射规则
@@ -68,17 +74,40 @@ const KNOWN_TIER_RULES = [
 ];
 
 /**
+ * 获取 smart-subagent 插件配置
+ */
+function getPluginConfig() {
+  try {
+    const dataDir =
+      process.env.ZMOD_USER_DATA_DIR ||
+      (process.platform === "win32"
+        ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "ZMod")
+        : path.join(os.homedir(), ".config", "zmod"));
+
+    const candidatePaths = [
+      path.join(dataDir, "plugin-data", "smart-subagent", "config.json"),
+      path.resolve(__dirname, "../../../../data/plugin-data/smart-subagent/config.json")
+    ];
+
+    for (const p of candidatePaths) {
+      if (fs.existsSync(p)) {
+        return JSON.parse(fs.readFileSync(p, "utf8"));
+      }
+    }
+  } catch {}
+  return { enabled: true, exploreAutoFast: true, reduceThinking: true, customRules: {} };
+}
+
+/**
  * 未知源 / 聚合源的通用启发式模型名转换规则
  */
 function heuristicTransformModelId(modelId) {
   if (!modelId || typeof modelId !== "string") return null;
 
-  // 如果原本就已经是轻量/快速模型，直接返回
   if (/flash|haiku|mini|turbo|lite|speed/i.test(modelId)) {
     return modelId;
   }
 
-  // 尝试启发式后缀替换（保留前缀命名空间与模型主干）
   if (/pro\b/i.test(modelId)) return modelId.replace(/pro\b/i, "flash");
   if (/sonnet\b/i.test(modelId)) return modelId.replace(/sonnet\b/i, "haiku");
   if (/opus\b/i.test(modelId)) return modelId.replace(/opus\b/i, "haiku");
@@ -99,20 +128,47 @@ function resolveSubagentTierSelection(params) {
     return { resolved: false, selection: parentSelection, isConcrete: false };
   }
 
+  const pluginCfg = getPluginConfig();
+  if (pluginCfg && pluginCfg.enabled === false) {
+    return { resolved: false, selection: parentSelection, isConcrete: false };
+  }
+
+  const isExplore = agentType === "Explore";
+  const exploreAllowed = pluginCfg?.exploreAutoFast !== false;
+
   const isFastRequested =
     tier === "fast" ||
     profile?.tier === "fast" ||
     profile?.model === "auto-flash" ||
     profile?.model === "tier:fast" ||
-    agentType === "Explore";
+    (isExplore && exploreAllowed);
 
   if (!isFastRequested) {
     return { resolved: false, selection: parentSelection, isConcrete: false };
   }
 
   const { providerId, modelId, options } = parentSelection;
+  const reduceThinking = pluginCfg?.reduceThinking !== false;
 
-  // 1. 已知官方规则匹配
+  // 1. 用户自定义映射规则优先 (customRules)
+  const customMap = pluginCfg?.customRules || {};
+  if (customMap[providerId] || customMap[modelId]) {
+    const targetModelId = customMap[providerId] || customMap[modelId];
+    return {
+      resolved: true,
+      selection: {
+        providerId,
+        modelId: targetModelId,
+        options: {
+          ...options,
+          ...(reduceThinking && options?.reasoningLevel ? { reasoningLevel: "low" } : {})
+        }
+      },
+      isConcrete: true
+    };
+  }
+
+  // 2. 已知官方规则匹配
   for (const rule of KNOWN_TIER_RULES) {
     if (rule.matcher(providerId, modelId)) {
       const targetModelId = rule.resolve(modelId);
@@ -124,7 +180,7 @@ function resolveSubagentTierSelection(params) {
             modelId: targetModelId,
             options: {
               ...options,
-              ...(options?.reasoningLevel ? { reasoningLevel: "low" } : {})
+              ...(reduceThinking && options?.reasoningLevel ? { reasoningLevel: "low" } : {})
             }
           },
           isConcrete: true
@@ -134,7 +190,7 @@ function resolveSubagentTierSelection(params) {
     }
   }
 
-  // 2. 未知/聚合源启发式转换
+  // 3. 未知/聚合源启发式转换
   const heuristicModelId = heuristicTransformModelId(modelId);
   if (heuristicModelId && heuristicModelId !== modelId) {
     return {
@@ -144,14 +200,14 @@ function resolveSubagentTierSelection(params) {
         modelId: heuristicModelId,
         options: {
           ...options,
-          ...(options?.reasoningLevel ? { reasoningLevel: "low" } : {})
+          ...(reduceThinking && options?.reasoningLevel ? { reasoningLevel: "low" } : {})
         }
       },
       isConcrete: true
     };
   }
 
-  // 3. 终极安全原地兜底
+  // 4. 终极安全原地兜底
   return {
     resolved: false,
     selection: parentSelection,
@@ -201,7 +257,7 @@ function patchZCodeInMemory(code) {
     );
   }
 
-  // 5. m8o 定义: 引入全局全局暴露的路由决议器
+  // 5. m8o 定义: 引入全局暴露的路由决议器
   const m8oDefTarget = 'function m8o(e){let t=e.profileSelection,n=e.overrideSelection?{effectiveSelection:e.overrideSelection}:t?e.resolveSelection?e.resolveSelection(A0(t)):{effectiveSelection:t}:{effectiveSelection:e.parentSelection??null};';
   if (patched.includes(m8oDefTarget)) {
     patched = patched.replace(
@@ -221,15 +277,45 @@ globalThis.__ZMOD_AGENT_ROUTER__ = {
 };
 
 // =========================================================================
-// Preload Hook 自执行守护：仅当目标进程为 zcode.cjs 时挂载 Module._compile
+// 1. 子进程自传播守护：拦截当前进程的 child_process.spawn
+// 解决宿主在 Host 进程启动 zcode.cjs 时硬编码 env: { ELECTRON_RUN_AS_NODE: "1" }
+// 导致 NODE_OPTIONS 环境变量被清空丢弃的问题。
 // =========================================================================
-(function installHook() {
+(function installSpawnPropagation() {
+  try {
+    const cp = require("node:child_process");
+    if (!cp || typeof cp.spawn !== "function") return;
+
+    const origSpawn = cp.spawn;
+    const currentHookPath = path.resolve(__filename).replaceAll(path.sep, "/");
+
+    cp.spawn = function (command, args, options) {
+      if (Array.isArray(args)) {
+        const zcodeIdx = args.findIndex(
+          (a) => typeof a === "string" && a.includes("zcode.cjs")
+        );
+        // 如果是要启动 zcode.cjs，且尚未插入 -r 预加载参数
+        if (zcodeIdx !== -1 && !args.includes("-r")) {
+          args.splice(zcodeIdx, 0, "-r", currentHookPath);
+        }
+      }
+      return origSpawn.call(this, command, args, options);
+    };
+  } catch (err) {
+    // 忽略异常，降级运行
+  }
+})();
+
+// =========================================================================
+// 2. Preload Hook 内存热补丁：当目标进程编译 zcode.cjs 时触发
+// =========================================================================
+(function installCompileHook() {
   const isAgentServer = process.argv.some(
     (arg) => typeof arg === "string" && arg.includes("zcode.cjs")
   );
 
   if (!isAgentServer) {
-    return; // 非 zcode.cjs 进程，立即返回，零开销
+    return;
   }
 
   try {

@@ -160,9 +160,75 @@ export async function getWhaleModel(params = {}, options = {}) {
 }
 
 /**
+ * Query authoritative session token usage from ~/.zcode/cli/db/db.sqlite.
+ * Filters completed main_turn requests so subagent/background/cancelled queries
+ * and cross-session telemetry leaks are excluded.
+ */
+export async function getSessionUsage(params = {}, options = {}) {
+  const sessionId = String(params.sessionId || '').trim();
+  if (!sessionId || sessionId === 'draft' || !/^[A-Za-z0-9_.:-]{4,160}$/.test(sessionId)) {
+    return { ok: false, error: 'Invalid sessionId' };
+  }
+
+  const dbPath =
+    options.cliDbPath || path.join(os.homedir(), '.zcode', 'cli', 'db', 'db.sqlite');
+  if (!fs.existsSync(dbPath)) {
+    return { ok: false, error: 'Database not found' };
+  }
+
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      let rows;
+      try {
+        rows = db.prepare(`
+          SELECT id, logical_request_id, turn_id, provider_id, model_id, started_at,
+                 input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens
+          FROM model_usage
+          WHERE session_id = ? AND status = 'completed' AND query_source = 'main_turn'
+          ORDER BY started_at ASC, rowid ASC
+        `).all(sessionId);
+      } catch {
+        rows = db.prepare(`
+          SELECT id, turn_id, provider_id, model_id, started_at,
+                 input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens
+          FROM model_usage
+          WHERE session_id = ? AND status = 'completed' AND query_source = 'main_turn'
+          ORDER BY started_at ASC, rowid ASC
+        `).all(sessionId);
+      }
+      return {
+        ok: true,
+        sessionId,
+        requests: rows.map((r) => ({
+          id: String(r.id || ''),
+          logicalRequestId: String(r.logical_request_id || ''),
+          turnId: String(r.turn_id || ''),
+          providerId: String(r.provider_id || ''),
+          modelId: String(r.model_id || ''),
+          startedAt: Number(r.started_at) || 0,
+          input: Number(r.input_tokens) || 0,
+          output: Number(r.output_tokens) || 0,
+          reasoning: Number(r.reasoning_tokens) || 0,
+          cached: Number(r.cache_read_input_tokens) || 0
+        }))
+      };
+    } finally {
+      try {
+        db.close();
+      } catch {}
+    }
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+}
+
+/**
  * Register whale RPC methods with the main RpcGateway.
  */
 export function registerWhaleService(gateway) {
   gateway.register('whale.loadSkins', async (params) => loadWhaleSkins(params));
   gateway.register('whale.getModel', async (params) => getWhaleModel(params));
+  gateway.register('usage.getSessionStats', async (params) => getSessionUsage(params));
 }
