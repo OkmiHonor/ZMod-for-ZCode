@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-25T15:16:24.883Z",
+  "updated": "2026-10-26T00:56:08.472Z",
   "plugins": [
     {
       "id": "acrylic-window",
@@ -121,14 +121,14 @@
     },
     {
       "id": "usage-stats",
-      "version": "1.1.0-beta",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/usage-stats-1.1.0-beta.zip",
-      "shasum": "45e41f9d4149abb503a1c51e8a18d92fe0e399712ea050ebe40cc9a02cee32d3",
+      "version": "1.2.0",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/usage-stats-1.2.0.zip",
+      "shasum": "fb0f4a95be441e35361578023b0a4708b363a614856cec2a559dab8d695b3169",
       "manifest": {
         "id": "usage-stats",
         "name": "Token 用量统计",
-        "version": "1.1.0-beta",
-        "description": "非侵入拦截客户端遥测统计 Token 消耗/缓存命中/费用（逐请求口径对齐官方命中率），余额走数据源系统",
+        "version": "1.2.0",
+        "description": "非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知，跨会话不串数），费用估算仅 DeepSeek 系模型，余额走数据源系统",
         "author": "ZMod Team",
         "engine": {
           "zmod": ">=1.0.0-beta"
@@ -142,13 +142,13 @@
     },
     {
       "id": "whale-widget",
-      "version": "1.1.0-beta",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/whale-widget-1.1.0-beta.zip",
-      "shasum": "e7243724867f089b5232f6d9d5c94624d7a305ee13bb74f8362895c7e9a6c24c",
+      "version": "1.1.1",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/whale-widget-1.1.1.zip",
+      "shasum": "976b595f822a5008179e7e1a80cfcf2bc3b94cd9ee7fae8ced51a49c1140e4a0",
       "manifest": {
         "id": "whale-widget",
         "name": "DeepSeek 余额小鲸鱼（v1 原版移植）",
-        "version": "1.1.0-beta",
+        "version": "1.1.1",
         "description": "桌宠 + 多供应商余额 + 账本记账 + 音效/角色/泡泡自定义 + 模型换装（v1 原样移植）",
         "author": "ZMod Team",
         "engine": {

@@ -1,4 +1,5 @@
 import { definePlugin } from '@zmod/sdk';
+import { calculateCost, pickScoped } from './lib.js';
 
 /**
  * Usage & Token statistics — v2 port of v1 token-monitor (v3.x).
@@ -8,36 +9,15 @@ import { definePlugin } from '@zmod/sdk';
  * window.__zmod_token_stats__ that v1 exposed, so future ports (whale widget)
  * can consume it unchanged.
  *
- * Balance display is NOT handled here — it lives in the datasource system
- * (official-providers deepseek preset + balance-cards plugin).
+ * Session-aware (v1 v3.5 parity): per-talk buckets (byTalk) drive the popover's
+ * 「本轮/本会话」 rows so numbers never leak across talks; the global `session`
+ * accumulator is kept only for the window.__zmod_token_stats__ contract.
+ *
+ * Cost estimation covers DeepSeek-family models only (pricing table + peak/
+ * off-peak windows live in lib.js). Balance display is NOT handled here — it
+ * lives in the datasource system (official-providers deepseek preset +
+ * balance-cards plugin).
  */
-
-// 元/百万 tokens: [空闲/谷期, 忙时/峰期]
-const PRICING = {
-  v3: { hit: [0.5, 1.0], miss: [2.0, 4.0], out: [8.0, 16.0] },
-  r1: { hit: [1.0, 2.0], miss: [4.0, 8.0], out: [16.0, 32.0] }
-};
-
-function isPeakHour() {
-  try {
-    const now = new Date();
-    const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-    const bj = new Date(utc + 3600000 * 8);
-    const day = bj.getDay();
-    if (day === 0 || day === 6) return false;
-    const hour = bj.getHours();
-    return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18);
-  } catch {
-    return false;
-  }
-}
-
-function calculateCost(model, hitM, missM, outM) {
-  const m = (model || '').toLowerCase();
-  const table = m.includes('reasoner') || m.includes('r1') ? PRICING.r1 : PRICING.v3;
-  const tier = isPeakHour() ? 1 : 0;
-  return (hitM / 1e6) * table.hit[tier] + (missM / 1e6) * table.miss[tier] + (outM / 1e6) * table.out[tier];
-}
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
@@ -69,8 +49,8 @@ function freshState() {
 export default definePlugin({
   id: 'usage-stats',
   name: 'Token 用量统计',
-  version: '1.1.0-beta',
-  description: '非侵入拦截客户端遥测统计 Token 消耗/缓存命中/费用（逐请求口径对齐官方命中率），余额走数据源系统',
+  version: '1.2.0',
+  description: '非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知，跨会话不串数），费用估算仅 DeepSeek 系模型，余额走数据源系统',
   author: 'ZMod Team',
 
   settings: {
@@ -160,7 +140,9 @@ export default definePlugin({
         reasoning: (curMsg.reasoning += reasoning),
         total: (curMsg.total += total),
         ratio: (curMsg.hit + curMsg.miss) > 0 ? curMsg.hit / (curMsg.hit + curMsg.miss) : 0,
-        cost: (curMsg.cost += cost), model
+        cost: (curMsg.cost += cost), model,
+        // 归属标记：pickScoped 据此判断全局 lastTurn 能否跨会话回退（旧存档无此字段视为 null = 兼容）
+        talkId: curMsg.talkId
       };
 
       const sess = state.session;
@@ -179,7 +161,10 @@ export default definePlugin({
         const bk = state.byTalk[talkId] = state.byTalk[talkId] || { turns: 0, totalTokens: 0, hitTokens: 0, lastAt: 0 };
         if (isNewMessage) bk.turns += 1;
         bk.totalTokens = (bk.totalTokens || 0) + total;
+        bk.totalInput = (bk.totalInput || 0) + input;
+        bk.outputTokens = (bk.outputTokens || 0) + output;
         bk.hitTokens = (bk.hitTokens || 0) + cached;
+        bk.totalCost = (bk.totalCost || 0) + cost;
         bk.lastAt = Date.now();
         bk.lastTurn = { ...state.lastTurn, at: Date.now() };
         if (String(talkId) !== String(state.activeTalkId ?? '')) state.activeTalkId = talkId;
@@ -227,11 +212,15 @@ export default definePlugin({
           if (seen.has(dedupeKey)) return;
           remember(dedupeKey);
           let isNewMessage = false;
-          if (!curMsg || (msgId && curMsg.id !== msgId) || curMsg.talkId !== payload.talkId) {
-            curMsg = { id: msgId, talkId: payload.talkId, hit: 0, miss: 0, input: 0, output: 0, reasoning: 0, total: 0, cost: 0 };
+          // messageId 为空的宿主：同一条 curMsg 会被永久粘连（turns 不再增长）——
+          // 两次 step 间隔超过 2 分钟即视为新消息开桶
+          const staleNoId = !msgId && curMsg && Date.now() - (curMsg.lastStepAt || 0) > 120000;
+          if (!curMsg || staleNoId || (msgId && curMsg.id !== msgId) || curMsg.talkId !== payload.talkId) {
+            curMsg = { id: msgId, talkId: payload.talkId, hit: 0, miss: 0, input: 0, output: 0, reasoning: 0, total: 0, cost: 0, lastStepAt: Date.now() };
             isNewMessage = true;
             if (msgId) remember(`msg:${msgId}`);
           }
+          curMsg.lastStepAt = Date.now();
           addUsage(model, n.cached, n.input, n.output, n.reasoning, payload.talkId, isNewMessage);
         } else {
           // message_completion 聚合：该消息已由 step 流统计过则跳过
@@ -242,7 +231,7 @@ export default definePlugin({
           if (seen.has(dedupeKey)) return;
           remember(dedupeKey);
           if (viaSteps) return;
-          curMsg = { id: msgId, talkId: payload.talkId, hit: 0, miss: 0, input: 0, output: 0, reasoning: 0, total: 0, cost: 0 };
+          curMsg = { id: msgId, talkId: payload.talkId, hit: 0, miss: 0, input: 0, output: 0, reasoning: 0, total: 0, cost: 0, lastStepAt: Date.now() };
           addUsage(model, n.cached, n.input, n.output, n.reasoning, payload.talkId, true);
         }
       } catch {}
@@ -299,18 +288,28 @@ export default definePlugin({
       return String(Math.round(n));
     };
     function buildPopoverRows() {
-      const lt = state.lastTurn;
-      const se = state.session;
+      // 会话感知渲染（pickScoped）：活跃会话分桶优先，跨会话不串数；
+      // 全局 session 累加器只服务 window.__zmod_token_stats__ 契约，不进 popover。
+      const { lt, sess } = pickScoped(state);
       const wrap = document.createElement('div');
       wrap.className = 'flex flex-col gap-1.5 border-t border-border pt-2 mt-2';
       wrap.setAttribute('data-' + POPOVER_MARK, '1');
       const row = (label, value) =>
         `<div class="flex items-baseline justify-between gap-4"><span class="text-ui-sm text-foreground-subtle">${esc(label)}</span><span class="text-ui-sm font-medium tabular-nums text-foreground">${esc(value)}</span></div>`;
+      // 旧存档分桶没有 totalInput/outputTokens —— 降级为轮次/总量口径
+      const sessionVal = !sess
+        ? '—'
+        : sess.totalInput != null
+          ? `入 ${fmtWan(sess.totalInput)} / 出 ${fmtWan(sess.outputTokens)} / 命中 ${fmtWan(sess.hitTokens)}`
+          : `${sess.turns} 轮 / 共 ${fmtWan(sess.totalTokens)} / 命中 ${fmtWan(sess.hitTokens)}`;
       wrap.innerHTML =
         // 命中率不在此重复：官方「平均缓存命中率」行即同口径数据，v2.1 起 ZMod 行只补 token 量与费用
-        row('本轮', lt.total ? `入 ${fmtWan(lt.input)} / 出 ${fmtWan(lt.output)}` : '—') +
-        row('本会话', se.turns ? `入 ${fmtWan(se.totalInput)} / 出 ${fmtWan(se.outputTokens)} / 命中 ${fmtWan(se.hitTokens)}` : '—') +
-        (s.get('enableCost', true) ? row('会话费用估算', '¥' + se.totalCost.toFixed(3)) : '');
+        row('本轮', lt && lt.total > 0 ? `入 ${fmtWan(lt.input)} / 出 ${fmtWan(lt.output)}` : '—') +
+        row('本会话', sessionVal) +
+        // 费用仅 DeepSeek 系模型计价（lib.js 内置门禁），非 DeepSeek 恒为 0 → 显示 —
+        (s.get('enableCost', true) && sess && (sess.totalCost || 0) > 0
+          ? row('会话费用估算', '¥' + sess.totalCost.toFixed(3))
+          : '');
       return wrap;
     }
 
