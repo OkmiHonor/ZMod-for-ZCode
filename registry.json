@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-26T08:41:58.388Z",
+  "updated": "2026-10-26T08:43:23.550Z",
   "plugins": [
     {
       "id": "acrylic-window",
@@ -123,7 +123,7 @@
       "id": "smart-subagent",
       "version": "1.0.0",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/smart-subagent-1.0.0.zip",
-      "shasum": "bf47ea38cbb566e22c472384510b0475403254bcf4e62be724d7cf823dbc923b",
+      "shasum": "20f5ca851f9b1a3fc9c5fee5aea7f38503bcdc1fbee085d1919d1e66b3684109",
       "manifest": {
         "id": "smart-subagent",
         "name": "子代理智能模型路由",
@@ -134,9 +134,6 @@
         "engine": {
           "zmod": ">=1.0.0-beta"
         },
-        "permissions": [
-          "subagent.router"
-        ],
         "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
       }
     },
