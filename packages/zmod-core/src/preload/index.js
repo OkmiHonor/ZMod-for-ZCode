@@ -14,7 +14,7 @@ export function bootstrap() {
   if (!electronContextBridge || !electronIpcRenderer) return;
 
   const api = {
-    version: '1.6.1',
+    version: '1.6.2',
     invoke: async (method, params = {}) => {
       return electronIpcRenderer.invoke(RPC_CHANNEL, { method, params });
     },
