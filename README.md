@@ -1,6 +1,8 @@
-# ZMod — ZCode 桌面客户端模块化扩展框架
-
 <div align="center">
+
+<img src="./assets/logo.png" alt="ZMod Logo" width="128" height="128" />
+
+# ZMod — ZCode 桌面客户端模块化扩展框架
 
 **声明式 · 全外置 · 零构建 · 深度原生融合的 ZCode 桌面客户端模块化 Mod 加载器**
 
