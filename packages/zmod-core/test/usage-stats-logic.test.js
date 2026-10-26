@@ -1,8 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-const { PRICING, isPeakHour, costTable, calculateCost, pickScoped } =
-  await import('../../../plugins/usage-stats/lib.js');
+const {
+  PRICING,
+  isPeakHour,
+  costTable,
+  calculateCost,
+  buildBucketFromRequests,
+  ingestTelemetryPayload,
+  pickScoped
+} = await import('../../../plugins/usage-stats/lib.js');
 
 // 北京时间锚点（UTC 显式构造，不依赖本机时区）：
 // 2026-10-26 是周一。UTC 02:00 = 北京 10:00（峰）；UTC 04:30 = 北京 12:30（谷）。
@@ -129,3 +136,313 @@ test('pickScoped: bucket with turns=0 yields sess null even if present', () => {
   const { sess } = pickScoped(st);
   assert.equal(sess, null);
 });
+
+test('pickScoped: domTalkId "draft" isolates draft session from previous talk', () => {
+  const st = mkState({
+    activeTalkId: 'T_OLD',
+    lastTurn: { total: 1000, input: 800, output: 200, talkId: 'T_OLD' },
+    byTalk: {
+      T_OLD: {
+        turns: 2,
+        totalTokens: 1000,
+        totalInput: 800,
+        outputTokens: 200,
+        hitTokens: 400,
+        lastTurn: { total: 1000, input: 800, output: 200, talkId: 'T_OLD' }
+      }
+    }
+  });
+  assert.deepEqual(pickScoped(st, 'draft'), { lt: null, sess: null });
+  assert.deepEqual(pickScoped(st, 'T_NEW'), { lt: null, sess: null });
+
+  const stDraftActive = mkState({ ...st, activeTalkId: 'draft' });
+  assert.deepEqual(pickScoped(stDraftActive), { lt: null, sess: null });
+});
+
+test('ingestTelemetryPayload: concurrent interleaved agent_steps across two sessions do not leak, reset lastTurn, or inflate turns', () => {
+  const st = mkState({ activeTalkId: 'TALK_A' });
+
+  // Session A step 1 (foreground)
+  assert.equal(
+    ingestTelemetryPayload(
+      st,
+      {
+        elementName: 'agent_step',
+        talkId: 'TALK_A',
+        messageId: 'MSG_A1',
+        eventExtraDetail: {
+          step_id: 'step_a1',
+          step_type: 'reasoning', // model emitted thought + tool call directly
+          token_usage_scope: 'model_request',
+          model_name: 'deepseek-chat',
+          input_tokens: 1000,
+          cached_tokens: 600,
+          output_tokens: 100
+        }
+      },
+      { now: 1000, date: MON_PEAK, updateActiveTalk: false }
+    ),
+    true
+  );
+
+  // Session B step 1 (background session running concurrently)
+  assert.equal(
+    ingestTelemetryPayload(
+      st,
+      {
+        elementName: 'agent_step',
+        talkId: 'TALK_B',
+        messageId: 'MSG_B1',
+        eventExtraDetail: {
+          step_id: 'step_b1',
+          step_type: 'generation',
+          token_usage_scope: 'model_request',
+          model_name: 'glm-5.1',
+          input_tokens: 2000,
+          cached_tokens: 1500,
+          output_tokens: 300
+        }
+      },
+      { now: 1100, date: MON_PEAK, updateActiveTalk: false }
+    ),
+    true
+  );
+
+  // Foreground activeTalkId must stay locked on TALK_A
+  assert.equal(st.activeTalkId, 'TALK_A');
+
+  // Session A step 2 (same message MSG_A1)
+  assert.equal(
+    ingestTelemetryPayload(
+      st,
+      {
+        elementName: 'agent_step',
+        talkId: 'TALK_A',
+        messageId: 'MSG_A1',
+        eventExtraDetail: {
+          step_id: 'step_a2',
+          step_type: 'generation',
+          token_usage_scope: 'model_request',
+          model_name: 'deepseek-chat',
+          input_tokens: 1500,
+          cached_tokens: 1200,
+          output_tokens: 200
+        }
+      },
+      { now: 1200, date: MON_PEAK, updateActiveTalk: false }
+    ),
+    true
+  );
+
+  // Session B step 2 (same message MSG_B1)
+  assert.equal(
+    ingestTelemetryPayload(
+      st,
+      {
+        elementName: 'agent_step',
+        talkId: 'TALK_B',
+        messageId: 'MSG_B1',
+        eventExtraDetail: {
+          step_id: 'step_b2',
+          step_type: 'generation',
+          token_usage_scope: 'model_request',
+          model_name: 'glm-5.1',
+          input_tokens: 3000,
+          cached_tokens: 2500,
+          output_tokens: 400
+        }
+      },
+      { now: 1300, date: MON_PEAK, updateActiveTalk: false }
+    ),
+    true
+  );
+
+  const bkA = st.byTalk.TALK_A;
+  const bkB = st.byTalk.TALK_B;
+
+  assert.equal(bkA.turns, 1, 'TALK_A must have exactly 1 turn');
+  assert.equal(bkA.totalInput, 2500);
+  assert.equal(bkA.outputTokens, 300);
+  assert.equal(bkA.hitTokens, 1800);
+  assert.equal(bkA.lastTurn.input, 2500, 'TALK_A lastTurn must sum step 1 + step 2');
+  assert.equal(bkA.lastTurn.output, 300);
+  assert.equal(bkA.lastTurn.hit, 1800);
+
+  assert.equal(bkB.turns, 1, 'TALK_B must have exactly 1 turn');
+  assert.equal(bkB.totalInput, 5000);
+  assert.equal(bkB.outputTokens, 700);
+  assert.equal(bkB.hitTokens, 4000);
+  assert.equal(bkB.lastTurn.input, 5000, 'TALK_B lastTurn must sum step 1 + step 2');
+  assert.equal(bkB.lastTurn.output, 700);
+  assert.equal(bkB.lastTurn.hit, 4000);
+
+  // Foreground pickScoped sees TALK_A only
+  const scopedA = pickScoped(st, 'TALK_A');
+  assert.equal(scopedA.lt.input, 2500);
+  assert.equal(scopedA.sess.totalInput, 2500);
+
+  // Switching DOM to TALK_B sees TALK_B only
+  const scopedB = pickScoped(st, 'TALK_B');
+  assert.equal(scopedB.lt.input, 5000);
+  assert.equal(scopedB.sess.totalInput, 5000);
+});
+
+test('ingestTelemetryPayload: agent_step + message_completion and page reload do not double count', () => {
+  const st = mkState({ activeTalkId: 'TALK_1' });
+
+  // 1. Ingest agent_step for MSG_100
+  assert.equal(
+    ingestTelemetryPayload(
+      st,
+      {
+        elementName: 'agent_step',
+        talkId: 'TALK_1',
+        messageId: 'MSG_100',
+        eventExtraDetail: {
+          step_id: 's_100_1',
+          step_type: 'reasoning',
+          token_usage_scope: 'model_request',
+          model_name: 'glm-5.1',
+          input_tokens: 4000,
+          cache_read_input_tokens: 3000,
+          output_tokens: 500
+        }
+      },
+      { now: 2000 }
+    ),
+    true
+  );
+
+  // Duplicate step_id is rejected
+  assert.equal(
+    ingestTelemetryPayload(
+      st,
+      {
+        elementName: 'agent_step',
+        talkId: 'TALK_1',
+        messageId: 'MSG_100',
+        eventExtraDetail: {
+          step_id: 's_100_1',
+          step_type: 'reasoning',
+          token_usage_scope: 'model_request',
+          model_name: 'glm-5.1',
+          input_tokens: 4000,
+          cache_read_input_tokens: 3000,
+          output_tokens: 500
+        }
+      },
+      { now: 2010 }
+    ),
+    false
+  );
+
+  // 2. message_completion for same MSG_100 is rejected
+  assert.equal(
+    ingestTelemetryPayload(
+      st,
+      {
+        elementName: 'message_completion',
+        talkId: 'TALK_1',
+        messageId: 'MSG_100',
+        eventExtraDetail: {
+          model_name: 'glm-5.1',
+          input_tokens: 4000,
+          cache_read_input_tokens: 3000,
+          output_tokens: 500
+        }
+      },
+      { now: 2100 }
+    ),
+    false
+  );
+
+  assert.equal(st.byTalk.TALK_1.turns, 1);
+  assert.equal(st.byTalk.TALK_1.totalInput, 4000);
+
+  // 3. Simulate page reload: serialize and restore state from JSON (no in-memory Set)
+  const reloadedState = JSON.parse(JSON.stringify(st));
+  assert.equal(
+    ingestTelemetryPayload(
+      reloadedState,
+      {
+        elementName: 'message_completion',
+        talkId: 'TALK_1',
+        messageId: 'MSG_100',
+        eventExtraDetail: {
+          model_name: 'glm-5.1',
+          input_tokens: 4000,
+          cache_read_input_tokens: 3000,
+          output_tokens: 500
+        }
+      },
+      { now: 3000 }
+    ),
+    false,
+    'reloaded state must still reject duplicate message_completion for MSG_100'
+  );
+  assert.equal(reloadedState.byTalk.TALK_1.turns, 1);
+  assert.equal(reloadedState.byTalk.TALK_1.totalInput, 4000);
+});
+
+test('buildBucketFromRequests: aggregates SQLite model_usage rows by turnId with DeepSeek cost', () => {
+  const peakTs = MON_PEAK.getTime();
+  const rows = [
+    {
+      id: 'req_1',
+      turnId: 'turn_1',
+      modelId: 'deepseek-chat',
+      startedAt: peakTs,
+      input: 1_000_000,
+      output: 500_000,
+      reasoning: 0,
+      cached: 600_000
+    },
+    {
+      id: 'req_2',
+      turnId: 'turn_1',
+      modelId: 'deepseek-chat',
+      startedAt: peakTs + 1000,
+      input: 1_000_000,
+      output: 500_000,
+      reasoning: 0,
+      cached: 800_000
+    },
+    {
+      id: 'req_3',
+      turnId: 'turn_2',
+      modelId: 'deepseek-chat',
+      startedAt: peakTs + 5000,
+      input: 500_000,
+      output: 100_000,
+      reasoning: 20_000,
+      cached: 400_000
+    }
+  ];
+
+  const bucket = buildBucketFromRequests('SESS_DB_1', rows, true);
+  assert.equal(bucket.fromDb, true);
+  assert.equal(bucket.turns, 2);
+  assert.equal(bucket.totalInput, 2_500_000);
+  assert.equal(bucket.outputTokens, 1_100_000);
+  assert.equal(bucket.hitTokens, 1_800_000);
+  assert.equal(bucket.missTokens, 700_000);
+  assert.equal(bucket.reasoningTokens, 20_000);
+  assert.equal(bucket.totalTokens, 3_600_000);
+  assert.ok(bucket.totalCost > 0);
+
+  // lastTurn must be turn_2
+  assert.ok(bucket.lastTurn);
+  assert.equal(bucket.lastTurn.turnId, 'turn_2');
+  assert.equal(bucket.lastTurn.input, 500_000);
+  assert.equal(bucket.lastTurn.output, 100_000);
+  assert.equal(bucket.lastTurn.hit, 400_000);
+
+  // turn_1 aggregated both req_1 and req_2
+  assert.equal(bucket.turnsById.turn_1.input, 2_000_000);
+  assert.equal(bucket.turnsById.turn_1.output, 1_000_000);
+  assert.equal(bucket.turnsById.turn_1.hit, 1_400_000);
+  assert.equal(bucket.stepsSeen.req_1, 1);
+  assert.equal(bucket.stepsSeen.req_2, 1);
+  assert.equal(bucket.stepsSeen.req_3, 1);
+});
+
