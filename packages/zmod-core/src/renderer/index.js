@@ -12,7 +12,7 @@ import { createSettingsPageIntegration, makeSwitch } from './settings-page.js';
 import { applyPluginChange } from './plugin-bridge.js';
 import { mergeMarketView, normalizeInstallUrl } from './market-view.js';
 
-const ZMOD_VERSION = '1.6.0';
+const ZMOD_VERSION = '1.6.1';
 
 if (window.__ZMOD_V2_INITIALIZED__) {
   // Reload safety: a fresh document never has this flag, but double execution

@@ -316,6 +316,30 @@ class RpcGateway {
       return { success: true };
     });
 
+    // ---- Subagent Router (smart-subagent plugin host bridge) ----
+    this.register('subagentRouter.syncConfig', async (payload) => {
+      try {
+        const pDir = getPluginDataDir('smart-subagent');
+        if (!fs.existsSync(pDir)) fs.mkdirSync(pDir, { recursive: true });
+        const cfgPath = path.join(pDir, 'config.json');
+        fs.writeFileSync(cfgPath, JSON.stringify(payload || {}, null, 2), 'utf8');
+        console.log('[ZMod:RPC] subagentRouter config synced:', payload?.enabled);
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err?.message || String(err) };
+      }
+    });
+
+    this.register('subagentRouter.getConfig', async () => {
+      try {
+        const cfgPath = path.join(getPluginDataDir('smart-subagent'), 'config.json');
+        if (fs.existsSync(cfgPath)) {
+          return JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        }
+      } catch {}
+      return { enabled: false };
+    });
+
     // ---- Plugin asset access (fetch() cannot read zmod-local:// URLs) ----
     // scope 'plugin' (default) reads <plugins>/<id>/, scope 'data' reads the
     // update-surviving <plugin-data>/<id>/ written via plugin.writeAsset.

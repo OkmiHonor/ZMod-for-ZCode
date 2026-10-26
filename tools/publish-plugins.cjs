@@ -36,6 +36,7 @@ const PUBLISHED_PLUGINS = new Set([
   'usage-stats',
   'whale-widget',
   'notification-sounds',
+  'smart-subagent',
 ]);
 
 function ps(script) {
