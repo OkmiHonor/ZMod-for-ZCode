@@ -3,6 +3,22 @@ import { rpcGateway, installTelemetryTap } from './rpc.js';
 import { installNotificationTap } from './notifications.js';
 import { installWindowShortcuts } from './shortcuts.js';
 import { ensureDirectories } from '../common/paths.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+function installAgentRouterHook() {
+  try {
+    const currentDir = path.dirname(fileURLToPath(import.meta.url));
+    const hookPath = path.join(currentDir, 'agent-router.cjs').replaceAll(path.sep, '/');
+    const existing = process.env.NODE_OPTIONS || '';
+    if (!existing.includes('agent-router.cjs')) {
+      process.env.NODE_OPTIONS = `${existing} --require "${hookPath}"`.trim();
+      console.log('[ZMod:Core] agent router preload hook installed in NODE_OPTIONS');
+    }
+  } catch (err) {
+    console.error('[ZMod:Core] failed to install agent router hook:', err);
+  }
+}
 
 let electronApp = null;
 try {
@@ -27,6 +43,7 @@ export function bootstrap() {
   try {
     ensureDirectories();
     registerPrivileges(); // safety net; normally a no-op (head patch did it pre-ready)
+    installAgentRouterHook();
     rpcGateway.attach();
   } catch (err) {
     console.error('[ZMod:Core] bootstrap failed:', err);
