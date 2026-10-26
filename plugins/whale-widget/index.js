@@ -16,7 +16,7 @@ let implEntry = null;
 export default definePlugin({
   id: 'whale-widget',
   name: 'DeepSeek 余额小鲸鱼（v1 原版移植）',
-  version: '1.1.0-beta',
+  version: '1.1.1',
   description: '桌宠 + 多供应商余额 + 账本记账 + 音效/角色/泡泡自定义 + 模型换装（v1 原样移植；数据源：遥测 + 外部供应商 API）',
   author: 'ZMod Team (upstream: MeteorNOX/DeepSeek-Balance-Whale-Widget)',
 

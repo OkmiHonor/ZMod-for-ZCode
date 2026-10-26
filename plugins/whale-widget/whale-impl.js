@@ -2738,7 +2738,7 @@ function usageRecordsPayload() {
       addBtn.type = 'button';
       var saveBtn = el('button', 'dshwv-modelmap-btn2', footRow, '保存');
       saveBtn.type = 'button';
-      el('div', 'dshwv-modelmap-hint', panel, '皮肤目录 D:\\ZModDev\\whale-skins\\<皮肤名>\\image.png（支持 .gif 动图），放图后 Ctrl+R 生效；面板里删除的内置皮肤下次启动会回来。');
+      el('div', 'dshwv-modelmap-hint', panel, '皮肤目录 whale-skins\\<皮肤名>\\image.png（在 ZMod 数据目录下，支持 .gif 动图），放图后 Ctrl+R 生效；面板里删除的内置皮肤下次启动会回来。');
       try {
         closeBtn.addEventListener('click', function (e) { e.stopPropagation(); self._toggleModelMapEditor(); });
         addBtn.addEventListener('click', function () { self._addModelMapRow('', 'default', null); });
