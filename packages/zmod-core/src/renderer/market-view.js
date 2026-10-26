@@ -79,7 +79,7 @@ export function evaluateZmodEngine(engine, zmodVersion) {
  * @param {{ zmodVersion?: string }} [opts]
  * @returns {{ rows: Array, localOnly: Array }}
  *   rows: 每个 registry entry 一行 { id,name,version,description,category,
- *   permissions,installedVersion,state,engineOk,engineReason,url }
+ *   permissions,author,repo,installedVersion,state,engineOk,engineReason,url }
  *   localOnly: 本地有而 registry 没有的 defs（已装 tab 自见，市场 tab 不显示）
  */
 export function mergeMarketView(localDefs, registryPlugins, opts = {}) {
@@ -116,6 +116,8 @@ export function mergeMarketView(localDefs, registryPlugins, opts = {}) {
       description: typeof manifest.description === 'string' ? manifest.description : '',
       category: manifest.category || null,
       permissions: Array.isArray(manifest.permissions) ? manifest.permissions : [],
+      author: manifest.author || null,
+      repo: manifest.repo || null,
       installedVersion,
       state,
       engineOk: engine.ok,
@@ -126,4 +128,46 @@ export function mergeMarketView(localDefs, registryPlugins, opts = {}) {
 
   const localOnly = locals.filter((d) => !registryIds.has(d.id));
   return { rows, localOnly };
+}
+
+export const CATEGORY_LABELS = {
+  all: '全部',
+  appearance: '外观',
+  productivity: '效率'
+};
+
+/**
+ * 市场行过滤纯函数（按分类 + 关键字大小写不敏感匹配 id/name/description/category）。
+ */
+export function filterMarketRows(rows, { category = 'all', keyword = '' } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  const cat = String(category || 'all').trim();
+  const kw = String(keyword || '').trim().toLowerCase();
+  return list.filter((r) => {
+    if (!r) return false;
+    if (cat && cat !== 'all' && r.category !== cat) return false;
+    if (kw) {
+      return [r.id, r.name, r.description, r.category].some(
+        (v) => typeof v === 'string' && v.toLowerCase().includes(kw)
+      );
+    }
+    return true;
+  });
+}
+
+/**
+ * URL 安装输入解析。规则：必须 https://；.git（或 GitHub 仓库页自动补 .git）
+ * → git 来源，.zip 直链 → zip 来源；其余拒绝。
+ */
+export function normalizeInstallUrl(raw) {
+  const url = String(raw || '').trim();
+  if (!url) return { error: '请输入安装 URL' };
+  if (!url.startsWith('https://')) return { error: '仅支持 https:// 链接' };
+  const noQuery = url.split(/[?#]/)[0];
+  if (/\.zip$/i.test(noQuery)) return { source: 'zip:' + url };
+  if (/\.git$/i.test(noQuery)) return { source: 'git:' + url };
+  if (/^https:\/\/github\.com\/[^/?#]+\/[^/?#]+\/?$/.test(url)) {
+    return { source: 'git:' + url.replace(/\/+$/, '') + '.git' };
+  }
+  return { error: '仅支持 .git 仓库、.zip 直链或 GitHub 仓库页 URL' };
 }

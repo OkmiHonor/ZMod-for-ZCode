@@ -2,9 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 // 纯视图合并层，不依赖 window / sdk 协议 import，可全离线单测。
-const { mergeMarketView, compareSemver, evaluateZmodEngine } = await import(
-  '../src/renderer/market-view.js'
-);
+const {
+  mergeMarketView,
+  compareSemver,
+  evaluateZmodEngine,
+  CATEGORY_LABELS,
+  filterMarketRows,
+  normalizeInstallUrl
+} = await import('../src/renderer/market-view.js');
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -193,4 +198,126 @@ test('mergeMarketView: 非法输入与非法定义容错', () => {
   assert.equal(rows.length, 1);
   assert.deepEqual(localOnly, []);
   assert.deepEqual(mergeMarketView([{ nope: true }], []).rows, []);
+});
+
+test('mergeMarketView: 透传 author 与 repo，缺失时回退 null', () => {
+  const { rows } = mergeMarketView(
+    [],
+    [
+      regEntry({
+        id: 'with-meta',
+        version: '1.0.0',
+        manifest: { author: 'ZMod Team', repo: 'https://github.com/org/repo' }
+      }),
+      regEntry({ id: 'no-meta', version: '1.0.0' })
+    ],
+    {}
+  );
+  assert.equal(rows[0].author, 'ZMod Team');
+  assert.equal(rows[0].repo, 'https://github.com/org/repo');
+  assert.equal(rows[1].author, null);
+  assert.equal(rows[1].repo, null);
+});
+
+// ---------------------------------------------------------------------------
+// CATEGORY_LABELS & filterMarketRows
+// ---------------------------------------------------------------------------
+
+test('CATEGORY_LABELS: 包含预设分类标签', () => {
+  assert.deepEqual(CATEGORY_LABELS, {
+    all: '全部',
+    appearance: '外观',
+    productivity: '效率'
+  });
+});
+
+test('filterMarketRows: 按分类与关键字（大小写不敏感）过滤，及组合条件', () => {
+  const sampleRows = [
+    {
+      id: 'acrylic-theme',
+      name: '亚克力透明材质',
+      description: '赋予主窗口高斯模糊外观',
+      category: 'appearance'
+    },
+    {
+      id: 'quota-hud',
+      name: '额度浮窗 HUD',
+      description: '实时展示百炼与 GLM 额度',
+      category: 'productivity'
+    },
+    {
+      id: 'notification-sounds',
+      name: '任务提示音',
+      description: '完成或出错时播放音效',
+      category: 'productivity'
+    }
+  ];
+
+  // 默认全部
+  assert.equal(filterMarketRows(sampleRows).length, 3);
+  assert.equal(filterMarketRows(sampleRows, { category: 'all', keyword: '' }).length, 3);
+
+  // 仅分类过滤
+  assert.deepEqual(
+    filterMarketRows(sampleRows, { category: 'appearance' }).map((r) => r.id),
+    ['acrylic-theme']
+  );
+  assert.deepEqual(
+    filterMarketRows(sampleRows, { category: 'productivity' }).map((r) => r.id),
+    ['quota-hud', 'notification-sounds']
+  );
+
+  // 关键字匹配 id / name / description / category（大小写不敏感）
+  assert.deepEqual(
+    filterMarketRows(sampleRows, { keyword: 'ACRYLIC' }).map((r) => r.id),
+    ['acrylic-theme']
+  );
+  assert.deepEqual(
+    filterMarketRows(sampleRows, { keyword: 'hud' }).map((r) => r.id),
+    ['quota-hud']
+  );
+  assert.deepEqual(
+    filterMarketRows(sampleRows, { keyword: '播放音效' }).map((r) => r.id),
+    ['notification-sounds']
+  );
+
+  // 分类 + 关键字组合
+  assert.deepEqual(
+    filterMarketRows(sampleRows, { category: 'productivity', keyword: '额度' }).map((r) => r.id),
+    ['quota-hud']
+  );
+  assert.deepEqual(
+    filterMarketRows(sampleRows, { category: 'appearance', keyword: '额度' }),
+    []
+  );
+
+  // 非法输入容错
+  assert.deepEqual(filterMarketRows(null, { category: 'all' }), []);
+});
+
+// ---------------------------------------------------------------------------
+// normalizeInstallUrl
+// ---------------------------------------------------------------------------
+
+test('normalizeInstallUrl: 支持 .zip、.git 与 GitHub 仓库页 URL，拒绝非 https 或非法格式', () => {
+  assert.deepEqual(normalizeInstallUrl(''), { error: '请输入安装 URL' });
+  assert.deepEqual(normalizeInstallUrl('   '), { error: '请输入安装 URL' });
+  assert.deepEqual(normalizeInstallUrl('http://example.com/a.zip'), {
+    error: '仅支持 https:// 链接'
+  });
+  assert.deepEqual(normalizeInstallUrl('https://cdn.example.com/plugin.zip?token=123'), {
+    source: 'zip:https://cdn.example.com/plugin.zip?token=123'
+  });
+  assert.deepEqual(normalizeInstallUrl('https://github.com/user/repo.git'), {
+    source: 'git:https://github.com/user/repo.git'
+  });
+  assert.deepEqual(normalizeInstallUrl('https://github.com/user/repo'), {
+    source: 'git:https://github.com/user/repo.git'
+  });
+  assert.deepEqual(normalizeInstallUrl('https://github.com/user/repo/'), {
+    source: 'git:https://github.com/user/repo.git'
+  });
+  assert.deepEqual(normalizeInstallUrl('https://example.com/not-a-plugin'), {
+    error: '仅支持 .git 仓库、.zip 直链或 GitHub 仓库页 URL'
+  });
 });

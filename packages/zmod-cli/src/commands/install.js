@@ -136,6 +136,7 @@ function deployRuntimeAndPlugins() {
   // 基座随发插件记账为 builtin（面板按 installed.source==='builtin' 识别）。
   // 随发插件集已为空（空转路径，保留以兼容既有账本语义），但上面的退役清理
   // 依赖这段把对应 builtin 账本记录一并移除。记账失败不阻断安装。
+  const shipped = new Set();
   try {
     const dataDir = getUserDataDir();
     const ledger = readInstalled(dataDir);

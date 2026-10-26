@@ -3,7 +3,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { getUserDataDir } from '../common/paths.js';
-import { REGISTRY_URLS } from '../common/constants.js';
+import { REGISTRY_URLS, buildDownloadCandidateUrls } from '../common/constants.js';
 import {
   readInstalled,
   getInstalledEntry,
@@ -51,6 +51,7 @@ export const PLUGIN_CHANGED_CHANNEL = 'zmod:plugin-changed';
 const REGISTRY_TTL_MS = 10 * 60 * 1000;
 const REGISTRY_TIMEOUT_MS = 15000;
 const DOWNLOAD_TIMEOUT_MS = 60000;
+const MIRROR_DOWNLOAD_TIMEOUT_MS = 20_000;
 const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 // 拖放安装（渲染层 zip/文件夹上传 + 目录投放共用）单包上限
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -254,11 +255,7 @@ async function defaultResolveSource(rawSource, deps) {
     let holder = makeHolder(deps.dataDir, id);
     try {
       const zipPath = path.join(holder.root, 'plugin.zip');
-      await downloadToFile(deps, entry.url, zipPath);
-      const shasum = sha256File(zipPath);
-      if (entry.shasum && shasum !== entry.shasum) {
-        throw new Error(`sha256 校验不匹配，拒绝安装: 期望 ${entry.shasum}，实际 ${shasum}`);
-      }
+      const { shasum } = await downloadVerifiedFile(deps, entry.url, zipPath, entry.shasum || '');
       const dir = extractZip(zipPath, path.join(holder.root, 'x'));
       assertSourceShape(dir);
       const kept = holder;
@@ -314,15 +311,41 @@ function assertSourceShape(dir) {
   }
 }
 
-async function downloadToFile(deps, url, destPath) {
-  const res = await timedFetch(deps.fetchImpl, url, DOWNLOAD_TIMEOUT_MS);
-  if (!res.ok) throw new Error(`下载失败 (HTTP ${res.status}): ${url}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length > MAX_DOWNLOAD_BYTES) {
-    throw new Error(`下载超过大小上限: ${buf.length} > ${MAX_DOWNLOAD_BYTES} bytes`);
+export async function downloadVerifiedFile(deps, url, destPath, expectedShasum = '') {
+  const candidates = buildDownloadCandidateUrls(url, deps?.customMirror);
+  if (candidates.length === 0) {
+    throw new Error('下载失败: URL 为空');
   }
-  fs.writeFileSync(destPath, buf);
-  return buf.length;
+  const fetchFn = deps?.fetchImpl || defaultFetch;
+  const timeoutMs = deps?.downloadTimeoutMs || MIRROR_DOWNLOAD_TIMEOUT_MS;
+  const errors = [];
+  for (const cand of candidates) {
+    try {
+      const res = await timedFetch(fetchFn, cand, timeoutMs);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > MAX_DOWNLOAD_BYTES) {
+        throw new Error(`下载超过大小上限: ${buf.length} > ${MAX_DOWNLOAD_BYTES} bytes`);
+      }
+      fs.writeFileSync(destPath, buf);
+      const shasum = sha256File(destPath);
+      if (expectedShasum && shasum !== expectedShasum) {
+        try {
+          fs.rmSync(destPath, { force: true });
+        } catch {}
+        throw new Error(`sha256 校验不匹配，拒绝安装: 期望 ${expectedShasum}，实际 ${shasum}`);
+      }
+      return { bytes: buf.length, shasum, usedUrl: cand };
+    } catch (err) {
+      errors.push(`${cand}: ${err?.message || err}`);
+    }
+  }
+  throw new Error(`下载失败: ${errors.join('; ')}`);
+}
+
+async function downloadToFile(deps, url, destPath) {
+  const res = await downloadVerifiedFile(deps, url, destPath, '');
+  return res.bytes;
 }
 
 /** 默认 git clone（不存在 git 命令时报可读错误）。 */
@@ -821,12 +844,17 @@ export function registerPluginHost(gateway, injected = {}) {
     ((dir) => removeDirWithRetry(dir, { sleepImpl: deps.sleepImpl }));
 
   // ---- 市场列表（双源 + TTL 缓存 + stale 回退）----
-  gateway.register('plugin.listRemote', async () => {
+  gateway.register('plugin.listRemote', async (params = {}) => {
     const c = ctx();
     try {
-      const r = await c.fetchRegistry({ force: false });
+      const r = await c.fetchRegistry({ force: Boolean(params?.force) });
       if (!r.ok) return { ok: false, plugins: [], stale: false, error: r.error };
-      const out = { ok: true, plugins: r.data.plugins, stale: !!r.stale };
+      const out = {
+        ok: true,
+        plugins: r.data.plugins,
+        stale: Boolean(r.stale),
+        updated: r.data.updated || null
+      };
       if (r.error) out.error = r.error;
       return out;
     } catch (err) {
@@ -989,11 +1017,7 @@ export function registerPluginHost(gateway, injected = {}) {
         const holder = makeHolder(c.dataDir, id);
         try {
           const zipPath = path.join(holder.root, 'plugin.zip');
-          await downloadToFile(d, entry.url, zipPath);
-          const shasum = sha256File(zipPath);
-          if (entry.shasum && shasum !== entry.shasum) {
-            throw new Error(`sha256 校验不匹配，拒绝安装: 期望 ${entry.shasum}，实际 ${shasum}`);
-          }
+          const { shasum } = await downloadVerifiedFile(d, entry.url, zipPath, entry.shasum || '');
           const dir = extractZip(zipPath, path.join(holder.root, 'x'));
           assertSourceShape(dir);
           const { version } = await materializeInstalled(d, {

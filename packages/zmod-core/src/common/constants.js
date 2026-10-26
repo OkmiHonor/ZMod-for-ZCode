@@ -8,3 +8,35 @@ export const REGISTRY_URLS = [
 
 // 旧名保留：单值场景（如 CLI 展示主源 URL）仍引用主源
 export const REGISTRY_URL = REGISTRY_URLS[0];
+
+export const GITHUB_RELEASE_MIRRORS = [
+  '',
+  'https://ghfast.top/',
+  'https://gh-proxy.com/',
+  'https://mirror.ghproxy.com/'
+];
+
+export function buildDownloadCandidateUrls(rawUrl, customMirror = process.env.ZMOD_GITHUB_MIRROR) {
+  const url = String(rawUrl || '').trim();
+  if (!url) return [];
+  const isGithubEligible =
+    /^https:\/\/(?:github\.com\/[^/]+\/[^/]+\/releases\/download\/|raw\.githubusercontent\.com\/)/i.test(url);
+  if (!isGithubEligible) return [url];
+
+  const custom = typeof customMirror === 'string' ? customMirror.trim() : '';
+  const prefixes = custom
+    ? [custom.endsWith('/') ? custom : `${custom}/`, ...GITHUB_RELEASE_MIRRORS]
+    : [...GITHUB_RELEASE_MIRRORS];
+
+  const seen = new Set();
+  const candidates = [];
+  for (const p of prefixes) {
+    const cand = p === '' ? url : `${p.endsWith('/') ? p : `${p}/`}${url}`;
+    if (!seen.has(cand)) {
+      seen.add(cand);
+      candidates.push(cand);
+    }
+  }
+  return candidates;
+}
+

@@ -27,6 +27,13 @@
  *    result follows theme changes for free.
  */
 
+import {
+  mergeMarketView,
+  filterMarketRows,
+  normalizeInstallUrl,
+  CATEGORY_LABELS
+} from './market-view.js';
+
 /* ---- lucide icons, 16px stroke=currentColor to match host icon set ---- */
 const ICONS = {
   puzzle:
@@ -214,8 +221,12 @@ export function makeSwitch(checked, onChange, toast) {
   btn.type = 'button';
   btn.setAttribute('role', 'switch');
   btn.setAttribute('data-size', 'default');
+  btn.style.transition = 'background-color 0.28s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.28s cubic-bezier(0.16, 1, 0.3, 1)';
   const knob = document.createElement('span');
   knob.className = OFFICIAL_SWITCH_KNOB;
+  knob.style.backgroundColor = '#ffffff';
+  knob.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.25), 0 0 1px rgba(0, 0, 0, 0.2)';
+  knob.style.transition = 'transform 0.28s cubic-bezier(0.16, 1, 0.3, 1)';
   btn.appendChild(knob);
   // knob 的 translate 规则匹配滑块自身的 [data-state]（Ark/Radix thumb
   // 协议），track 上的状态属性不会被那组选择器继承——两处都要设
@@ -225,6 +236,13 @@ export function makeSwitch(checked, onChange, toast) {
     btn.setAttribute('aria-checked', String(on));
     knob.setAttribute('data-state', state);
     btn.className = OFFICIAL_SWITCH_TRACK;
+    if (on) {
+      btn.style.setProperty('background-color', '#34c759', 'important');
+      btn.style.setProperty('box-shadow', '0 0 8px rgba(52, 199, 89, 0.28)', 'important');
+    } else {
+      btn.style.removeProperty('background-color');
+      btn.style.removeProperty('box-shadow');
+    }
   };
   render(checked);
   btn.addEventListener('click', async () => {
@@ -240,7 +258,7 @@ export function makeSwitch(checked, onChange, toast) {
   return btn;
 }
 
-export function createSettingsPageIntegration({ api, events, registry, datasources, ui }) {
+export function createSettingsPageIntegration({ api, events, registry, datasources, ui, zmodVersion }) {
   let observer = null;
   let dialogOpen = false;
   let mode = 'overlay';
@@ -249,8 +267,43 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   let navClickHandler = null;
   let overlay = null;
   let activeItem = null;
-  let detail = null; // { kind: 'ds-edit', ... }
+  let detail = null; // { kind: 'ds-edit' | 'plugin-market', ... }
   const contributions = new Map(); // id -> { id, title, render(el) }
+
+  let marketState = {
+    loading: false,
+    error: null,
+    data: null,
+    category: 'all',
+    keyword: '',
+    confirmInstallId: null,
+    confirmRemoveId: null
+  };
+  let remoteCheckedOnce = false;
+
+  async function loadMarketData({ force = false } = {}) {
+    marketState.loading = true;
+    marketState.error = null;
+    if (detail?.kind === 'plugin-market') {
+      try { renderContent(); } catch {}
+    }
+    try {
+      const res = await api.invoke('plugin.listRemote', { force });
+      if (res && res.ok) {
+        marketState.data = res;
+      } else {
+        marketState.error = (res && res.error) || '获取市场数据失败';
+      }
+    } catch (err) {
+      marketState.error = String(err?.message || err);
+    } finally {
+      marketState.loading = false;
+      remoteCheckedOnce = true;
+      if (dialogOpen && activeItem === 'plugins') {
+        try { renderContent(); } catch {}
+      }
+    }
+  }
 
   // Config hot reload: live-refresh an open datasources page instead of
   // requiring the user to close and reopen the settings dialog.
@@ -930,6 +983,11 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   let confirmRemoveId = null;
 
   function renderPluginsPage(root) {
+    if (detail?.kind === 'plugin-market') {
+      renderPluginMarketPage(root);
+      return;
+    }
+
     renderInstalledPluginsSection(root);
 
     // 插件自愿贡献的卡片（不动）
@@ -953,7 +1011,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
 
   /**
    * 已装插件管理区（设置页是插件管理主入口，浮动面板只是保底）。
-   * 区头 flex 行：左标题 + 右「添加插件」（开浮动面板市场 tab）。
+   * 区头 flex 行：左标题 + 右「全部更新 / + 插件市场」（进入插件市场二级页）。
    * 行卡按启用状态分两组：「已启用 (N)」普通分组；「未启用 (N) · 拖入即装」
    * 是虚线 dropzone，拖 .zip/插件文件夹进来走 plugin.installUpload 安装
    * （默认未启用），列表刷新由 zmod:plugin-changed 广播驱动。
@@ -962,6 +1020,12 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     const defs = registry.getAll();
     const enabledDefs = defs.filter((d) => registry.isActive(d.id));
     const disabledDefs = defs.filter((d) => !registry.isActive(d.id));
+    const marketView = marketState.data
+      ? mergeMarketView(defs, marketState.data.plugins || [], { zmodVersion })
+      : { rows: [] };
+    const updateMap = new Map(
+      marketView.rows.filter((r) => r.state === 'update-available').map((r) => [r.id, r])
+    );
 
     const section = document.createElement('section');
     section.className = 'flex flex-col gap-3';
@@ -980,7 +1044,38 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     desc.textContent = '开关与设置即时生效；移除后配置保留，重新安装默认启用。';
     titleWrap.appendChild(desc);
     header.appendChild(titleWrap);
-    header.appendChild(makeAddPluginButton());
+
+    const headerActions = document.createElement('div');
+    headerActions.className = 'flex shrink-0 items-center gap-2';
+    if (updateMap.size > 0) {
+      const updateAllBtn = textButton(`全部更新 (${updateMap.size})`, 'refresh', async () => {
+        updateAllBtn.disabled = true;
+        let okCount = 0;
+        const failed = [];
+        try {
+          for (const [id, r] of updateMap.entries()) {
+            try {
+              const res = await api.invoke('plugin.update', { id });
+              if (res && res.ok) okCount += 1;
+              else failed.push(`${r.name || id}(${(res && res.error) || '更新失败'})`);
+            } catch (err) {
+              failed.push(`${r.name || id}(${err?.message || err})`);
+            }
+          }
+          if (failed.length === 0) {
+            ui.showToast(`已更新 ${okCount} 个插件`, 'success');
+          } else {
+            ui.showToast(`已更新 ${okCount} 个，失败 ${failed.length} 个：${failed.join('、')}`, 'error');
+          }
+          await loadMarketData({ force: true });
+        } finally {
+          updateAllBtn.disabled = false;
+        }
+      });
+      headerActions.appendChild(updateAllBtn);
+    }
+    headerActions.appendChild(makeAddPluginButton());
+    header.appendChild(headerActions);
     section.appendChild(header);
 
     // 已启用组：普通分组（无外框），行卡与确认条/设置表单跟随
@@ -994,15 +1089,19 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       enabledGroup.appendChild(empty);
     }
     for (const def of enabledDefs) {
-      enabledGroup.appendChild(installedPluginRow(def));
+      enabledGroup.appendChild(installedPluginRow(def, updateMap.get(def.id)));
       if (confirmRemoveId === def.id) enabledGroup.appendChild(removeConfirmBar(def));
       if (settingsOpenId === def.id) enabledGroup.appendChild(pluginSettingsForm(def));
     }
     section.appendChild(enabledGroup);
 
     // 未启用组：虚线 dropzone（空态也保留容器 + 提示行）
-    section.appendChild(buildDisabledDropzone(disabledDefs));
+    section.appendChild(buildDisabledDropzone(disabledDefs, updateMap));
     root.appendChild(section);
+
+    if (!marketState.data && !marketState.loading && !remoteCheckedOnce) {
+      loadMarketData({ force: false });
+    }
   }
 
   function groupLabel(text) {
@@ -1012,24 +1111,24 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     return el;
   }
 
-  /** 区头右侧按钮：打开浮动面板并直跳市场 tab；全局缺失时降级快捷键提示。 */
+  /** 区头右侧按钮：进入内置「插件市场」二级页。 */
   function makeAddPluginButton() {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = OFFICIAL_PRIMARY_BTN;
-    btn.textContent = '+ 添加插件';
+    btn.textContent = '+ 插件市场';
     btn.addEventListener('click', () => {
-      if (typeof window.ZMod?.openManager === 'function') {
-        window.ZMod.openManager('market');
-      } else {
-        ui.showToast('按 Ctrl+Shift+M 打开面板', 'warn');
+      detail = { kind: 'plugin-market', title: '插件市场' };
+      if (!marketState.data && !marketState.loading) {
+        loadMarketData({ force: false });
       }
+      renderContent();
     });
     return btn;
   }
 
   /** 未启用分组：虚线容器 + 顶部提示行 + 行卡；同时是拖放安装的 dropzone。 */
-  function buildDisabledDropzone(disabledDefs) {
+  function buildDisabledDropzone(disabledDefs, updateMap = new Map()) {
     const zone = document.createElement('div');
     zone.className = 'flex flex-col gap-2 rounded-xl border border-dashed border-border p-2.5';
     zone.appendChild(groupLabel(`未启用 (${disabledDefs.length}) · 拖入即装`));
@@ -1046,7 +1145,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       zone.appendChild(empty);
     }
     for (const def of disabledDefs) {
-      zone.appendChild(installedPluginRow(def));
+      zone.appendChild(installedPluginRow(def, updateMap.get(def.id)));
       if (confirmRemoveId === def.id) zone.appendChild(removeConfirmBar(def));
       if (settingsOpenId === def.id) zone.appendChild(pluginSettingsForm(def));
     }
@@ -1142,15 +1241,80 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     return zone;
   }
 
-  function installedPluginRow(def) {
+  function capturePluginPositions() {
+    const map = new Map();
+    const rows = document.querySelectorAll('[data-zmod-plugin-row]');
+    for (const r of rows) {
+      const id = r.getAttribute('data-zmod-plugin-row');
+      if (id) map.set(id, r.getBoundingClientRect());
+    }
+    return map;
+  }
+
+  function playPluginTransitions(targetId, firstPositions) {
+    if (!firstPositions || firstPositions.size === 0) return;
+    const newRows = document.querySelectorAll('[data-zmod-plugin-row]');
+    for (const r of newRows) {
+      const id = r.getAttribute('data-zmod-plugin-row');
+      const first = firstPositions.get(id);
+      if (!first) continue;
+      const last = r.getBoundingClientRect();
+      const dx = first.left - last.left;
+      const dy = first.top - last.top;
+      const isTarget = (id === targetId);
+      if (dx === 0 && dy === 0 && !isTarget) continue;
+
+      if (isTarget) {
+        r.style.zIndex = '50';
+        r.style.borderColor = '#34c759';
+        const anim = r.animate([
+          {
+            transform: `translate(${dx}px, ${dy}px) scale(1.025)`,
+            boxShadow: '0 16px 36px -4px rgba(0, 0, 0, 0.5), 0 0 18px rgba(52, 199, 89, 0.28)',
+            offset: 0
+          },
+          {
+            transform: `translate(${dx * 0.25}px, ${dy * 0.25}px) scale(1.01)`,
+            offset: 0.55
+          },
+          {
+            transform: 'translate(0, 0) scale(1)',
+            boxShadow: 'none',
+            offset: 1
+          }
+        ], {
+          duration: 340,
+          easing: 'cubic-bezier(0.16, 1, 0.3, 1)'
+        });
+        anim.onfinish = () => {
+          r.style.zIndex = '';
+          r.style.borderColor = '';
+        };
+      } else {
+        r.animate([
+          { transform: `translate(${dx}px, ${dy}px)` },
+          { transform: 'translate(0, 0)' }
+        ], {
+          duration: 300,
+          easing: 'cubic-bezier(0.2, 0.9, 0.3, 1)'
+        });
+      }
+    }
+  }
+
+  function installedPluginRow(def, updateRow = null) {
     const isBuiltin = def._installed?.source === 'builtin';
+    const hasUpdate = updateRow && updateRow.state === 'update-available';
     const row = document.createElement('div');
+    row.setAttribute('data-zmod-plugin-row', def.id);
+    row.style.willChange = 'transform';
     row.className = 'flex items-center gap-4 rounded-xl border border-border bg-surface px-4 py-3';
     row.innerHTML = `
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2">
           <span class="truncate text-ui-base font-medium text-foreground">${esc(def.name || def.id)}</span>
           <span class="shrink-0 text-ui-xs text-foreground-subtle">v${esc(def.version || '1.0.0')}</span>
+          ${hasUpdate ? `<span class="shrink-0 rounded-sm bg-primary/15 px-1.5 py-0.5 text-ui-xs font-medium text-primary">可更新 v${esc(updateRow.version)}</span>` : ''}
           ${isBuiltin ? '<span class="shrink-0 rounded-sm bg-tag px-1.5 py-0.5 text-ui-xs font-medium text-foreground-subtle">随基座</span>' : ''}
         </div>
         ${def.description ? `<div class="mt-0.5 truncate text-ui-sm text-foreground-subtle">${esc(def.description)}</div>` : ''}
@@ -1158,6 +1322,25 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
 
     const actions = document.createElement('div');
     actions.className = 'flex shrink-0 items-center gap-1';
+    if (hasUpdate) {
+      const upBtn = textButton(`更新 v${updateRow.version}`, 'refresh', async () => {
+        upBtn.disabled = true;
+        try {
+          const res = await api.invoke('plugin.update', { id: def.id });
+          if (res && res.ok) {
+            ui.showToast(`已更新 ${def.name || def.id} 到 v${res.version || updateRow.version}`, 'success');
+          } else {
+            ui.showToast((res && res.error) || '更新失败', 'error');
+          }
+          await loadMarketData({ force: false });
+        } catch (err) {
+          ui.showToast(`更新失败：${err?.message || err}`, 'error');
+        } finally {
+          upBtn.disabled = false;
+        }
+      });
+      actions.appendChild(upBtn);
+    }
     if (def.settings && Object.keys(def.settings).length > 0) {
       actions.appendChild(textButton('设置', 'gear', () => {
         settingsOpenId = settingsOpenId === def.id ? null : def.id;
@@ -1174,12 +1357,365 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     removeBtn.style.color = 'var(--color-destructive, #ef4444)';
     actions.appendChild(removeBtn);
     actions.appendChild(makeSwitch(registry.isActive(def.id), async (checked) => {
+      const firstPositions = capturePluginPositions();
       if (checked) await registry.enable(def.id, { persist: true });
       else await registry.disable(def.id, { persist: true });
       renderContent();
+      playPluginTransitions(def.id, firstPositions);
     }, (m, l) => ui.showToast(m, l)));
     row.appendChild(actions);
     return row;
+  }
+
+  /* ---------------- plugin market subpage ---------------- */
+
+  function renderPluginMarketPage(root) {
+    if (!marketState.data && !marketState.loading && !marketState.error) {
+      loadMarketData({ force: false });
+    }
+
+    const marketView = marketState.data
+      ? mergeMarketView(registry.getAll(), marketState.data.plugins || [], { zmodVersion })
+      : { rows: [] };
+
+    // Top Toolbar Card / Row
+    const toolbar = document.createElement('div');
+    toolbar.className = 'flex flex-col gap-2.5 rounded-xl border border-border bg-surface px-4 py-3';
+
+    const topRow = document.createElement('div');
+    topRow.className = 'flex items-center gap-2';
+
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.placeholder = '搜索插件名称、ID 或功能描述…';
+    searchInput.value = marketState.keyword || '';
+    searchInput.className =
+      'h-8 flex-1 rounded-lg border border-border bg-surface px-3 text-ui-base text-foreground outline-none focus:border-foreground-subtle';
+    topRow.appendChild(searchInput);
+
+    const rightBox = document.createElement('div');
+    rightBox.className = 'flex shrink-0 items-center gap-2';
+    if (marketState.data?.stale) {
+      const staleEl = document.createElement('span');
+      staleEl.className = 'text-ui-xs text-foreground-subtle';
+      staleEl.textContent = '缓存数据';
+      rightBox.appendChild(staleEl);
+    }
+    rightBox.appendChild(
+      textButton('刷新', 'refresh', () => {
+        loadMarketData({ force: true });
+      })
+    );
+    topRow.appendChild(rightBox);
+    toolbar.appendChild(topRow);
+
+    // Category filter pills
+    const catSet = new Set(['all', 'appearance', 'productivity']);
+    for (const r of marketView.rows) {
+      if (r.category) catSet.add(r.category);
+    }
+    const pillRow = document.createElement('div');
+    pillRow.className = 'flex flex-wrap items-center gap-1.5';
+    const PILL_ACTIVE_CLS =
+      'inline-flex h-7 cursor-pointer items-center rounded-lg bg-primary px-2.5 text-ui-xs font-medium text-primary-foreground transition-colors';
+    const PILL_IDLE_CLS =
+      'inline-flex h-7 cursor-pointer items-center rounded-lg border border-border bg-surface px-2.5 text-ui-xs text-foreground-subtle transition-colors hover:bg-surface-hover hover:text-foreground';
+    const pillBtns = new Map();
+
+    const updatePillStyles = () => {
+      for (const [cat, btn] of pillBtns.entries()) {
+        btn.className = marketState.category === cat ? PILL_ACTIVE_CLS : PILL_IDLE_CLS;
+      }
+    };
+
+    for (const cat of catSet) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = CATEGORY_LABELS[cat] || cat;
+      btn.addEventListener('click', () => {
+        if (marketState.category === cat) return;
+        marketState.category = cat;
+        updatePillStyles();
+        renderList();
+      });
+      pillBtns.set(cat, btn);
+      pillRow.appendChild(btn);
+    }
+    updatePillStyles();
+    toolbar.appendChild(pillRow);
+    root.appendChild(toolbar);
+
+    // Market List Container
+    const listContainer = document.createElement('div');
+    listContainer.className = 'flex flex-col gap-2';
+    root.appendChild(listContainer);
+
+    searchInput.addEventListener('input', () => {
+      marketState.keyword = searchInput.value;
+      renderList();
+    });
+
+    function renderList() {
+      listContainer.innerHTML = '';
+
+      if (marketState.loading && !marketState.data) {
+        const loadingCard = document.createElement('div');
+        loadingCard.className =
+          'rounded-xl border border-border bg-surface px-4 py-6 text-center text-ui-sm text-foreground-subtle';
+        loadingCard.textContent = '正在加载插件市场…';
+        listContainer.appendChild(loadingCard);
+        return;
+      }
+
+      if (marketState.error && !marketState.data) {
+        const errCard = document.createElement('div');
+        errCard.className =
+          'flex items-center justify-between gap-3 rounded-xl border border-border bg-surface px-4 py-4';
+        const errText = document.createElement('div');
+        errText.className = 'text-ui-sm text-foreground-subtle';
+        errText.textContent = `市场获取失败：${marketState.error}`;
+        errCard.appendChild(errText);
+        errCard.appendChild(
+          textButton('重试', 'refresh', () => {
+            loadMarketData({ force: true });
+          })
+        );
+        listContainer.appendChild(errCard);
+        return;
+      }
+
+      const { rows } = mergeMarketView(registry.getAll(), marketState.data?.plugins || [], {
+        zmodVersion
+      });
+      const filtered = filterMarketRows(rows, {
+        category: marketState.category,
+        keyword: marketState.keyword
+      });
+
+      if (filtered.length === 0) {
+        const emptyCard = document.createElement('div');
+        emptyCard.className =
+          'rounded-xl border border-dashed border-border px-4 py-6 text-center text-ui-sm text-foreground-subtle';
+        emptyCard.textContent = '没有匹配的插件';
+        listContainer.appendChild(emptyCard);
+        return;
+      }
+
+      for (const r of filtered) {
+        listContainer.appendChild(marketPluginRow(r, renderList));
+        if (
+          marketState.confirmInstallId === r.id &&
+          r.state === 'not-installed' &&
+          r.permissions?.length > 0
+        ) {
+          listContainer.appendChild(marketInstallConfirmBar(r, renderList));
+        }
+        if (marketState.confirmRemoveId === r.id && r.state === 'installed') {
+          listContainer.appendChild(marketRemoveConfirmBar(r, renderList));
+        }
+      }
+    }
+
+    renderList();
+    root.appendChild(renderUrlInstallCard());
+  }
+
+  function marketPluginRow(r, renderList) {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-4 rounded-xl border border-border bg-surface px-4 py-3';
+
+    const catLabel = r.category ? CATEGORY_LABELS[r.category] || r.category : null;
+    const permBadges = (r.permissions || [])
+      .map(
+        (p) =>
+          `<span class="shrink-0 rounded-sm border border-border px-1.5 py-0.5 text-ui-xs text-foreground-subtle">${esc(p)}</span>`
+      )
+      .join('');
+
+    const info = document.createElement('div');
+    info.className = 'min-w-0 flex-1';
+    info.innerHTML = `
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="truncate text-ui-base font-medium text-foreground">${esc(r.name)}</span>
+        <span class="shrink-0 text-ui-xs text-foreground-subtle">v${esc(r.version || '?')}</span>
+        ${catLabel ? `<span class="shrink-0 rounded-sm bg-tag px-1.5 py-0.5 text-ui-xs font-medium text-foreground-subtle">${esc(catLabel)}</span>` : ''}
+        ${permBadges}
+        ${r.state === 'installed' ? `<span class="shrink-0 rounded-sm bg-tag px-1.5 py-0.5 text-ui-xs text-foreground-subtle">已安装 v${esc(r.installedVersion || r.version)}</span>` : ''}
+      </div>
+      ${r.description ? `<div class="mt-0.5 text-ui-sm text-foreground-subtle">${esc(r.description)}</div>` : ''}
+      ${!r.engineOk ? `<div class="mt-1 text-ui-xs" style="color: var(--color-destructive, #ef4444)">${esc(r.engineReason || '引擎版本不兼容')}</div>` : ''}`;
+    row.appendChild(info);
+
+    const actions = document.createElement('div');
+    actions.className = 'flex shrink-0 items-center gap-1';
+
+    if (!r.engineOk) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.disabled = true;
+      btn.className = OFFICIAL_PRIMARY_BTN;
+      btn.textContent = '不兼容';
+      btn.title = r.engineReason || '引擎版本不兼容';
+      actions.appendChild(btn);
+    } else if (r.state === 'not-installed') {
+      actions.appendChild(
+        primaryButton('安装', async () => {
+          if (r.permissions?.length > 0) {
+            marketState.confirmInstallId = marketState.confirmInstallId === r.id ? null : r.id;
+            renderList();
+            return;
+          }
+          await doInstallFromMarket(r);
+        })
+      );
+    } else if (r.state === 'update-available') {
+      actions.appendChild(
+        primaryButton(`更新 v${r.installedVersion} → v${r.version}`, async () => {
+          try {
+            const res = await api.invoke('plugin.update', { id: r.id });
+            if (res && res.ok) {
+              ui.showToast(
+                res.updated ? `已更新 ${r.name} 到 v${res.version || r.version}` : '已是最新版本',
+                'success'
+              );
+            } else {
+              ui.showToast((res && res.error) || '更新失败', 'error');
+            }
+            await loadMarketData({ force: false });
+          } catch (err) {
+            ui.showToast(`更新失败：${err?.message || err}`, 'error');
+          }
+        })
+      );
+    } else {
+      const removeBtn = textButton('移除', 'trash', () => {
+        marketState.confirmRemoveId = marketState.confirmRemoveId === r.id ? null : r.id;
+        renderList();
+      });
+      removeBtn.classList.remove('text-foreground');
+      removeBtn.style.color = 'var(--color-destructive, #ef4444)';
+      actions.appendChild(removeBtn);
+    }
+
+    row.appendChild(actions);
+    return row;
+  }
+
+  async function doInstallFromMarket(r) {
+    try {
+      const res = await api.invoke('plugin.install', { source: 'registry:' + r.id });
+      marketState.confirmInstallId = null;
+      if (res && res.ok) {
+        ui.showToast(`已安装 ${r.name}${res.version ? ` v${res.version}` : ''}`, 'success');
+      } else {
+        ui.showToast((res && res.error) || '安装失败', 'error');
+      }
+      await loadMarketData({ force: false });
+    } catch (err) {
+      marketState.confirmInstallId = null;
+      ui.showToast(`安装失败：${err?.message || err}`, 'error');
+    }
+  }
+
+  function marketInstallConfirmBar(r, renderList) {
+    const bar = document.createElement('div');
+    bar.className = 'flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5';
+    const text = document.createElement('span');
+    text.className = 'min-w-0 flex-1 text-ui-sm text-foreground-subtle';
+    text.textContent = `该插件声明权限：${r.permissions.join('、')}`;
+    bar.appendChild(text);
+    bar.appendChild(
+      textButton('取消', null, () => {
+        marketState.confirmInstallId = null;
+        renderList();
+      })
+    );
+    bar.appendChild(
+      primaryButton('继续安装', async () => {
+        await doInstallFromMarket(r);
+      })
+    );
+    return bar;
+  }
+
+  function marketRemoveConfirmBar(r, renderList) {
+    const bar = document.createElement('div');
+    bar.className = 'flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5';
+    const text = document.createElement('span');
+    text.className = 'min-w-0 flex-1 text-ui-sm text-foreground-subtle';
+    text.textContent = `确认移除 ${r.name || r.id}？配置将保留，重新安装后默认启用`;
+    bar.appendChild(text);
+    bar.appendChild(
+      textButton('取消', null, () => {
+        marketState.confirmRemoveId = null;
+        renderList();
+      })
+    );
+    const ok = primaryButton('确认移除', async () => {
+      try {
+        const res = await api.invoke('plugin.remove', { id: r.id });
+        marketState.confirmRemoveId = null;
+        if (res && res.ok) ui.showToast('已移除', 'success');
+        else ui.showToast((res && res.error) || '移除失败', 'error');
+      } catch (err) {
+        marketState.confirmRemoveId = null;
+        ui.showToast(`移除失败：${err?.message || err}`, 'error');
+      }
+      renderContent();
+    });
+    ok.style.background = 'var(--color-destructive, #dc2626)';
+    bar.appendChild(ok);
+    return bar;
+  }
+
+  function renderUrlInstallCard() {
+    const card = document.createElement('div');
+    card.className = 'flex flex-col gap-2 rounded-xl border border-border bg-surface px-4 py-3';
+
+    const title = document.createElement('div');
+    title.className = 'text-ui-sm font-medium text-foreground';
+    title.textContent = '从 URL 安装第三方插件';
+    card.appendChild(title);
+
+    const sub = document.createElement('div');
+    sub.className = 'text-ui-xs text-foreground-subtle';
+    sub.textContent =
+      '支持 GitHub 仓库地址（https://github.com/user/repo）或 .zip 插件包直链，请仅安装你信任的插件。';
+    card.appendChild(sub);
+
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-2';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'https://github.com/user/repo 或 https://…/plugin.zip';
+    input.className =
+      'h-8 flex-1 rounded-lg border border-border bg-surface px-3 text-ui-base text-foreground outline-none focus:border-foreground-subtle';
+    const installBtn = primaryButton('安装', async () => {
+      const norm = normalizeInstallUrl(input.value);
+      if (norm.error) {
+        ui.showToast(norm.error, 'warn');
+        return;
+      }
+      try {
+        const res = await api.invoke('plugin.install', { source: norm.source });
+        if (res && res.ok) {
+          ui.showToast(`已安装 ${res.id}${res.version ? ` v${res.version}` : ''}`, 'success');
+          input.value = '';
+          await loadMarketData({ force: false });
+        } else {
+          ui.showToast((res && res.error) || '安装失败', 'error');
+        }
+      } catch (err) {
+        ui.showToast(`安装失败：${err?.message || err}`, 'error');
+      }
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') installBtn.click();
+    });
+    row.appendChild(input);
+    row.appendChild(installBtn);
+    card.appendChild(row);
+    return card;
   }
 
   /** 移除确认条（面板 zmod-mgr-confirm 的官方风格版）：行下内联展开，不走 window.confirm。 */
@@ -1618,7 +2154,8 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
      * 未打开时不做无谓渲染（与 zmod:config-changed 的处理同判据）。
      */
     refresh() {
-      if (!dialogOpen || activeItem !== 'plugins' || detail) return;
+      if (!dialogOpen || activeItem !== 'plugins') return;
+      if (detail && detail.kind !== 'plugin-market') return;
       if (mode !== 'native' && (!overlay || !overlay.isConnected)) return;
       try { renderContent(); } catch {}
     },

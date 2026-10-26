@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { getPluginsDir, getUserDataDir } from '../../../zmod-core/src/common/paths.js';
-import { REGISTRY_URLS, REGISTRY_URL } from '../../../zmod-core/src/common/constants.js';
+import { REGISTRY_URLS, REGISTRY_URL, buildDownloadCandidateUrls } from '../../../zmod-core/src/common/constants.js';
 import {
   readInstalled,
   getInstalledEntry,
@@ -80,13 +80,151 @@ function extractZip(zipPath, destDir) {
 }
 
 /**
- * Turn a user-supplied source (local dir / .zip / git URL) into a local plugin
- * directory. Returns { dir, cleanup, source, sourceRef, zipPath } — always call
- * cleanup() when done. source/sourceRef/zipPath 供安装记账使用。
+ * 多镜像回退下载 zip 并可选校验 sha256。
  */
-function resolvePluginSource(arg) {
-  if (/^https?:\/\//.test(arg)) {
-    const url = /\.git$/.test(arg) ? arg : `${arg}.git`;
+export async function downloadZipWithFallback(
+  url,
+  zipPath,
+  expectedShasum = '',
+  { fetchImpl = fetch, customMirror } = {}
+) {
+  const candidates = buildDownloadCandidateUrls(url, customMirror);
+  if (candidates.length === 0) {
+    return { ok: false, error: 'URL 为空' };
+  }
+  const errors = [];
+  for (const cand of candidates) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(new Error('timeout 20000ms')), 20_000);
+    timer.unref?.();
+    try {
+      const res = await fetchImpl(cand, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      fs.writeFileSync(zipPath, Buffer.from(await res.arrayBuffer()));
+      const shasum = sha256File(zipPath);
+      if (expectedShasum && shasum !== expectedShasum) {
+        try {
+          fs.rmSync(zipPath, { force: true });
+        } catch {}
+        throw new Error(`sha256 校验不匹配: 期望 ${expectedShasum}，实际 ${shasum}`);
+      }
+      return { ok: true, shasum, usedUrl: cand };
+    } catch (err) {
+      errors.push(`${cand}: ${err?.message || err}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { ok: false, error: errors.join('; ') };
+}
+
+/**
+ * Turn a user-supplied source (plugin-id / registry:<id> / local dir / .zip / remote .zip / git URL)
+ * into a local plugin directory. Returns { dir, cleanup, source, sourceRef, zipPath, shasum } — always
+ * call cleanup() when done. source/sourceRef/zipPath/shasum 供安装记账使用。
+ */
+export async function resolvePluginSource(arg, deps = {}) {
+  const raw = String(arg || '').trim();
+  const abs = path.resolve(raw);
+
+  // 1. 本地已存在 .zip 或目录优先
+  if (!/^(?:git:|zip:|registry:|https?:\/\/)/i.test(raw)) {
+    if (raw.toLowerCase().endsWith('.zip') && fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-plugin-'));
+      const dir = extractZip(abs, tmp);
+      return {
+        dir,
+        cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }),
+        source: 'zip',
+        sourceRef: abs,
+        zipPath: abs,
+        shasum: sha256File(abs)
+      };
+    }
+    if (fs.existsSync(abs) && fs.statSync(abs).isDirectory()) {
+      return { dir: abs, cleanup: () => {}, source: 'dir', sourceRef: abs, zipPath: null, shasum: '' };
+    }
+  }
+
+  // 2. registry:<id> 或裸 <id>（且非本地目录/路径）
+  if (raw.startsWith('registry:') || /^[a-z0-9][a-z0-9_-]*$/i.test(raw)) {
+    const id = raw.startsWith('registry:') ? raw.slice('registry:'.length).trim() : raw;
+    if (!id) {
+      console.error('✖ registry 来源缺少插件 id');
+      process.exit(1);
+    }
+    const reg = await (deps.fetchRegistry || fetchRegistry)();
+    if (!reg) {
+      console.error('✖ 无法获取插件注册表，请检查网络后重试。');
+      process.exit(1);
+    }
+    const entry = Array.isArray(reg.plugins) ? reg.plugins.find((p) => p && p.id === id) : null;
+    if (!entry || !entry.url) {
+      console.error(`✖ 注册表中不存在该插件: ${id}`);
+      process.exit(1);
+    }
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-plugin-'));
+    const zipPath = path.join(tmp, 'plugin.zip');
+    const dl = await (deps.downloadZip || downloadZipWithFallback)(
+      entry.url,
+      zipPath,
+      entry.shasum || '',
+      { fetchImpl: deps.fetchImpl, customMirror: deps.customMirror }
+    );
+    if (!dl.ok) {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      console.error(`✖ 下载插件失败 (${id}): ${dl.error}`);
+      process.exit(1);
+    }
+    const extractDir = path.join(tmp, 'x');
+    fs.mkdirSync(extractDir, { recursive: true });
+    const dir = extractZip(zipPath, extractDir);
+    return {
+      dir,
+      cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }),
+      source: 'registry',
+      sourceRef: entry.url,
+      zipPath,
+      shasum: dl.shasum
+    };
+  }
+
+  // 3. 远端 .zip URL（支持 zip:https://... 或 https://.../*.zip）
+  if (
+    /^zip:https?:\/\//i.test(raw) ||
+    (/^https?:\/\//i.test(raw) && /\.zip(?:[?#].*)?$/i.test(raw))
+  ) {
+    const url = raw.replace(/^zip:/i, '').trim();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-plugin-'));
+    const zipPath = path.join(tmp, 'plugin.zip');
+    const dl = await (deps.downloadZip || downloadZipWithFallback)(
+      url,
+      zipPath,
+      '',
+      { fetchImpl: deps.fetchImpl, customMirror: deps.customMirror }
+    );
+    if (!dl.ok) {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      console.error(`✖ 下载插件 zip 失败: ${dl.error}`);
+      process.exit(1);
+    }
+    const extractDir = path.join(tmp, 'x');
+    fs.mkdirSync(extractDir, { recursive: true });
+    const dir = extractZip(zipPath, extractDir);
+    return {
+      dir,
+      cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }),
+      source: 'zip',
+      sourceRef: url,
+      zipPath,
+      shasum: dl.shasum
+    };
+  }
+
+  // 4. Git URL（支持 git:https://... 或 https://...）
+  if (/^(?:git:)?https?:\/\//i.test(raw)) {
+    const rawGit = raw.replace(/^git:/i, '').trim();
+    const url = /\.git$/i.test(rawGit) ? rawGit : `${rawGit}.git`;
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-plugin-'));
     const res = spawnSync('git', ['clone', '--depth', '1', '--quiet', url, tmp], { stdio: 'inherit' });
     if (res.status !== 0) {
@@ -99,31 +237,18 @@ function resolvePluginSource(arg) {
       cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }),
       source: 'git',
       sourceRef: url,
-      zipPath: null
+      zipPath: null,
+      shasum: ''
     };
   }
-  if (arg.toLowerCase().endsWith('.zip')) {
-    const abs = path.resolve(arg);
-    if (!fs.existsSync(abs)) {
-      console.error(`✖ 文件不存在: ${abs}`);
-      process.exit(1);
-    }
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-plugin-'));
-    const dir = extractZip(abs, tmp);
-    return {
-      dir,
-      cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }),
-      source: 'zip',
-      sourceRef: abs,
-      zipPath: abs
-    };
-  }
-  const abs = path.resolve(arg);
-  if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
-    console.error(`✖ 目录不存在: ${abs}`);
+
+  // 5. 本地路径不存在时的报错
+  if (raw.toLowerCase().endsWith('.zip')) {
+    console.error(`✖ 文件不存在: ${abs}`);
     process.exit(1);
   }
-  return { dir: abs, cleanup: () => {}, source: 'dir', sourceRef: abs, zipPath: null };
+  console.error(`✖ 目录不存在: ${abs}`);
+  process.exit(1);
 }
 
 /**
@@ -288,27 +413,13 @@ async function doRegistryUpdate(id, decision) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-plugin-update-'));
   try {
     const zipPath = path.join(tmp, 'plugin.zip');
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(new Error('timeout 60000ms')), 60000);
-    timer.unref?.();
-    let res;
-    try {
-      res = await fetch(entry.url, { signal: ctrl.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!res.ok) {
-      console.error(`✖ 下载失败（HTTP ${res.status}）: ${entry.url}`);
+    const dl = await downloadZipWithFallback(entry.url, zipPath, entry.shasum || '');
+    if (!dl.ok) {
+      console.error(`✖ 下载或校验失败 (${id}): ${dl.error}`);
       process.exitCode = 1;
       return;
     }
-    fs.writeFileSync(zipPath, Buffer.from(await res.arrayBuffer()));
-    const shasum = sha256File(zipPath);
-    if (entry.shasum && shasum !== entry.shasum) {
-      console.error(`✖ sha256 校验不匹配，拒绝安装: ${id}\n  期望 ${entry.shasum}\n  实际 ${shasum}`);
-      process.exitCode = 1;
-      return;
-    }
+    const shasum = dl.shasum;
     // 解到独立子目录，避免 plugin.zip 自身混进插件目录
     const extractDir = path.join(tmp, 'x');
     fs.mkdirSync(extractDir, { recursive: true });
@@ -387,7 +498,7 @@ async function doGitUpdate(id, sourceRef, localVersion) {
 }
 
 async function runInstall(arg) {
-  const src = resolvePluginSource(arg);
+  const src = await resolvePluginSource(arg);
   try {
     if (!fs.existsSync(path.join(src.dir, 'index.js'))) {
       console.error('✖ 插件源缺少 index.js（约定：插件根目录必须含 index.js，可选 manifest.json）');
@@ -417,7 +528,7 @@ async function runInstall(arg) {
       version: typeof manifest.version === 'string' ? manifest.version : '',
       source: src.source,
       sourceRef: src.sourceRef,
-      shasum: src.source === 'zip' && src.zipPath ? sha256File(src.zipPath) : ''
+      shasum: src.shasum || (src.source === 'zip' && src.zipPath ? sha256File(src.zipPath) : '')
     });
     console.log(`✔ 插件 "${id}"${manifest.version ? ` v${manifest.version}` : ''} 已安装并启用。`);
     console.log('  重启客户端生效；之后可在面板 (Ctrl+Shift+M) 内即时开关。\n');
@@ -686,7 +797,7 @@ export async function pluginCommand(subCmd, arg, rest = []) {
 
   if (subCmd === 'install') {
     if (!arg) {
-      console.error('用法: zmod plugin install <本地目录 | xxx.zip | git-url>');
+      console.error('用法: zmod plugin install <plugin-id | 本地目录 | xxx.zip | git-url>');
       process.exit(1);
     }
     await runInstall(arg);
@@ -746,7 +857,7 @@ export async function pluginCommand(subCmd, arg, rest = []) {
       console.log(`  ${p.id}  v${p.version || m.version || '?'}  [${m.category || '-'}]  权限: ${perms}`);
       if (m.description) console.log(`    ${String(m.description).trim()}`);
     }
-    console.log('\n  安装: zmod plugin install <本地目录 | .zip | git-url>\n');
+    console.log('\n  安装: zmod plugin install <plugin-id | 本地目录 | xxx.zip | git-url>\n');
     return;
   }
 

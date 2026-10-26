@@ -4,13 +4,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+
 // 隔离数据目录：paths.js / installed.js / config.js 全部跟随该环境变量
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zmod-plugin-cmd-'));
 process.env.ZMOD_USER_DATA_DIR = dataRoot;
 
-const { planUpdates, filterSearch, removeDirWithRetry, pluginCommand, buildScaffold, isRunningInsideDevRepo } = await import(
-  '../src/commands/plugin.js'
-);
+const {
+  planUpdates,
+  filterSearch,
+  removeDirWithRetry,
+  pluginCommand,
+  buildScaffold,
+  isRunningInsideDevRepo,
+  resolvePluginSource,
+  downloadZipWithFallback
+} = await import('../src/commands/plugin.js');
 const { readInstalled, getInstalledEntry } = await import('../../zmod-core/src/common/installed.js');
 const { configManager } = await import('../../zmod-core/src/common/config.js');
 const { validateManifestSchema, checkEngine } = await import('../../zmod-sdk/src/manifest.js');
@@ -235,5 +245,75 @@ test('plugin init: 生成脚手架目录, 重复目录/非法 id 拒绝', async 
     await assert.rejects(() => pluginCommand('init', 'Bad_Id', ['--dir', initRoot]), /__exit_1/, '非 kebab id 拒绝');
   } finally {
     process.exit = origExit;
+  }
+});
+
+test('downloadZipWithFallback & resolvePluginSource: 支持裸 plugin-id / registry:<id> / 远端 .zip URL 及镜像回退', async (t) => {
+  const tarBin = process.platform === 'win32'
+    ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+    : 'tar';
+  const pkgSrc = path.join(dataRoot, 'fixture-src', 'remote-pkg');
+  fs.mkdirSync(pkgSrc, { recursive: true });
+  fs.writeFileSync(path.join(pkgSrc, 'index.js'), 'export default {};\n');
+  fs.writeFileSync(
+    path.join(pkgSrc, 'manifest.json'),
+    JSON.stringify({ id: 'remote-pkg', name: 'Remote', version: '1.0.0', description: 'r', author: 't' })
+  );
+  const zipFile = `${pkgSrc}.zip`;
+  try {
+    execFileSync(tarBin, ['-a', '-cf', zipFile, '-C', path.dirname(pkgSrc), path.basename(pkgSrc)]);
+  } catch {
+    return t.skip('系统 tar 无法创建 zip');
+  }
+  const zipBuf = fs.readFileSync(zipFile);
+  const shasum = createHash('sha256').update(zipBuf).digest('hex');
+  const ghUrl = 'https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/v1.0.0/remote-pkg-1.0.0.zip';
+
+  // 1. downloadZipWithFallback: 第一候选 sha256 错误，第二候选成功
+  const destZip = path.join(dataRoot, 'dl-test.zip');
+  let calls = 0;
+  const dlRes = await downloadZipWithFallback(ghUrl, destZip, shasum, {
+    customMirror: '',
+    fetchImpl: async (url) => {
+      calls++;
+      if (calls === 1) return new Response(Buffer.from('bad-html'), { status: 200 });
+      return new Response(zipBuf, { status: 200, headers: { 'x-used': url } });
+    }
+  });
+  assert.equal(dlRes.ok, true);
+  assert.equal(dlRes.shasum, shasum);
+  assert.ok(dlRes.usedUrl.startsWith('https://ghfast.top/'));
+
+  // 2. resolvePluginSource: 裸 <id> 走 registry 解析并解压
+  const fakeReg = {
+    updated: '2026-10-26T00:00:00Z',
+    plugins: [{ id: 'remote-pkg', version: '1.0.0', url: ghUrl, shasum }]
+  };
+  const resolved = await resolvePluginSource('remote-pkg', {
+    fetchRegistry: async () => fakeReg,
+    customMirror: '',
+    fetchImpl: async () => new Response(zipBuf, { status: 200 })
+  });
+  try {
+    assert.equal(resolved.source, 'registry');
+    assert.equal(resolved.sourceRef, ghUrl);
+    assert.equal(resolved.shasum, shasum);
+    assert.ok(fs.existsSync(path.join(resolved.dir, 'manifest.json')));
+  } finally {
+    resolved.cleanup();
+  }
+
+  // 3. resolvePluginSource: 远端 .zip URL
+  const resolvedZipUrl = await resolvePluginSource(ghUrl, {
+    customMirror: '',
+    fetchImpl: async () => new Response(zipBuf, { status: 200 })
+  });
+  try {
+    assert.equal(resolvedZipUrl.source, 'zip');
+    assert.equal(resolvedZipUrl.sourceRef, ghUrl);
+    assert.equal(resolvedZipUrl.shasum, shasum);
+    assert.ok(fs.existsSync(path.join(resolvedZipUrl.dir, 'index.js')));
+  } finally {
+    resolvedZipUrl.cleanup();
   }
 });

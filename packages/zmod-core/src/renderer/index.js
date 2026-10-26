@@ -10,7 +10,7 @@ import { DataSourceRegistry } from './datasources.js';
 import { registerBuiltinProviders } from './builtin-providers.js';
 import { createSettingsPageIntegration, makeSwitch } from './settings-page.js';
 import { applyPluginChange } from './plugin-bridge.js';
-import { mergeMarketView } from './market-view.js';
+import { mergeMarketView, normalizeInstallUrl } from './market-view.js';
 
 const ZMOD_VERSION = '1.5.0';
 
@@ -1044,20 +1044,10 @@ function main() {
     }
 
     /**
-     * URL 安装输入解析。规则：必须 https://；.git（或 GitHub 仓库页自动补 .git）
-     * → git 来源，.zip 直链 → zip 来源；其余拒绝。
+     * URL 安装输入解析：委托给 market-view.js 的 normalizeInstallUrl。
      */
     _normalizeSourceUrl(raw) {
-      const url = String(raw || '').trim();
-      if (!url) return { error: '请输入安装 URL' };
-      if (!url.startsWith('https://')) return { error: '仅支持 https:// 链接' };
-      const noQuery = url.split(/[?#]/)[0];
-      if (/\.zip$/i.test(noQuery)) return { source: 'zip:' + url };
-      if (/\.git$/i.test(noQuery)) return { source: 'git:' + url };
-      if (/^https:\/\/github\.com\/[^/?#]+\/[^/?#]+\/?$/.test(url)) {
-        return { source: 'git:' + url.replace(/\/+$/, '') + '.git' };
-      }
-      return { error: '仅支持 .git 仓库、.zip 直链或 GitHub 仓库页 URL' };
+      return normalizeInstallUrl(raw);
     }
 
     _buildUrlInstallBox() {
@@ -1222,7 +1212,8 @@ function main() {
     events,
     registry: plugins,
     datasources: dataSourceRegistry,
-    ui
+    ui,
+    zmodVersion: ZMOD_VERSION
   });
 
   const panel = new ManagerPanel(events, plugins, ui);

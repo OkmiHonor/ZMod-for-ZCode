@@ -14,8 +14,14 @@ fs.mkdirSync(dataRoot, { recursive: true });
 fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0-beta' }), 'utf8');
 process.env.ZMOD_USER_DATA_DIR = dataRoot;
 
-const { registerPluginHost, writeBuiltinRecords, PLUGIN_CHANGED_CHANNEL } = await import(
-  '../src/main/plugin-host.js'
+const {
+  registerPluginHost,
+  writeBuiltinRecords,
+  downloadVerifiedFile,
+  PLUGIN_CHANGED_CHANNEL
+} = await import('../src/main/plugin-host.js');
+const { buildDownloadCandidateUrls, GITHUB_RELEASE_MIRRORS } = await import(
+  '../src/common/constants.js'
 );
 const { recordInstalled, readInstalled, getInstalledEntry } = await import(
   '../src/common/installed.js'
@@ -163,7 +169,107 @@ test('listRemote: TTL 内命中缓存，不打网络', async () => {
   const r = await gw.dispatch('plugin.listRemote');
   assert.equal(r.ok, true);
   assert.equal(r.stale, false);
+  assert.equal(r.updated, 'x');
   assert.equal(r.plugins[0].id, 'cached');
+  fs.rmSync(deps.dataDir, { recursive: true, force: true });
+});
+
+test('listRemote: force:true 绕过 TTL 强刷远端并返回 updated 字段', async () => {
+  const { deps } = makeDeps();
+  const cacheDir = path.join(deps.dataDir, 'cache');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(cacheDir, 'registry.json'),
+    JSON.stringify({ fetchedAt: Date.now(), data: { updated: 'old-ts', plugins: [{ id: 'cached' }] } }),
+    'utf8'
+  );
+  const gw = makeGateway();
+  registerPluginHost(gw, {
+    ...deps,
+    fetchImpl: fetchRouter([
+      [
+        REGISTRY_PRIMARY,
+        () => jsonResponse({ updated: '2026-10-26T12:00:00Z', plugins: [{ id: 'fresh-remote' }] })
+      ]
+    ])
+  });
+
+  const r = await gw.dispatch('plugin.listRemote', { force: true });
+  assert.equal(r.ok, true);
+  assert.equal(r.stale, false);
+  assert.equal(r.updated, '2026-10-26T12:00:00Z');
+  assert.equal(r.plugins[0].id, 'fresh-remote');
+  fs.rmSync(deps.dataDir, { recursive: true, force: true });
+});
+
+test('buildDownloadCandidateUrls: GitHub release / raw 展开多镜像，自定义镜像置顶且去重，非 GitHub 原样返回', () => {
+  assert.deepEqual(buildDownloadCandidateUrls('  '), []);
+  assert.deepEqual(
+    buildDownloadCandidateUrls('https://example.com/plugin.zip', ''),
+    ['https://example.com/plugin.zip']
+  );
+
+  const ghRelease = 'https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/v1.0.0/quota-popover-1.0.0.zip';
+  const cands = buildDownloadCandidateUrls(ghRelease, '');
+  assert.equal(cands.length, GITHUB_RELEASE_MIRRORS.length);
+  assert.equal(cands[0], ghRelease);
+  assert.equal(cands[1], `https://ghfast.top/${ghRelease}`);
+  assert.equal(cands[2], `https://gh-proxy.com/${ghRelease}`);
+  assert.equal(cands[3], `https://mirror.ghproxy.com/${ghRelease}`);
+
+  const ghRaw = 'https://raw.githubusercontent.com/OkmiHonor/ZMod-for-ZCode/main/p.zip';
+  const customCands = buildDownloadCandidateUrls(ghRaw, 'https://my-mirror.example.com');
+  assert.equal(customCands[0], `https://my-mirror.example.com/${ghRaw}`);
+  assert.equal(customCands[1], ghRaw);
+
+  // 自定义镜像与内置镜像相同时自动去重
+  const dedupCands = buildDownloadCandidateUrls(ghRelease, 'https://ghfast.top');
+  assert.equal(dedupCands.length, GITHUB_RELEASE_MIRRORS.length);
+  assert.equal(dedupCands[0], `https://ghfast.top/${ghRelease}`);
+});
+
+test('downloadVerifiedFile & plugin.install: GitHub 主源失败或返回伪 200 HTML 时自动回退镜像成功安装', async (t) => {
+  const srcDir = path.join(root, 'fixture-src', 'mirror-plugin');
+  makeFixturePlugin(srcDir, { id: 'mirror-plugin', version: '1.0.0' });
+  const zipBuf = makeZip(srcDir);
+  if (!zipBuf) return t.skip('系统 tar 无法创建 zip');
+  const shasum = sha256(zipBuf);
+
+  const ghUrl = 'https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/v1.0.0/mirror-plugin-1.0.0.zip';
+  const registryJson = {
+    updated: '2026-10-26T00:00:00Z',
+    plugins: [{ id: 'mirror-plugin', version: '1.0.0', url: ghUrl, shasum }]
+  };
+
+  const { deps, broadcasts } = makeDeps();
+  moveDataDirUnderAnchor(deps);
+  const attempted = [];
+  const gw = makeGateway();
+  registerPluginHost(gw, {
+    ...deps,
+    customMirror: '',
+    fetchImpl: async (url) => {
+      if (url.includes('registry.json')) return jsonResponse(registryJson);
+      attempted.push(url);
+      if (url === ghUrl) {
+        throw new Error('connect ETIMEDOUT');
+      }
+      if (url.startsWith('https://ghfast.top/')) {
+        // 模拟镜像返回 200 OK 但内容是 HTML 报错页（sha256 不匹配）
+        return binResponse(Buffer.from('<html>rate limited</html>'));
+      }
+      if (url.startsWith('https://gh-proxy.com/')) {
+        return binResponse(zipBuf);
+      }
+      throw new Error(`unexpected url: ${url}`);
+    }
+  });
+
+  const r = await gw.dispatch('plugin.install', { source: 'registry:mirror-plugin' });
+  assert.deepEqual({ ok: r.ok, id: r.id, version: r.version }, { ok: true, id: 'mirror-plugin', version: '1.0.0' });
+  assert.equal(attempted.length, 3, '依次尝试直连 → ghfast(sha256失败) → gh-proxy(成功)');
+  assert.equal(broadcasts.length, 1);
+  assert.equal(getInstalledEntry(deps.dataDir, 'mirror-plugin').shasum, shasum);
   fs.rmSync(deps.dataDir, { recursive: true, force: true });
 });
 
