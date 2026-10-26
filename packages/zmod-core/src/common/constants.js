@@ -3,6 +3,8 @@
 // 先成功者用；两源都失败时调用方回退本地缓存。
 export const REGISTRY_URLS = [
   'https://raw.githubusercontent.com/OkmiHonor/ZMod-for-ZCode/main/registry.json',
+  'https://github.boki.moe/https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/registry.json',
+  'https://gh-proxy.com/https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/registry.json',
   'https://cdn.jsdelivr.net/gh/OkmiHonor/ZMod-for-ZCode@main/registry.json'
 ];
 
