@@ -8,6 +8,7 @@ import { readInstalled } from '../common/installed.js';
 import { registerPluginHost } from './plugin-host.js';
 import { registerPluginAssetApi } from './plugin-assets.js';
 import { registerBubbleHud } from './bubble-hud.js';
+import { registerWhaleService } from './whale-service.js';
 import { notificationTapStatus } from './notifications.js';
 
 let electron = null;
@@ -266,7 +267,24 @@ class RpcGateway {
       return { success: false, error: 'Invalid URL' };
     });
 
-    // ---- Window host features (acrylic backplate, boss key) ----
+    // ---- Window host features (acrylic backplate, boss key, reload) ----
+    this.register('window.reload', async () => {
+      const win = getMainWindow();
+      if (win && !win.isDestroyed()) {
+        try {
+          if (typeof win.webContents.reloadIgnoringCache === 'function') {
+            win.webContents.reloadIgnoringCache();
+          } else {
+            win.webContents.reload();
+          }
+          return { success: true };
+        } catch (err) {
+          return { success: false, error: String(err?.message || err) };
+        }
+      }
+      return { success: false, error: 'No main window' };
+    });
+
     this.register('window.setMaterial', async ({ material, tint }) => {
       return setWindowMaterial(material, tint);
     });
@@ -383,6 +401,9 @@ class RpcGateway {
     // ---- Bubble HUD (task notification overlay, windows-only; window is
     // created lazily on the first bubble.show, when app is guaranteed ready) ----
     registerBubbleHud(this);
+
+    // ---- Whale widget services (custom skins directory + sqlite model probe) ----
+    registerWhaleService(this);
   }
 
   _toggleMainWindow() {

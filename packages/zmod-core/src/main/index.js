@@ -1,6 +1,7 @@
 import { registerPrivileges, registerProtocolHandler } from './protocol.js';
 import { rpcGateway, installTelemetryTap } from './rpc.js';
 import { installNotificationTap } from './notifications.js';
+import { installWindowShortcuts } from './shortcuts.js';
 import { ensureDirectories } from '../common/paths.js';
 
 let electronApp = null;
@@ -41,6 +42,7 @@ export function bootstrap() {
   whenReady
     .then(() => {
       registerProtocolHandler();
+      installWindowShortcuts();
       // Official telemetry handler registers around app ready; retry once
       // shortly after in case it is not there yet.
       if (!installTelemetryTap()) {

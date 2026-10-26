@@ -1249,6 +1249,20 @@ function main() {
   };
   document.addEventListener('keydown', panelKeys, true);
 
+  const reloadKeys = (e) => {
+    const isCtrl = e.ctrlKey || e.metaKey;
+    const isR = e.key === 'r' || e.key === 'R';
+    const isF5 = e.key === 'F5';
+    if ((isCtrl && isR) || isF5) {
+      e.preventDefault();
+      e.stopPropagation();
+      api.invoke('window.reload', {}).catch(() => {
+        try { location.reload(); } catch {}
+      });
+    }
+  };
+  document.addEventListener('keydown', reloadKeys, true);
+
   const boot = () => {
     console.log(`[ZMod:Renderer] microkernel v${ZMOD_VERSION} loaded (${api.transport})`);
     dataSourceRegistry.load().catch(() => {});

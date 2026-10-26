@@ -148,15 +148,17 @@ export function installV1Compat(ctx) {
     registered.push({ meta, cls });
   }
 
-  /* ---- skins preload-bridge stand-in (degraded) ---- */
-  // v1's preload bridge enumerated a local whale-skins directory and probed
-  // tasks-index.sqlite for per-session models. On v2, skins ship inside the
-  // plugin dir; report them via a generated manifest when present. The model
-  // probe degrades to null (whale falls back to telemetry-based detection).
+  /* ---- skins preload-bridge stand-in ---- */
+  // Queries main process whale.loadSkins (merges data-dir whale-skins/ with
+  // builtin plugin skins) and whale.getModel (probes tasks-index.sqlite).
   async function skinsLoad() {
     try {
-      // Renderer fetch() cannot load zmod-local:// URLs (Fetch API scheme
-      // restriction) — read assets through the main-process RPC instead.
+      const rpcRes = await ctx.invoke('whale.loadSkins', {}).catch(() => null);
+      if (rpcRes && rpcRes.ok && Array.isArray(rpcRes.skins)) {
+        return rpcRes;
+      }
+
+      // Fallback: read builtin assets/skins manifest if RPC is unavailable
       const idx = await ctx.invoke('plugin.readAsset', {
         pluginId: PLUGIN_ID,
         relPath: 'skins/index.json'
@@ -185,10 +187,21 @@ export function installV1Compat(ctx) {
       return { ok: false, reason: String(e?.message || e) };
     }
   }
+
+  async function modelProbe(taskId) {
+    if (!taskId) return null;
+    try {
+      const res = await ctx.invoke('whale.getModel', { taskId });
+      return res && res.ok ? res : null;
+    } catch {
+      return null;
+    }
+  }
+
   window.__zmod_whale_skins__ = {
     load: skinsLoad,
-    getModel: async () => null,
-    probeTalkModel: async () => null
+    getModel: modelProbe,
+    probeTalkModel: modelProbe
   };
   disposables.push(() => {
     try {
