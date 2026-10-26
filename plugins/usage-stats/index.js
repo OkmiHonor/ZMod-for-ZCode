@@ -1,5 +1,6 @@
 import { definePlugin } from '@zmod/sdk';
 import {
+  buildBucketFromRequests,
   ingestTelemetryPayload,
   pickScoped
 } from './lib.js';
@@ -7,11 +8,11 @@ import {
 /**
  * Usage & Token statistics — v2 port of v1 token-monitor (v3.x).
  *
- * 100% self-contained in the plugin (zero core/main-process changes required):
- * - DOM session detection ([data-session-id]) + draft isolation;
- * - Per-talk buckets (byTalk) with isolated per-turn state (turnsById / stepsSeen)
- *   so concurrent background sessions never clobber the active session or
- *   inflate turn counts, and Ctrl+R reloads never double-count message_completion.
+ * Dual-engine session-aware architecture (v1.3.1):
+ * 1. Self-contained per-session telemetry state machine (turnsById / stepsSeen)
+ *    + DOM session detection ([data-session-id]) + draft isolation;
+ * 2. Optional authoritative SQLite calibration (usage.getSessionStats RPC) when
+ *    supported by the host runtime, falling back gracefully on older runtimes.
  */
 
 const STORAGE_KEY = 'zmod_token_stats_v2_2';
@@ -69,7 +70,7 @@ function detectDomTalkId(popEl) {
 export default definePlugin({
   id: 'usage-stats',
   name: 'Token 用量统计',
-  version: '1.3.0',
+  version: '1.3.1',
   description: '非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知，跨会话不串数），费用估算仅 DeepSeek 系模型，余额走数据源系统',
   author: 'ZMod Team',
 
@@ -135,7 +136,57 @@ export default definePlugin({
     };
     syncGlobal();
 
-    // ---- usage ingestion (100% in-plugin, per-session isolated) ----
+    // ---- Optional SQLite authoritative session calibration ----
+    const inflightSync = new Map();
+    const lastSyncAt = new Map();
+    const pendingSyncTimers = new Map();
+
+    const syncTalkFromDb = (talkId) => {
+      const tid = String(talkId || '').trim();
+      if (!tid || tid === 'draft' || typeof ctx.invoke !== 'function') {
+        return Promise.resolve(false);
+      }
+      if (inflightSync.has(tid)) {
+        return inflightSync.get(tid);
+      }
+      const p = (async () => {
+        try {
+          lastSyncAt.set(tid, Date.now());
+          const res = await ctx.invoke('usage.getSessionStats', { sessionId: tid }).catch(() => null);
+          if (!res || !res.ok || !Array.isArray(res.requests)) return false;
+          const bucket = buildBucketFromRequests(tid, res.requests, s.get('enableCost', true));
+          if (res.requests.length > 0 || !state.byTalk[tid]) {
+            state.byTalk[tid] = bucket;
+            if (bucket.lastTurn && String(tid) === String(state.activeTalkId ?? '')) {
+              state.lastTurn = { ...bucket.lastTurn };
+              state.currentModel = bucket.lastTurn.model || state.currentModel;
+            }
+            syncGlobal();
+            return true;
+          }
+          return false;
+        } finally {
+          inflightSync.delete(tid);
+        }
+      })();
+      inflightSync.set(tid, p);
+      return p;
+    };
+
+    const scheduleTalkDbSync = (talkId, delayMs = 250) => {
+      const tid = String(talkId || '').trim();
+      if (!tid || tid === 'draft') return;
+      if (pendingSyncTimers.has(tid)) {
+        clearTimeout(pendingSyncTimers.get(tid));
+      }
+      const timer = setTimeout(() => {
+        pendingSyncTimers.delete(tid);
+        syncTalkFromDb(tid);
+      }, delayMs);
+      pendingSyncTimers.set(tid, timer);
+    };
+
+    // ---- usage ingestion ----
     const ingestTelemetry = (payload) => {
       try {
         if (!payload) return;
@@ -151,6 +202,9 @@ export default definePlugin({
         });
         if (ingested || activeChanged) {
           syncGlobal();
+        }
+        if (payload.talkId && payload.talkId !== 'draft') {
+          scheduleTalkDbSync(payload.talkId, 250);
         }
       } catch {}
     };
@@ -199,8 +253,16 @@ export default definePlugin({
 
     function buildPopoverRows(popEl) {
       const domSid = detectDomTalkId(popEl);
+      let switched = false;
       if (domSid && domSid !== 'draft' && String(domSid) !== String(state.activeTalkId ?? '')) {
         state.activeTalkId = domSid;
+        switched = true;
+      }
+      if (domSid && domSid !== 'draft') {
+        const prevSync = lastSyncAt.get(domSid) || 0;
+        if (switched || !state.byTalk[domSid] || Date.now() - prevSync > 1500) {
+          syncTalkFromDb(domSid);
+        }
       }
 
       const { lt, sess } = pickScoped(state, domSid);
@@ -256,7 +318,9 @@ export default definePlugin({
     cleanup(() => {
       try { delete window.__zmod_token_stats__; } catch {}
       if (persistT) clearTimeout(persistT);
+      for (const t of pendingSyncTimers.values()) clearTimeout(t);
+      pendingSyncTimers.clear();
     });
-    console.log('[usage-stats] ready (v1.3.0; self-contained per-session telemetry)');
+    console.log('[usage-stats] ready (v1.3.1; telemetry + sqlite calibration)');
   }
 });
