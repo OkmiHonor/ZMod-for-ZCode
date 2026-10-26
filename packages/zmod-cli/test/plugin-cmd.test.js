@@ -282,7 +282,7 @@ test('downloadZipWithFallback & resolvePluginSource: 支持裸 plugin-id / regis
   });
   assert.equal(dlRes.ok, true);
   assert.equal(dlRes.shasum, shasum);
-  assert.ok(dlRes.usedUrl.startsWith('https://ghfast.top/'));
+  assert.ok(dlRes.usedUrl.startsWith('https://gh-proxy.com/'));
 
   // 2. resolvePluginSource: 裸 <id> 走 registry 解析并解压
   const fakeReg = {

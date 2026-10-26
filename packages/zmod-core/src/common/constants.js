@@ -11,9 +11,9 @@ export const REGISTRY_URL = REGISTRY_URLS[0];
 
 export const GITHUB_RELEASE_MIRRORS = [
   '',
-  'https://ghfast.top/',
   'https://gh-proxy.com/',
-  'https://mirror.ghproxy.com/'
+  'https://github.boki.moe/',
+  'https://ghproxy.net/'
 ];
 
 let lastWinningMirror = '';

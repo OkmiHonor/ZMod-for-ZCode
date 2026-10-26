@@ -207,6 +207,19 @@ function extractTokenNumbers(d) {
   return { rawCached, cached, input, output, reasoning };
 }
 
+const MAX_SEEN_PER_TALK = 300;
+const MAX_TURNS_PER_TALK = 100;
+
+function trimObjectKeys(obj, maxKeys) {
+  if (!obj || typeof obj !== 'object') return;
+  const keys = Object.keys(obj);
+  if (keys.length <= maxKeys) return;
+  const drop = keys.length - maxKeys;
+  for (let i = 0; i < drop; i++) {
+    delete obj[keys[i]];
+  }
+}
+
 function ensureBucket(state, talkId) {
   state.byTalk = state.byTalk || {};
   let bk = state.byTalk[talkId];
@@ -398,6 +411,8 @@ export function ingestTelemetryPayload(state, payload, opts = {}) {
   bucket.avgRatio = bDenom > 0 ? bucket.hitTokens / bDenom : 0;
   bucket.lastAt = now;
   bucket.lastTurn = { ...turnObj };
+  trimObjectKeys(bucket.stepsSeen, MAX_SEEN_PER_TALK);
+  trimObjectKeys(bucket.turnsById, MAX_TURNS_PER_TALK);
 
   if (
     String(talkId) === String(state.activeTalkId ?? '') ||

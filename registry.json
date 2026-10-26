@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-26T09:58:03.837Z",
+  "updated": "2026-10-26T09:59:41.965Z",
   "plugins": [
     {
       "id": "acrylic-window",
@@ -141,7 +141,7 @@
       "id": "usage-stats",
       "version": "1.3.0",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/usage-stats-1.3.0.zip",
-      "shasum": "f6a8aed010a487b7395a5e0de432139153f27c6a328cb18f7dc90d2d95254d4d",
+      "shasum": "dbee3cbef3adb31c07e0100099bedaa2d93cf9892d2d7b260c1015dc03699861",
       "manifest": {
         "id": "usage-stats",
         "name": "Token 用量统计",

@@ -1,7 +1,7 @@
 {
   "id": "usage-stats",
   "name": "Token 用量统计",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知，跨会话不串数），费用估算仅 DeepSeek 系模型，余额走数据源系统",
   "author": "ZMod Team",
   "engine": {

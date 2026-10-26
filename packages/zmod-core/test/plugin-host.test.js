@@ -213,9 +213,9 @@ test('buildDownloadCandidateUrls: GitHub release / raw 展开多镜像，自定�
   const cands = buildDownloadCandidateUrls(ghRelease, '');
   assert.equal(cands.length, GITHUB_RELEASE_MIRRORS.length);
   assert.equal(cands[0], ghRelease);
-  assert.equal(cands[1], `https://ghfast.top/${ghRelease}`);
-  assert.equal(cands[2], `https://gh-proxy.com/${ghRelease}`);
-  assert.equal(cands[3], `https://mirror.ghproxy.com/${ghRelease}`);
+  assert.equal(cands[1], `https://gh-proxy.com/${ghRelease}`);
+  assert.equal(cands[2], `https://github.boki.moe/${ghRelease}`);
+  assert.equal(cands[3], `https://ghproxy.net/${ghRelease}`);
 
   const ghRaw = 'https://raw.githubusercontent.com/OkmiHonor/ZMod-for-ZCode/main/p.zip';
   const customCands = buildDownloadCandidateUrls(ghRaw, 'https://my-mirror.example.com');
@@ -223,9 +223,9 @@ test('buildDownloadCandidateUrls: GitHub release / raw 展开多镜像，自定�
   assert.equal(customCands[1], ghRaw);
 
   // 自定义镜像与内置镜像相同时自动去重
-  const dedupCands = buildDownloadCandidateUrls(ghRelease, 'https://ghfast.top');
+  const dedupCands = buildDownloadCandidateUrls(ghRelease, 'https://gh-proxy.com');
   assert.equal(dedupCands.length, GITHUB_RELEASE_MIRRORS.length);
-  assert.equal(dedupCands[0], `https://ghfast.top/${ghRelease}`);
+  assert.equal(dedupCands[0], `https://gh-proxy.com/${ghRelease}`);
 });
 
 test('downloadVerifiedFile & plugin.install: GitHub 主源失败或返回伪 200 HTML 时自动回退镜像成功安装', async (t) => {
@@ -254,11 +254,11 @@ test('downloadVerifiedFile & plugin.install: GitHub 主源失败或返回伪 200
       if (url === ghUrl) {
         throw new Error('connect ETIMEDOUT');
       }
-      if (url.startsWith('https://ghfast.top/')) {
+      if (url.startsWith('https://gh-proxy.com/')) {
         // 模拟镜像返回 200 OK 但内容是 HTML 报错页（sha256 不匹配）
         return binResponse(Buffer.from('<html>rate limited</html>'));
       }
-      if (url.startsWith('https://gh-proxy.com/')) {
+      if (url.startsWith('https://github.boki.moe/')) {
         return binResponse(zipBuf);
       }
       throw new Error(`unexpected url: ${url}`);
@@ -267,7 +267,7 @@ test('downloadVerifiedFile & plugin.install: GitHub 主源失败或返回伪 200
 
   const r = await gw.dispatch('plugin.install', { source: 'registry:mirror-plugin' });
   assert.deepEqual({ ok: r.ok, id: r.id, version: r.version }, { ok: true, id: 'mirror-plugin', version: '1.0.0' });
-  assert.equal(attempted.length, 3, '依次尝试直连 → ghfast(sha256失败) → gh-proxy(成功)');
+  assert.equal(attempted.length, 3, '依次尝试直连 → gh-proxy(sha256失败) → boki.moe(成功)');
   assert.equal(broadcasts.length, 1);
   assert.equal(getInstalledEntry(deps.dataDir, 'mirror-plugin').shasum, shasum);
   fs.rmSync(deps.dataDir, { recursive: true, force: true });

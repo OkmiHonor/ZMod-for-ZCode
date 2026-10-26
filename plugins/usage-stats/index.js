@@ -1,6 +1,5 @@
 import { definePlugin } from '@zmod/sdk';
 import {
-  buildBucketFromRequests,
   ingestTelemetryPayload,
   pickScoped
 } from './lib.js';
@@ -8,15 +7,11 @@ import {
 /**
  * Usage & Token statistics — v2 port of v1 token-monitor (v3.x).
  *
- * Non-invasive telemetry interception + authoritative SQLite calibration
- * (usage.getSessionStats). Maintains the same global contract
- * window.__zmod_token_stats__ that v1 exposed, so future ports (whale widget)
- * can consume it unchanged.
- *
- * Session-aware (v1.3.0):
+ * 100% self-contained in the plugin (zero core/main-process changes required):
  * - DOM session detection ([data-session-id]) + draft isolation;
- * - Per-talk buckets (byTalk) with per-turn deduplication (turnsById / stepsSeen);
- * - Authoritative calibration against ~/.zcode/cli/db/db.sqlite model_usage.
+ * - Per-talk buckets (byTalk) with isolated per-turn state (turnsById / stepsSeen)
+ *   so concurrent background sessions never clobber the active session or
+ *   inflate turn counts, and Ctrl+R reloads never double-count message_completion.
  */
 
 const STORAGE_KEY = 'zmod_token_stats_v2_2';
@@ -140,57 +135,7 @@ export default definePlugin({
     };
     syncGlobal();
 
-    // ---- SQLite authoritative session calibration ----
-    const inflightSync = new Map();
-    const lastSyncAt = new Map();
-    const pendingSyncTimers = new Map();
-
-    const syncTalkFromDb = (talkId) => {
-      const tid = String(talkId || '').trim();
-      if (!tid || tid === 'draft' || typeof ctx.invoke !== 'function') {
-        return Promise.resolve(false);
-      }
-      if (inflightSync.has(tid)) {
-        return inflightSync.get(tid);
-      }
-      const p = (async () => {
-        try {
-          lastSyncAt.set(tid, Date.now());
-          const res = await ctx.invoke('usage.getSessionStats', { sessionId: tid }).catch(() => null);
-          if (!res || !res.ok || !Array.isArray(res.requests)) return false;
-          const bucket = buildBucketFromRequests(tid, res.requests, s.get('enableCost', true));
-          if (res.requests.length > 0 || !state.byTalk[tid]) {
-            state.byTalk[tid] = bucket;
-            if (bucket.lastTurn && String(tid) === String(state.activeTalkId ?? '')) {
-              state.lastTurn = { ...bucket.lastTurn };
-              state.currentModel = bucket.lastTurn.model || state.currentModel;
-            }
-            syncGlobal();
-            return true;
-          }
-          return false;
-        } finally {
-          inflightSync.delete(tid);
-        }
-      })();
-      inflightSync.set(tid, p);
-      return p;
-    };
-
-    const scheduleTalkDbSync = (talkId, delayMs = 250) => {
-      const tid = String(talkId || '').trim();
-      if (!tid || tid === 'draft') return;
-      if (pendingSyncTimers.has(tid)) {
-        clearTimeout(pendingSyncTimers.get(tid));
-      }
-      const timer = setTimeout(() => {
-        pendingSyncTimers.delete(tid);
-        syncTalkFromDb(tid);
-      }, delayMs);
-      pendingSyncTimers.set(tid, timer);
-    };
-
-    // ---- usage ingestion ----
+    // ---- usage ingestion (100% in-plugin, per-session isolated) ----
     const ingestTelemetry = (payload) => {
       try {
         if (!payload) return;
@@ -206,9 +151,6 @@ export default definePlugin({
         });
         if (ingested || activeChanged) {
           syncGlobal();
-        }
-        if (payload.talkId && payload.talkId !== 'draft') {
-          scheduleTalkDbSync(payload.talkId, 250);
         }
       } catch {}
     };
@@ -257,16 +199,8 @@ export default definePlugin({
 
     function buildPopoverRows(popEl) {
       const domSid = detectDomTalkId(popEl);
-      let switched = false;
       if (domSid && domSid !== 'draft' && String(domSid) !== String(state.activeTalkId ?? '')) {
         state.activeTalkId = domSid;
-        switched = true;
-      }
-      if (domSid && domSid !== 'draft') {
-        const prevSync = lastSyncAt.get(domSid) || 0;
-        if (switched || !state.byTalk[domSid] || Date.now() - prevSync > 1500) {
-          syncTalkFromDb(domSid);
-        }
       }
 
       const { lt, sess } = pickScoped(state, domSid);
@@ -322,9 +256,7 @@ export default definePlugin({
     cleanup(() => {
       try { delete window.__zmod_token_stats__; } catch {}
       if (persistT) clearTimeout(persistT);
-      for (const t of pendingSyncTimers.values()) clearTimeout(t);
-      pendingSyncTimers.clear();
     });
-    console.log('[usage-stats] ready (v1.3.0; telemetry + sqlite calibration)');
+    console.log('[usage-stats] ready (v1.3.0; self-contained per-session telemetry)');
   }
 });
