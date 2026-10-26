@@ -103,6 +103,9 @@ Provider（类型适配器，基座/插件注册）    Instance（用户实例�
 
 ## 🛠️ 插件开发（1 分钟上手）
 
+> 💡 **必读权威标准**：为确保视觉 1:1 原生对齐并杜绝重复逆向，请遵循 [**插件开发标准规范与四类实现范式 (A/B/C/D)**](./docs/plugin-development-standards.md)。
+> 操作走查参见 [plugin-author-guide.md](./docs/plugin-author-guide.md)，清单规则见 [plugin-spec.md](./docs/plugin-spec.md)。
+
 在 `plugins/my-mod/index.js` 写一个 ESModule，无需任何构建步骤：
 
 ```javascript

@@ -1,6 +1,8 @@
 # ZMod 插件开发指南（从 init 到发布）
 
-> 规范细节（manifest 字段 / 权限 / engine / 安装机制）见 [plugin-spec.md](./plugin-spec.md)。本文是操作走查。
+> **权威标准**：
+> - 插件 UI 统一设计规范与四大实现范式（A/B/C/D）见 [plugin-development-standards.md](./plugin-development-standards.md)；
+> - 清单细节（manifest 字段 / 权限 / engine / 安装机制）见 [plugin-spec.md](./plugin-spec.md)。本文是操作走查。
 
 ## 0. 一分钟总览
 
