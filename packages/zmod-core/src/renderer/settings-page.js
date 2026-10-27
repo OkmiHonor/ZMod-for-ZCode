@@ -364,8 +364,6 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   let nativeAttempts = 0;
   let nativeReg = null; // { value, intl, sections, undo }
   let nativeMount = null;
-  let nativeCrumb = null;
-  let nativeCrumbKey = null;
   let nativeRendered = null; // { itemId, detailKey } — what the mount currently shows
   let nativeObserver = null;
   let intentNative = null; // section id left selected when the dialog was last closed
@@ -588,10 +586,9 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   }
 
   /**
-   * The 48px strip above the content column. Official top-level sections show
-   * nothing there; drilled-in views show the breadcrumb. It stays a system
-   * drag region, like the host's own row, and only the interactive crumb
-   * opts out of it.
+   * The 48px strip above the content column. Official drilled-in views show a
+   * breadcrumb there; ZMod keeps both levels on the big in-column title
+   * instead, so this row stays a bare system drag region.
    */
   function topStrip() {
     const row = document.createElement('div');
@@ -601,51 +598,43 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     const holder = document.createElement('div');
     holder.className = 'min-w-0 flex-1';
     row.appendChild(holder);
-    if (detail) holder.appendChild(crumbEl());
     return row;
   }
 
-  /** Official breadcrumb markup, reduced to the ZMod hierarchy. */
-  function crumbEl() {
+  /**
+   * Title-level breadcrumb: same in-column spot and official h2 sizing as the
+   * first-level title, with the parent segment acting as the way back. Shared
+   * by overlay and native mode.
+   */
+  function detailTitleBlock() {
     const item = NAV_ITEMS.find((i) => i.id === activeItem);
-    const nav = document.createElement('nav');
-    nav.className = 'pointer-events-none flex h-full min-w-0 items-center overflow-hidden px-2.5';
-    nav.setAttribute('data-zmod-crumb', 'true');
-    const ol = document.createElement('ol');
-    ol.className = 'flex min-w-0 items-center gap-0 overflow-hidden text-ui-base/relaxed';
-
-    const li1 = document.createElement('li');
-    li1.className = 'flex min-w-0 items-center';
+    const wrap = document.createElement('div');
+    wrap.className = 'flex flex-wrap items-center justify-between gap-3';
+    const h2 = document.createElement('h2');
+    h2.className =
+      'flex min-w-0 flex-wrap items-center gap-2 text-ui-settings-title font-semibold tracking-tight text-foreground lg:text-ui-settings-title-lg';
     const back = document.createElement('button');
     back.type = 'button';
     back.className =
-      'pointer-events-auto min-w-0 shrink cursor-pointer text-foreground-subtle transition-colors hover:text-foreground';
-    back.style.cssText = '-webkit-app-region:no-drag;';
+      'min-w-0 shrink cursor-pointer truncate text-foreground-subtle transition-colors hover:text-foreground';
     back.textContent = `ZMod · ${item?.label || ''}`;
     back.addEventListener('click', () => {
       detail = null;
       renderContent();
     });
-    li1.appendChild(back);
-    ol.appendChild(li1);
-
-    const sep = document.createElement('li');
+    h2.appendChild(back);
+    const sep = document.createElement('span');
     sep.setAttribute('aria-hidden', 'true');
-    sep.className = 'flex items-center';
-    sep.innerHTML = `<span class="text-foreground-subtlest">${iconHtml('chevronRight', 'size-3.5')}</span>`;
-    ol.appendChild(sep);
-
-    const li2 = document.createElement('li');
-    li2.className = 'flex min-w-0 items-center px-2';
+    sep.className = 'flex items-center text-foreground-subtlest';
+    sep.innerHTML = iconHtml('chevronRight', 'size-5');
+    h2.appendChild(sep);
     const cur = document.createElement('span');
     cur.setAttribute('aria-current', 'page');
     cur.className = 'truncate text-foreground';
     cur.textContent = detail?.title || '';
-    li2.appendChild(cur);
-    ol.appendChild(li2);
-
-    nav.appendChild(ol);
-    return nav;
+    h2.appendChild(cur);
+    wrap.appendChild(h2);
+    return wrap;
   }
 
   /* ------------------------------------------------------------ *
@@ -664,7 +653,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     scroll.className = 'flex min-h-0 flex-1 flex-col overflow-y-auto [scrollbar-gutter:stable]';
     const col = contentColumn();
     const item = NAV_ITEMS.find((i) => i.id === activeItem);
-    if (!detail) col.appendChild(pageTitleBlock(item?.label || ''));
+    col.appendChild(detail ? detailTitleBlock() : pageTitleBlock(item?.label || ''));
     const body = contentList();
     col.appendChild(body);
     scroll.appendChild(col);
@@ -948,14 +937,6 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     return body;
   }
 
-  /** Official breadcrumb holder: frame > column > h-12 row > drag holder. */
-  function nativeCrumbHolder() {
-    const main = document.querySelector('[data-settings-panel-frame] main');
-    const row = main?.parentElement?.firstElementChild;
-    if (!row || !String(row.className || '').includes('h-12')) return null;
-    return row.firstElementChild || null;
-  }
-
   function detailKey() {
     if (!detail) return '';
     return `${detail.kind}:${detail.id || detail.editing || ''}:${detail.title || ''}`;
@@ -983,42 +964,27 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     }
     if (!ensureNativeMount()) return;
     ensureNativeMessages();
-    syncNativeCrumb();
     if (nativeRendered?.itemId !== activeItem || nativeRendered?.detailKey !== detailKey()) renderNative();
-  }
-
-  function syncNativeCrumb() {
-    const key = detail ? detailKey() : '';
-    // Rebuild only on change: scan() runs on every DOM mutation, and rebuilding
-    // unconditionally would feed itself through the observer.
-    if (nativeCrumbKey === key && (!key || nativeCrumb?.isConnected)) return;
-    nativeCrumb?.remove();
-    nativeCrumb = null;
-    nativeCrumbKey = key;
-    if (!key) return;
-    const holder = nativeCrumbHolder();
-    if (!holder) return;
-    nativeCrumb = crumbEl();
-    nativeCrumb.setAttribute('data-zmod-native-crumb', 'true');
-    holder.appendChild(nativeCrumb);
   }
 
   function renderNative() {
     if (!ensureNativeMount()) return;
     nativeMount.innerHTML = '';
+    if (detail) {
+      nativeMount.setAttribute('data-zmod-native-title', 'true');
+      nativeMount.appendChild(detailTitleBlock());
+    } else {
+      nativeMount.removeAttribute('data-zmod-native-title');
+    }
     const body = contentList();
     nativeMount.appendChild(body);
     renderPage(body);
-    syncNativeCrumb();
     nativeRendered = { itemId: activeItem, detailKey: detailKey() };
   }
 
   function teardownNativeDom() {
     nativeMount?.remove();
     nativeMount = null;
-    nativeCrumb?.remove();
-    nativeCrumb = null;
-    nativeCrumbKey = null;
     nativeRendered = null;
   }
 
@@ -2186,9 +2152,10 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     //     so neutralise its highlight: official active styling is nothing but
     //     the button background (label and icon keep text-foreground either
     //     way), which keeps exactly one item reading as selected.
-    //  3. native mode drilled into a sub-page: the host shows a page title for
-    //     single-level sections, official drilled-in views show a breadcrumb
-    //     instead — match the host's own rule.
+    //  3. native mode drilled into a sub-page: the official header block would
+    //     show the section title, which is wrong for a sub-page. Hide the whole
+    //     block — a leftover empty flex child would still add a gap-8 offset —
+    //     and let the ZMod title breadcrumb take its exact place inside our mount.
     if (!document.getElementById('zmod-settings-overlay-style')) {
       const st = document.createElement('style');
       st.id = 'zmod-settings-overlay-style';
@@ -2197,7 +2164,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
         '.zmod-spin{animation:zmod-spin 0.8s linear infinite}',
         '[data-settings-panel-frame]:has(> [data-zmod-settings-overlay]) main{visibility:hidden !important}',
         '[data-active-section]:has([data-zmod-settings-overlay]) nav [data-settings-section-nav][aria-current="page"]{background-color:transparent !important}',
-        '[data-settings-panel-frame]:has([data-zmod-native-crumb]) main h2{display:none !important}'
+        '[data-settings-panel-frame]:has([data-zmod-native-title]) main > div > div:first-child{display:none !important}'
       ].join('\n');
       document.head.appendChild(st);
     }
