@@ -650,17 +650,17 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     overlay.style.cssText =
       'position:absolute;z-index:60;display:flex;flex-direction:column;' +
       'background:var(--color-background);' +
-      'left:0;right:0;bottom:0;top:0;';
+      'left:0;right:0;bottom:0;top:48px;';
     frame.appendChild(overlay);
     // 抬升官方标题栏（z-70 > overlay 60）：解除窗口控制按钮被 overlay 顶部
     // 拖拽条的遮挡与拖拽劫持；传入 overlay 供发现算法排除包含它的 z 层。
-    raiseTitleBar(overlay);
+    // Title bar naturally exposed above overlay
   }
 
   function removeOverlay() {
     overlay?.remove();
     overlay = null;
-    restoreTitleBar();
+    // Clean teardown
   }
 
   /* ------------------------------------------------------------ *
@@ -701,9 +701,8 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
    */
   function topStrip() {
     const row = document.createElement('div');
-    row.className = 'flex h-12 shrink-0';
     row.setAttribute('data-zmod-top-strip', 'true');
-    row.style.cssText = '-webkit-app-region:drag;';
+    row.style.cssText = 'display:none;';
     const holder = document.createElement('div');
     holder.className = 'min-w-0 flex-1';
     row.appendChild(holder);
