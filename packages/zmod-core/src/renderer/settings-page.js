@@ -260,6 +260,109 @@ export function makeSwitch(checked, onChange, toast) {
   return btn;
 }
 
+/* ------------------------------------------------------------------ *
+ * 官方标题栏 z-index 提升（overlay 模式专用）
+ *
+ * overlay 挂在 [data-settings-panel-frame] 内，而该 frame 几乎从窗口
+ * 顶部铺起：overlay 顶部 48px 拖拽条（-webkit-app-region:drag）会盖住
+ * 宿主自绘标题栏的窗口控制按钮（最小化/最大化/关闭），elementFromPoint
+ * 全部命中拖拽条，物理点击被拖拽劫持/被浮层吸收。
+ *
+ * 挂载期间把标题栏抬到 z-70（高于 overlay 的 60），hit-test 重新命中
+ * 官方按钮容器，遮挡与拖拽劫持同时解除；overlay 销毁时还原记录的原
+ * inline 值（为空则移除该属性，让类名原值浮出）。
+ *
+ * 抬升目标可能不止一个（两组按钮 DOM 未必同根），发现规则：
+ *  1) 优先取最外层「带 z-index 且不包含 overlay」的定位祖先——真机形态
+ *     是 fixed z-10 根容器罩住两组按钮；若某 z 层祖先包含 overlay（如
+ *     demo 宿主的全窗口 z-10 工作区层把设置 frame 也包了进去），抬它
+ *     等于把 overlay 一起抬走，必须跳过；
+ *  2) 没有带 z 的定位祖先时退回最近的定位祖先（demo 宿主形态：常规组
+ *     挂在 relative z-auto 的工作区 HEADER 上，relative + inline z-70
+ *     同样形成高于 overlay 的 stacking context）。
+ *
+ * 状态机：模块级保存当前提升记录——重复挂载对已记录容器只重申 70、不
+ * 改写记录的原值；还原恰好一次、还原到记录值。全程 try-catch，绝不抛
+ * 错阻断 overlay 渲染。原生模式不触发提升。
+ * ------------------------------------------------------------------ */
+const TITLEBAR_BUTTON_LABELS = ['最小化窗口', '最大化或还原窗口', '关闭窗口'];
+const TITLEBAR_Z_RAISED = '70';
+let titleBarRaise = []; // [{ container, original }] — 空数组表示未处于提升态
+
+/**
+ * 官方标题栏抬升目标集合：对每个窗口控制按钮向上爬定位祖先，按上述
+ * 规则选出目标并去重。overlay 传入当前浮层元素（可为 null，供离线单测）。
+ */
+export function findTitleBarContainers(overlay = null) {
+  const btns = new Set();
+  for (const label of TITLEBAR_BUTTON_LABELS) {
+    for (const b of document.querySelectorAll(`button[aria-label="${label}"]`)) btns.add(b);
+  }
+  const blocked = (el) => Boolean(overlay && el.contains(overlay));
+  const stop = (el) => !el || el === document.body || el === document.documentElement;
+  const targets = [];
+  const seen = new Set();
+  for (const btn of btns) {
+    // 定位祖先，近 → 远
+    const positioned = [];
+    for (let node = btn.parentElement; !stop(node); node = node.parentElement) {
+      const pos = getComputedStyle(node).position;
+      if (pos === 'fixed' || pos === 'absolute' || pos === 'relative') positioned.push(node);
+    }
+    // 最外层「带 z-index 且不包含 overlay」的定位祖先
+    let target = null;
+    for (let i = positioned.length - 1; i >= 0; i--) {
+      const n = positioned[i];
+      if (getComputedStyle(n).zIndex !== 'auto' && !blocked(n)) {
+        target = n;
+        break;
+      }
+    }
+    // 兜底：最近的定位祖先（relative z-auto 容器抬到 70 同样压过 overlay）
+    if (!target) target = positioned.find((n) => !blocked(n)) || null;
+    if (target && !seen.has(target)) {
+      seen.add(target);
+      targets.push(target);
+    }
+  }
+  return targets;
+}
+
+/** 提升（幂等）：已记录且仍在 DOM 的容器只重申 70；其余目标按新 DOM 补记。 */
+export function raiseTitleBar(overlay = null) {
+  try {
+    const kept = [];
+    for (const rec of titleBarRaise) {
+      if (rec.container?.isConnected) {
+        rec.container.style.zIndex = TITLEBAR_Z_RAISED;
+        kept.push(rec);
+      }
+    }
+    const known = new Set(kept.map((r) => r.container));
+    for (const container of findTitleBarContainers(overlay)) {
+      if (known.has(container)) continue;
+      const original = container.style.zIndex ?? ''; // 原生 inline 值，可能为空串
+      container.style.zIndex = TITLEBAR_Z_RAISED;
+      kept.push({ container, original });
+    }
+    titleBarRaise = kept;
+  } catch {}
+}
+
+/** 还原（幂等）：逐条还原到记录值一次；容器已不在 DOM 时无需还原。 */
+export function restoreTitleBar() {
+  const recs = titleBarRaise;
+  titleBarRaise = [];
+  for (const rec of recs) {
+    try {
+      if (rec.container?.isConnected) {
+        if (rec.original) rec.container.style.zIndex = rec.original;
+        else rec.container.style.removeProperty('z-index');
+      }
+    } catch {}
+  }
+}
+
 export function createSettingsPageIntegration({ api, events, registry, datasources, ui, zmodVersion }) {
   let observer = null;
   let dialogOpen = false;
@@ -430,6 +533,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
 
   function closeDialog() {
     dialogOpen = false;
+    pendingForceRefresh.clear();
     nativeObserver?.disconnect();
     nativeObserver = null;
     teardownNativeDom();
@@ -514,6 +618,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   function deactivate() {
     activeItem = null;
     detail = null;
+    pendingForceRefresh.clear();
     for (const item of NAV_ITEMS) {
       const btn = groupEl?.querySelector(`[data-zmod-nav-item="${item.id}"]`);
       if (btn) {
@@ -547,11 +652,15 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       'background:var(--color-background);' +
       'left:0;right:0;bottom:0;top:0;';
     frame.appendChild(overlay);
+    // 抬升官方标题栏（z-70 > overlay 60）：解除窗口控制按钮被 overlay 顶部
+    // 拖拽条的遮挡与拖拽劫持；传入 overlay 供发现算法排除包含它的 z 层。
+    raiseTitleBar(overlay);
   }
 
   function removeOverlay() {
     overlay?.remove();
     overlay = null;
+    restoreTitleBar();
   }
 
   /* ------------------------------------------------------------ *
@@ -1832,7 +1941,8 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     btn.className =
       'inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-foreground-subtle transition-colors hover:bg-surface-hover hover:text-foreground';
     btn.innerHTML = iconHtml(icon, 'size-4');
-    btn.addEventListener('click', onClick);
+    // onClick 收到按钮本体，便于调用方做忙碌态（spinner/disabled）切换
+    btn.addEventListener('click', () => onClick(btn));
     return btn;
   }
 
@@ -1842,6 +1952,11 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     'bg-primary text-primary-foreground hover:bg-primary/80 h-7 gap-1 px-2 text-ui-base rounded-lg';
 
   /* ---------------- datasources page ---------------- */
+  // 「重新检测」意图：对下一轮卡片渲染中的这些实例跳过静默水合、直接走
+  // force 刷新（带忙碌反馈）。整页重绘是异步的，用集合跨调用传递意图；
+  // 离开数据源视图 / 关闭设置页时丢弃，避免标记泄漏到无关的后续渲染。
+  const pendingForceRefresh = new Set();
+
   async function renderDatasourcesPage(root) {
     if (detail?.kind === 'ds-edit') {
       renderDatasourceEditor(root, detail);
@@ -1904,7 +2019,12 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     const title = document.createElement('div');
     title.className = 'mt-4 flex items-center justify-between';
     title.innerHTML = '<h3 class="text-ui-sm font-medium text-foreground-subtle">检测到的账号</h3>';
-    title.appendChild(textButton('重新检测', 'refresh', () => renderContent()));
+    title.appendChild(textButton('重新检测', 'refresh', () => {
+      const instances = datasources.getInstances();
+      for (const inst of instances) pendingForceRefresh.add(inst.id);
+      ui.showToast(`正在重新检测 ${instances.length} 个数据源…`, 'info');
+      renderContent(); // 重绘时每张卡按标记各自 force 刷新并呈现忙碌反馈
+    }));
     root.appendChild(title);
 
     for (const p of proposals) {
@@ -1986,9 +2106,10 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     // firstElementChild, not firstChild: the innerHTML template starts with a
     // newline, so firstChild would be a text node (no appendChild).
     card.firstElementChild.appendChild(toolbar);
-    toolbar.appendChild(iconButton('refresh', '刷新状态', async () => {
-      await refreshStatusInto(inst.id, card, { force: true });
-    }));
+    const refreshBtn = iconButton('refresh', '刷新状态', async () => {
+      await refreshStatusInto(inst.id, card, { force: true, button: refreshBtn });
+    });
+    toolbar.appendChild(refreshBtn);
     toolbar.appendChild(iconButton('pencil', '编辑', () => {
       detail = { kind: 'ds-edit', editing: inst.id, title: `编辑 ${inst.name}` };
       renderContent();
@@ -2002,33 +2123,72 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     statusBox.setAttribute('data-zmod-ds-status', inst.id);
     statusBox.innerHTML = '<div class="text-foreground-subtle">未刷新</div>';
     card.appendChild(statusBox);
-    // hydrate from cache (no forced network on render)
-    refreshStatusInto(inst.id, card, { force: false });
+    // hydrate from cache (no forced network on render)；「重新检测」标记的实例
+    // 跳过静默水合、直接 force 刷新——避免缓存回包晚于强刷回包覆盖新数据
+    if (!pendingForceRefresh.delete(inst.id)) {
+      refreshStatusInto(inst.id, card, { force: false });
+    } else {
+      refreshStatusInto(inst.id, card, { force: true, button: refreshBtn });
+    }
     return card;
   }
 
-  async function refreshStatusInto(id, card, { force }) {
+  /**
+   * 把实例状态写入卡片状态框。传入 button（手动刷新）时全程给出忙碌反馈：
+   * 按钮 spinner+disabled、状态框「正在获取最新状态…」占位，结束时恢复按钮
+   * （finally 保证任何分支不卡死）并按结果 toast；渲染水合（无 button）保持
+   * 静默，不弹 toast。
+   */
+  async function refreshStatusInto(id, card, { force, button } = {}) {
     const box = card.querySelector(`[data-zmod-ds-status="${id}"]`);
     if (!box) return;
-    const status = await datasources.getStatus(id, { force });
-    if (!status) return;
-    if (!status.ok) {
-      box.innerHTML = `<div class="text-ui-sm text-foreground-subtle">查询失败：${esc(status.message || '未知错误')}</div>`;
-      return;
+    const busy = Boolean(button);
+    let btnHtml = '';
+    if (busy) {
+      btnHtml = button.innerHTML;
+      button.disabled = true;
+      button.innerHTML = iconHtml('spinner', 'size-3.5 zmod-spin');
+      box.innerHTML =
+        `<div class="flex items-center gap-2 text-foreground-subtle">` +
+        `<span class="text-primary">${iconHtml('spinner', 'size-3.5 zmod-spin')}</span>` +
+        `<span>正在获取最新状态…</span></div>`;
     }
-    const rows = (status.rows || []).map(
-      (r) =>
-        `<div class="flex items-baseline justify-between gap-4"><span class="text-foreground-subtle">${esc(r.label)}</span><span class="font-medium text-foreground">${esc(r.value)}${r.hint ? ` <span class="text-ui-xs font-normal text-foreground-subtle">${esc(r.hint)}</span>` : ''}</span></div>`
-    );
-    if (status.balance) {
-      rows.unshift(
-        `<div class="flex items-baseline justify-between gap-4"><span class="text-foreground-subtle">余额</span><span class="text-ui-base font-semibold text-foreground">${esc(status.balance)}${status.currency ? ` ${esc(status.currency)}` : ''}</span></div>`
+    try {
+      const status = await datasources
+        .getStatus(id, { force })
+        .catch((err) => ({ ok: false, message: err?.message || String(err) }));
+      if (!status) {
+        if (busy) {
+          box.innerHTML = '<div class="text-foreground-subtle">查询失败：数据源未返回状态</div>';
+          ui.showToast('查询失败：数据源未返回状态', 'error');
+        }
+        return;
+      }
+      if (!status.ok) {
+        box.innerHTML = `<div class="text-ui-sm text-foreground-subtle">查询失败：${esc(status.message || '未知错误')}</div>`;
+        if (busy) ui.showToast(`查询失败：${status.message || '未知错误'}`, 'error');
+        return;
+      }
+      const rows = (status.rows || []).map(
+        (r) =>
+          `<div class="flex items-baseline justify-between gap-4"><span class="text-foreground-subtle">${esc(r.label)}</span><span class="font-medium text-foreground">${esc(r.value)}${r.hint ? ` <span class="text-ui-xs font-normal text-foreground-subtle">${esc(r.hint)}</span>` : ''}</span></div>`
       );
+      if (status.balance) {
+        rows.unshift(
+          `<div class="flex items-baseline justify-between gap-4"><span class="text-foreground-subtle">余额</span><span class="text-ui-base font-semibold text-foreground">${esc(status.balance)}${status.currency ? ` ${esc(status.currency)}` : ''}</span></div>`
+        );
+      }
+      const time = new Date(status.ts).toLocaleTimeString();
+      box.innerHTML =
+        (rows.length ? rows.join('') : `<div class="text-foreground-subtle">${esc(status.message || '无数据')}</div>`) +
+        `<div class="text-ui-xs text-foreground-subtle/70">更新于 ${esc(time)}</div>`;
+      if (busy) ui.showToast('状态已刷新', 'success');
+    } finally {
+      if (busy) {
+        button.disabled = false;
+        button.innerHTML = btnHtml;
+      }
     }
-    const time = new Date(status.ts).toLocaleTimeString();
-    box.innerHTML =
-      (rows.length ? rows.join('') : `<div class="text-foreground-subtle">${esc(status.message || '无数据')}</div>`) +
-      `<div class="text-ui-xs text-foreground-subtle/70">更新于 ${esc(time)}</div>`;
   }
 
   async function renderDatasourceEditor(root) {
