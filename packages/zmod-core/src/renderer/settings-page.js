@@ -2168,10 +2168,45 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
         if (busy) ui.showToast(`查询失败：${status.message || '未知错误'}`, 'error');
         return;
       }
-      const rows = (status.rows || []).map(
-        (r) =>
-          `<div class="flex items-baseline justify-between gap-4"><span class="text-foreground-subtle">${esc(r.label)}</span><span class="font-medium text-foreground">${esc(r.value)}${r.hint ? ` <span class="text-ui-xs font-normal text-foreground-subtle">${esc(r.hint)}</span>` : ''}</span></div>`
-      );
+      const renderRow = (r) => {
+        const valStr = String(r.value || '');
+        // 匹配百分比（如 "82.5%", "75% 剩余", "34.0% 剩余 · 10月29日重置"）
+        const pctMatch = /(\d+(?:\.\d+)?)\s*%/.exec(valStr);
+        if (pctMatch) {
+          const pct = Math.min(100, Math.max(0, parseFloat(pctMatch[1])));
+          const barCls = pct > 50 ? 'zmod-bar-healthy' : pct >= 20 ? 'zmod-bar-warning' : 'zmod-bar-danger';
+          const txtColor = pct > 50 ? 'text-foreground' : pct >= 20 ? 'text-amber-400' : 'text-rose-400';
+          
+          // 提取额外提示（如重置时间）
+          let extra = '';
+          if (valStr.includes('·')) {
+            extra = valStr.split('·').slice(1).join('·').trim();
+          } else if (r.hint) {
+            extra = r.hint;
+          }
+
+          return `
+            <div class="flex flex-col gap-1.5 py-1">
+              <div class="flex items-center justify-between text-ui-sm">
+                <span class="text-foreground-subtle font-medium">${esc(r.label)}</span>
+                <div class="flex items-center gap-1.5">
+                  <span class="font-semibold ${txtColor}">${pct.toFixed(1)}%</span>
+                  ${valStr.includes('剩余') ? '<span class="text-ui-xs text-foreground-subtle/80">剩余</span>' : ''}
+                </div>
+              </div>
+              <div class="zmod-progress-track">
+                <div class="zmod-progress-bar ${barCls}" style="width: ${pct}%;"></div>
+              </div>
+              ${extra ? `<div class="text-[11px] text-foreground-subtle/70 flex justify-between"><span>${esc(extra)}</span></div>` : ''}
+            </div>
+          `;
+        }
+
+        // 普通键值行
+        return `<div class="flex items-baseline justify-between gap-4"><span class="text-foreground-subtle">${esc(r.label)}</span><span class="font-medium text-foreground">${esc(r.value)}${r.hint ? ` <span class="text-ui-xs font-normal text-foreground-subtle">${esc(r.hint)}</span>` : ''}</span></div>`;
+      };
+
+      const rows = (status.rows || []).map(renderRow);
       if (status.balance) {
         rows.unshift(
           `<div class="flex items-baseline justify-between gap-4"><span class="text-foreground-subtle">余额</span><span class="text-ui-base font-semibold text-foreground">${esc(status.balance)}${status.currency ? ` ${esc(status.currency)}` : ''}</span></div>`
@@ -2321,6 +2356,11 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       st.textContent = [
         '@keyframes zmod-spin{to{transform:rotate(360deg)}}',
         '.zmod-spin{animation:zmod-spin 0.8s linear infinite}',
+        '.zmod-progress-track{height:6px;border-radius:9999px;background:rgba(255,255,255,0.08);overflow:hidden;position:relative}',
+        '.zmod-progress-bar{height:100%;border-radius:9999px;transition:width 0.4s cubic-bezier(0.16,1,0.3,1)}',
+        '.zmod-bar-healthy{background:linear-gradient(90deg,#10b981,#34c759);box-shadow:0 0 8px rgba(52,199,89,0.25)}',
+        '.zmod-bar-warning{background:linear-gradient(90deg,#f59e0b,#fbbf24);box-shadow:0 0 8px rgba(245,158,11,0.25)}',
+        '.zmod-bar-danger{background:linear-gradient(90deg,#ef4444,#f87171);box-shadow:0 0 8px rgba(239,68,68,0.25)}',
         '[data-settings-panel-frame]:has(> [data-zmod-settings-overlay]) main{visibility:hidden !important}',
         '[data-active-section]:has([data-zmod-settings-overlay]) nav [data-settings-section-nav][aria-current="page"]{background-color:transparent !important}',
         '[data-settings-panel-frame]:has([data-zmod-native-title]) main > div > div:first-child{display:none !important}'
