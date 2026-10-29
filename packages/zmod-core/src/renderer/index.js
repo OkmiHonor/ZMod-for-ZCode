@@ -535,8 +535,14 @@ function main() {
     getAll() {
       return [...this._plugins.values()];
     }
+    getPlugin(id) {
+      return this._plugins.get(id) || null;
+    }
     isActive(id) {
       return this._active.has(id);
+    }
+    getActive(id) {
+      return this._active.get(id) || null;
     }
     getActiveSettings(id) {
       return this._plugins.get(id)?._activeSettings || {};

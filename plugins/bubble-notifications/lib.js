@@ -81,14 +81,76 @@ export function defaultCopy(evt) {
 }
 
 /**
- * bubble.show 参数组装：kind 映射 + 默认文案 + durationMs 透传（snap 原值）。
- * Unknown statuses never reach here (shouldShow filters them), but the copy
- * fallback keeps it safe anyway.
+ * bubble.show 参数组装：kind 映射 + 默认文案 + durationMs 透传（snap 原值）+
+ * 外观参数透传（position/margin/theme/scale/coordMode/coordX/coordY/offsetX/offsetY）。
+ * scale 由 snap 百分比换算为倍数。
  */
 export function showParams(evt, snap) {
-  return {
+  const res = {
     kind: STATUS_KIND[String(evt?.status ?? '')] || 'info',
     ...defaultCopy(evt),
-    durationMs: snap?.duration
+    durationMs: snap?.duration,
+    position: snap?.position,
+    margin: snap?.margin,
+    scale: typeof snap?.scale === 'number' ? snap.scale / 100 : undefined,
+    theme: snap?.theme
   };
+  if (snap?.coordMode != null) res.coordMode = snap.coordMode;
+  if (snap?.coordX != null) res.coordX = snap.coordX;
+  if (snap?.coordY != null) res.coordY = snap.coordY;
+  if (snap?.offsetX != null) res.offsetX = snap.offsetX;
+  if (snap?.offsetY != null) res.offsetY = snap.offsetY;
+  if (snap?.pinned != null) res.pinned = snap.pinned;
+  return res;
+}
+
+/**
+ * 纯前端 DOM HUD 坐标样式计算（独立自闭环，零主进程依赖）：
+ * 根据 snap 中的外观参数计算出绝对定位 style 对象 { left, top, transform }。
+ * 纯数学运算，直接适配任何现代浏览器与 CSS 硬件加速 transform。
+ */
+export function computeBubbleStyle(snap) {
+  const mode = snap?.coordMode === 'coord' ? 'coord' : 'preset';
+  const pos = String(snap?.position || 'top-center');
+  const margin = Number.isFinite(snap?.margin) ? snap.margin : 12;
+  const offX = Number.isFinite(snap?.offsetX) ? snap.offsetX : 0;
+  const offY = Number.isFinite(snap?.offsetY) ? snap.offsetY : 0;
+  const scale = Number.isFinite(snap?.scale) ? snap.scale / 100 : 1;
+
+  let left = '50%';
+  let top = `${margin}px`;
+  let tx = '-50%';
+  let ty = '0';
+
+  if (mode === 'coord') {
+    const cx = Number.isFinite(snap?.coordX) ? snap.coordX : 50;
+    const cy = Number.isFinite(snap?.coordY) ? snap.coordY : 2;
+    left = `${cx}%`;
+    top = `${cy}%`;
+    tx = '-50%';
+    ty = '-50%';
+  } else {
+    // preset 停靠模式
+    if (pos.endsWith('-left')) {
+      left = `${margin}px`;
+      tx = '0';
+    } else if (pos.endsWith('-right')) {
+      left = `calc(100% - ${margin}px)`;
+      tx = '-100%';
+    } else {
+      left = '50%';
+      tx = '-50%';
+    }
+
+    if (pos.startsWith('bottom-')) {
+      top = `calc(100% - ${margin}px)`;
+      ty = '-100%';
+    } else {
+      top = `${margin}px`;
+      ty = '0';
+    }
+  }
+
+  const transform = `translate(${tx}, ${ty}) translate(${offX}px, ${offY}px) scale(${scale})`;
+  return { left, top, transform };
 }

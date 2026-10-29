@@ -14,15 +14,28 @@
  * 峰 = 周一至周五 9:00–12:00 与 14:00–18:00，谷 = 其余时段半价。
  * 局限：法定节假日不判断——节假日仍按峰期口径估算，可能与官方实际计费有出入。
  */
+// tiered: true = 峰谷双档表（hit/miss/out 各为 [谷, 峰]），calculateCost 走 isPeakHour 选档
 export const PRICING = {
   // deepseek-flash: hit $0.006/$0.003 · miss $0.30/$0.15 · out $1.20/$0.60 (×7)
-  flash: { hit: [0.02, 0.04], miss: [1.05, 2.1], out: [4.2, 8.4] },
+  flash: { tiered: true, hit: [0.02, 0.04], miss: [1.05, 2.1], out: [4.2, 8.4] },
   // deepseek-v4-pro: hit $0.044/$0.022 · miss $1.32/$0.66 · out $3.96/$1.98 (×7)
-  v4pro: { hit: [0.15, 0.31], miss: [4.6, 9.2], out: [13.9, 27.7] },
+  v4pro: { tiered: true, hit: [0.15, 0.31], miss: [4.6, 9.2], out: [13.9, 27.7] },
   // deepseek-chat 旧价（2025 价目表，保留用于旧模型名兜底）
-  v3legacy: { hit: [0.5, 1], miss: [2, 4], out: [8, 16] },
+  v3legacy: { tiered: true, hit: [0.5, 1], miss: [2, 4], out: [8, 16] },
   // deepseek-reasoner 旧价（2025 价目表，保留用于旧模型名兜底）
-  r1legacy: { hit: [1, 2], miss: [4, 8], out: [16, 32] }
+  r1legacy: { tiered: true, hit: [1, 2], miss: [4, 8], out: [16, 32] }
+};
+
+/**
+ * 百炼（阿里云 DashScope）RMB 价目表：元/百万 tokens，{ in, out }，无峰谷
+ * （2026-10 官方价）。货币统一 ¥ —— 与 DeepSeek 系（USD×7 折算 RMB）口径一致。
+ */
+export const BAILIAN_PRICING = {
+  dsv41flash: { in: 1, out: 4 },      // deepseek-v4.1-flash(-1017)
+  dsv4pro: { in: 4.5, out: 13.5 },    // deepseek-v4-pro-0813（百炼快照）
+  glm53: { in: 8, out: 28 },          // glm-5.3 / glm-5.2
+  qwen38max: { in: 12, out: 36 },     // qwen3.8-max(-0902)
+  qwen38flash: { in: 0.8, out: 2.7 }  // qwen3.8-flash
 };
 
 /**
@@ -44,32 +57,157 @@ export function isPeakHour(date) {
 }
 
 /**
- * 模型 → 价目表。仅 DeepSeek 系模型计价（model 名含 "deepseek"，大小写不敏感），
- * 其他模型（GLM/qwen 等）返回 null —— 套用 DeepSeek 价目表毫无意义。
+ * 模型 → 价目表。匹配顺序：
+ * 1. deepseek + v4.1 → 百炼 dsv41flash（v4.1 快照名只在百炼渠道存在，官方渠道
+ *    同代模型名是 deepseek-flash，不会误伤）；
+ * 2. deepseek + 0813 → 百炼 dsv4pro（带 -0813 快照后缀的才是百炼版）；
+ * 3. 其余 deepseek → 官方 USD×7 峰谷价（v4pro/flash/reasoner/chat/r1legacy）；
+ * 4. 非 deepseek：qwen3.8 / glm-5.2|5.3 → 百炼固定价；kimi 等未知模型 → null
+ *    不计价（宁缺勿错，套用他家居价目表毫无意义）。
  */
 export function costTable(model) {
   const m = String(model || '').toLowerCase();
-  if (!m.includes('deepseek')) return null;
-  if (/v4.?pro/.test(m)) return PRICING.v4pro;
-  if (/flash/.test(m)) return PRICING.flash;
-  if (/reasoner/.test(m) || /(^|[^a-z0-9])r1([^a-z0-9]|$)/.test(m)) return PRICING.r1legacy;
-  if (/chat|v3/.test(m)) return PRICING.v3legacy;
-  // 其余 deepseek 变体默认按 flash 价
-  return PRICING.flash;
+  if (m.includes('deepseek')) {
+    if (/v4\.1/.test(m)) return BAILIAN_PRICING.dsv41flash;
+    if (/0813/.test(m)) return BAILIAN_PRICING.dsv4pro;
+    if (/v4.?pro/.test(m)) return PRICING.v4pro;
+    if (/flash/.test(m)) return PRICING.flash;
+    if (/reasoner/.test(m) || /(^|[^a-z0-9])r1([^a-z0-9]|$)/.test(m)) return PRICING.r1legacy;
+    if (/chat|v3/.test(m)) return PRICING.v3legacy;
+    // 其余 deepseek 变体默认按 flash 价
+    return PRICING.flash;
+  }
+  if (/qwen3\.8-flash/.test(m)) return BAILIAN_PRICING.qwen38flash;
+  if (/qwen3\.8-max/.test(m)) return BAILIAN_PRICING.qwen38max;
+  if (/glm-5\.[23]/.test(m)) return BAILIAN_PRICING.glm53;
+  return null;
 }
 
 /**
- * 单次请求费用估算（元）。非 DeepSeek 系（costTable 为 null）返回 0。
+ * 单次请求费用估算（元）。
+ * - tiered 表（DeepSeek 系）：按 isPeakHour 峰谷双档，缓存命中单独计价；
+ * - 固定表（百炼系）：无峰谷，入价按全部输入 tokens 计（价目表无缓存折扣档）。
+ * 无价目表（costTable 为 null）返回 0。
  */
 export function calculateCost(model, cachedTokens, missTokens, outputTokens, date) {
   const table = costTable(model);
   if (!table) return 0;
-  const tier = isPeakHour(date) ? 1 : 0;
-  return (
-    (cachedTokens / 1e6) * table.hit[tier] +
-    (missTokens / 1e6) * table.miss[tier] +
-    (outputTokens / 1e6) * table.out[tier]
-  );
+  if (table.tiered) {
+    const tier = isPeakHour(date) ? 1 : 0;
+    return (
+      (cachedTokens / 1e6) * table.hit[tier] +
+      (missTokens / 1e6) * table.miss[tier] +
+      (outputTokens / 1e6) * table.out[tier]
+    );
+  }
+  return ((cachedTokens + missTokens) / 1e6) * table.in + (outputTokens / 1e6) * table.out;
+}
+
+/**
+ * 费用数字格式化（纯函数，不含 ¥ 前缀）：>=0.01 保留 3 位小数，<0.01 保留 4 位，
+ * 避免极小费用被 toFixed(3) 显示成 ¥0.000。
+ */
+export function formatCost(n) {
+  const v = Number(n) || 0;
+  return v >= 0.01 ? v.toFixed(3) : v.toFixed(4);
+}
+
+/**
+ * 订阅额度规则（按"模型请求数"计）：matcher 命中模型名后按 flash/pro 档与统计周期取请求次数。
+ * 支持 5小时额度 (5h) 与 周额度 (weekly)，并保留日额度 (daily) 兼容：
+ * - 5小时额度 (5h 滚动窗口)：Google AI Pro 约 Pro 50 次、Flash 150 次 / 5小时
+ * - 周额度 (weekly 每周窗口)：Google AI Pro 约 Pro 500 次、Flash 1500 次 / 周
+ * - 日额度 (daily 每日估算)：Google AI Pro 约 Pro 100 次、Flash 250 次 / 日
+ * 实际配额以订阅商后台或 Antigravity 网关 (8045) 为准。
+ */
+export const QUOTA_RULES = [
+  {
+    matcher: /gemini/i,
+    name: 'Google AI Pro',
+    windows: {
+      '5h': { pro: 50, flash: 150, windowLabel: '5小时额度', label: 'Google AI Pro (5小时额度估算)' },
+      'weekly': { pro: 500, flash: 1500, windowLabel: '周额度', label: 'Google AI Pro (周额度估算)' },
+      'daily': { pro: 100, flash: 250, windowLabel: '日额度', label: 'Google AI Pro (日额度估算)' }
+    }
+  }
+];
+
+/**
+ * 模型 → 订阅额度表。
+ * 参数 window: '5h'（5小时额度，默认）| 'weekly'（周额度）| 'daily'（日额度）。
+ * 命中返回 { limit, daily, window, windowLabel, label }（/flash/i → flash 档，其余 → pro 档），
+ * 未命中任何规则返回 null。保留 daily 字段以保持老调用方与单测完全兼容。
+ */
+export function quotaTable(model, window = '5h') {
+  const m = String(model || '');
+  const winKey = window === 'weekly' ? 'weekly' : (window === 'daily' ? 'daily' : '5h');
+  for (const rule of QUOTA_RULES) {
+    if (!rule || !rule.matcher || !rule.matcher.test(m)) continue;
+    const cfg = rule.windows?.[winKey] || rule.windows?.['5h'];
+    if (!cfg) return null;
+    const isFlash = /flash/i.test(m);
+    const limit = isFlash ? cfg.flash : cfg.pro;
+    return {
+      limit,
+      daily: limit,
+      window: winKey,
+      windowLabel: cfg.windowLabel,
+      label: cfg.label
+    };
+  }
+  return null;
+}
+
+/**
+ * 解析额度表：customQuota（JSON 字典，模型名 → 周期请求上限，如 {"gemini-3.8-pro": 50}）
+ * 命中时优先于内置；接受对象或 JSON 字符串形态，非法/缺失/非正数值一律回退内置表
+ * （非法 JSON 不抛错）。自定义键可覆盖任意模型（含内置规则未覆盖的模型）。
+ */
+export function resolveQuotaTable(model, customQuota, window = '5h') {
+  const builtin = quotaTable(model, window);
+  let cq = customQuota;
+  if (typeof cq === 'string') {
+    try {
+      cq = JSON.parse(cq);
+    } catch {
+      return builtin;
+    }
+  }
+  if (!cq || typeof cq !== 'object' || Array.isArray(cq)) return builtin;
+  const m = String(model || '');
+  let hit = Object.prototype.hasOwnProperty.call(cq, m) ? cq[m] : undefined;
+  if (hit == null) {
+    const lower = m.toLowerCase();
+    for (const k of Object.keys(cq)) {
+      if (String(k).toLowerCase() === lower) {
+        hit = cq[k];
+        break;
+      }
+    }
+  }
+  const n = Number(hit);
+  if (hit != null && Number.isFinite(n) && n > 0) {
+    const winKey = window === 'weekly' ? 'weekly' : (window === 'daily' ? 'daily' : '5h');
+    const winLabel = winKey === 'weekly' ? '周额度' : (winKey === 'daily' ? '日额度' : '5小时额度');
+    return {
+      limit: n,
+      daily: n,
+      window: winKey,
+      windowLabel: winLabel,
+      label: builtin ? builtin.label : `自定义${winLabel}`,
+      custom: true
+    };
+  }
+  return builtin;
+}
+
+/**
+ * 已发请求次数占订阅额度的百分比（0..∞，可超 100）。无可用额度表返回 0。
+ */
+export function calculateQuotaPercent(model, requests, customQuota, window = '5h') {
+  const table = resolveQuotaTable(model, customQuota, window);
+  if (!table || !(table.limit > 0)) return 0;
+  return ((Number(requests) || 0) / table.limit) * 100;
 }
 
 /**
@@ -80,6 +218,8 @@ export function buildBucketFromRequests(sessionId, requests, enableCost = true) 
   const list = Array.isArray(requests) ? requests : [];
   const turnMap = new Map();
   const turnList = [];
+  const turnReqKeys = new Map(); // turnKey -> Set(去重请求键)，reqCount 口径 = 模型请求数
+  const reqSeen = {};
   const stepsSeen = {};
 
   let totalTokens = 0;
@@ -112,6 +252,13 @@ export function buildBucketFromRequests(sessionId, requests, enableCost = true) 
       : 0;
 
     const turnKey = String(r.turnId || r.id || `idx_${idx}`);
+    if (!turnReqKeys.has(turnKey)) turnReqKeys.set(turnKey, new Set());
+    const reqKey = String(r.logicalRequestId || r.id || `idx_${idx}`);
+    if (!reqSeen[reqKey]) {
+      reqSeen[reqKey] = 1;
+      turnReqKeys.get(turnKey).add(reqKey);
+    }
+
     let turn = turnMap.get(turnKey);
     if (!turn) {
       turn = {
@@ -123,6 +270,7 @@ export function buildBucketFromRequests(sessionId, requests, enableCost = true) 
         total: 0,
         ratio: 0,
         cost: 0,
+        reqCount: 0,
         model,
         talkId: sessionId,
         turnId: turnKey,
@@ -156,6 +304,11 @@ export function buildBucketFromRequests(sessionId, requests, enableCost = true) 
 
   const sDenom = hitTokens + missTokens;
   const avgRatio = sDenom > 0 ? hitTokens / sDenom : 0;
+  let bucketReqCount = 0;
+  for (const t of turnList) {
+    t.reqCount = turnReqKeys.get(t.turnId) ? turnReqKeys.get(t.turnId).size : 0;
+    bucketReqCount += t.reqCount;
+  }
   const lastTurn = turnList.length > 0 ? { ...turnList[turnList.length - 1] } : null;
 
   return {
@@ -167,6 +320,7 @@ export function buildBucketFromRequests(sessionId, requests, enableCost = true) 
     missTokens,
     reasoningTokens,
     totalCost,
+    reqCount: bucketReqCount,
     avgRatio,
     lastAt: lastStartedAt || Date.now(),
     lastTurn,
@@ -233,6 +387,7 @@ function ensureBucket(state, talkId) {
       missTokens: 0,
       reasoningTokens: 0,
       totalCost: 0,
+      reqCount: 0,
       avgRatio: 0,
       lastAt: 0,
       lastTurn: null,
@@ -338,6 +493,7 @@ export function ingestTelemetryPayload(state, payload, opts = {}) {
         total: 0,
         ratio: 0,
         cost: 0,
+        reqCount: 1,
         model,
         talkId: bucketTalkId,
         turnId: msgKey,
@@ -347,7 +503,11 @@ export function ingestTelemetryPayload(state, payload, opts = {}) {
       bucket.turns = (bucket.turns || 0) + 1;
       isNewTurn = true;
     } else {
-      bucket.turnsById[msgKey].viaSteps = true;
+      const t0 = bucket.turnsById[msgKey];
+      t0.viaSteps = true;
+      // 通过 stepsSeen 门禁的每个 step 都对应一个未见过的新 model_request_id
+      // （门禁同时按 step_id 与 model_request_id 去重），故计一次新请求
+      t0.reqCount = (t0.reqCount || 0) + 1;
     }
   } else {
     // message_completion: 若该会话分桶已由 SQLite 权威校准或该消息已有 step 记录则跳过
@@ -369,6 +529,7 @@ export function ingestTelemetryPayload(state, payload, opts = {}) {
       total: 0,
       ratio: 0,
       cost: 0,
+      reqCount: 1,
       model,
       talkId: bucketTalkId,
       turnId: msgKey,
@@ -407,6 +568,7 @@ export function ingestTelemetryPayload(state, payload, opts = {}) {
   bucket.missTokens = (bucket.missTokens || 0) + miss;
   bucket.reasoningTokens = (bucket.reasoningTokens || 0) + reasoning;
   bucket.totalCost = (bucket.totalCost || 0) + cost;
+  bucket.reqCount = (bucket.reqCount || 0) + 1;
   const bDenom = bucket.hitTokens + bucket.missTokens;
   bucket.avgRatio = bDenom > 0 ? bucket.hitTokens / bDenom : 0;
   bucket.lastAt = now;
@@ -431,6 +593,7 @@ export function ingestTelemetryPayload(state, payload, opts = {}) {
     reasoningTokens: 0,
     totalTokens: 0,
     totalCost: 0,
+    reqCount: 0,
     avgRatio: 0
   };
   const sess = state.session;
@@ -442,6 +605,7 @@ export function ingestTelemetryPayload(state, payload, opts = {}) {
   sess.reasoningTokens = (sess.reasoningTokens || 0) + reasoning;
   sess.totalTokens = (sess.totalTokens || 0) + total;
   sess.totalCost = (sess.totalCost || 0) + cost;
+  sess.reqCount = (sess.reqCount || 0) + 1;
   const sDenom = sess.hitTokens + sess.missTokens;
   sess.avgRatio = sDenom > 0 ? sess.hitTokens / sDenom : 0;
 

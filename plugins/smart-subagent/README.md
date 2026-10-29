@@ -9,9 +9,9 @@ ZMod 官方生产力插件。解决 ZCode 原生子代理（Agent 工具）只�
   - **Google Gemini**：`gemini-2.5-pro` $\rightarrow$ 自动选用 `gemini-2.5-flash`
   - **Anthropic Claude**：`claude-3-7-sonnet` / `opus` $\rightarrow$ 自动选用 `claude-3-5-haiku`
   - **OpenAI**：`gpt-4o` / `o1` $\rightarrow$ 自动选用 `gpt-4o-mini`
-  - **阿里百炼 (DashScope)**：`qwen-max` / `qwen-plus` $\rightarrow$ 自动选用 `qwen-turbo`
+  - **阿里百炼 (DashScope)**：`qwen3.8-max` 系 $\rightarrow$ 自动选用 `qwen3.8-flash`；`qwen-max` / `qwen-plus` 旧命名 $\rightarrow$ 自动选用 `qwen-turbo`
   - **智谱 GLM (BigModel)**：`GLM-5.3` $\rightarrow$ 自动选用 `GLM-5.3-Flash`
-  - **DeepSeek**：`deepseek-reasoner` (R1) $\rightarrow$ 自动选用 `deepseek-chat` (V3)
+  - **DeepSeek**：`deepseek-v4-pro` / `deepseek-reasoner` (R1) $\rightarrow$ 自动选用 `deepseek-flash`（`deepseek-chat` 为开放平台旧轻量命名，原样保留）
 - **探路代理极速优化**：读代码、搜文件的只读探路子代理（`Explore`）默认强制走 Flash，并发更快、延迟极低。
 - **思考预算自动优化**：子代理自动将 `reasoningLevel` 降为 `low`，避免在检索任务中空耗大量思维链 Token。
 - **启发式与安全兜底**：

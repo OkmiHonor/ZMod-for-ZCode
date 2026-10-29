@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-26T10:03:48.708Z",
+  "updated": "2026-10-29T13:00:39.602Z",
   "plugins": [
     {
       "id": "acrylic-window",
@@ -24,14 +24,14 @@
     },
     {
       "id": "bubble-notifications",
-      "version": "0.1.0",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/bubble-notifications-0.1.0.zip",
-      "shasum": "b1265cb81cc6446ddfed0881815b99ba9af107afb2fad09311bf4a4d8ad07840",
+      "version": "0.2.0",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/bubble-notifications-0.2.0.zip",
+      "shasum": "b6faa63393c3569e9c75eb7c43ff6ec71ba5bfa0d8d4422d88e4edfcb120d70a",
       "manifest": {
         "id": "bubble-notifications",
         "name": "任务气泡通知",
-        "version": "0.1.0",
-        "description": "把任务通知以屏幕顶部气泡弹出：完成/出错/等待分类强调色，可配开关与停留时长",
+        "version": "0.2.0",
+        "description": "把任务通知以屏幕顶部气泡弹出：完成/出错/等待分类强调色，可配开关与停留时长，可自定义位置/大小/主题",
         "author": "ZMod Team",
         "category": "productivity",
         "engine": {
@@ -121,13 +121,13 @@
     },
     {
       "id": "smart-subagent",
-      "version": "1.0.0",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/smart-subagent-1.0.0.zip",
-      "shasum": "20f5ca851f9b1a3fc9c5fee5aea7f38503bcdc1fbee085d1919d1e66b3684109",
+      "version": "1.0.1",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/smart-subagent-1.0.1.zip",
+      "shasum": "0acecbd532587df3671f4f93ca04ce8079e266113c434454cbd96d775a00237f",
       "manifest": {
         "id": "smart-subagent",
         "name": "子代理智能模型路由",
-        "version": "1.0.0",
+        "version": "1.0.1",
         "description": "自动感知当前主会话订阅源，派发子代理时智能降级使用同源 Flash/Haiku/Mini/Turbo 轻量模型，大幅降低 Token 成本并提升响应并发速度",
         "author": "ZMod Team",
         "category": "productivity",
@@ -139,14 +139,14 @@
     },
     {
       "id": "usage-stats",
-      "version": "1.3.1",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/usage-stats-1.3.1.zip",
-      "shasum": "02e934487c8647604022669753049f07312c37cbb27b7324071fbbb357045704",
+      "version": "1.4.0",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/usage-stats-1.4.0.zip",
+      "shasum": "728df5940595e65d56407ef4ab75f06e96f0d6a5c2485082c409121918bcaec1",
       "manifest": {
         "id": "usage-stats",
         "name": "Token 用量统计",
-        "version": "1.3.1",
-        "description": "非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知，跨会话不串数），费用估算仅 DeepSeek 系模型，余额走数据源系统",
+        "version": "1.4.0",
+        "description": "非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知，跨会话不串数），费用估算覆盖 DeepSeek 系 + 百炼系模型，订阅源额度估算，余额走数据源系统",
         "author": "ZMod Team",
         "engine": {
           "zmod": ">=1.0.0-beta"

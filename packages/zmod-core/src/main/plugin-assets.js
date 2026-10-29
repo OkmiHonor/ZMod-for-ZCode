@@ -1,6 +1,13 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { getPluginDataDir } from '../common/paths.js';
+import { spawnSync } from 'node:child_process';
+import { getPluginDataDir, getPluginsDir, getUserDataDir } from '../common/paths.js';
+
+let electron = null;
+try {
+  electron = await import('electron');
+} catch {}
+const defaultFetch = electron?.net?.fetch ?? electron?.default?.net?.fetch ?? globalThis.fetch;
 
 /**
  * Persistent per-plugin asset storage under <userData>/plugin-data/<pluginId>.
@@ -139,6 +146,163 @@ export function registerPluginAssetApi({ register }) {
       }
       fs.unlinkSync(file);
       return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err) };
+    }
+  });
+
+  // ---- Read-only directory listing under the plugin's own source dir ----
+  // Mirrors plugin.readAsset's path discipline (whitelisted plugin id, no
+  // traversal, no absolute paths, resolved containment under <plugins>/<id>),
+  // but *rejects* `..` instead of stripping: a listing RPC exposes names, so
+  // anything ambiguous is refused outright. relPath empty/missing lists the
+  // plugin root. A missing dir is not an error — callers probe optional
+  // subtrees (dsh-compat scans its dsh-plugins/ drop-in dir, absent on fresh
+  // installs) and an empty listing simply means "nothing to load".
+  register('plugin.listDir', async ({ pluginId, relPath }) => {
+    if (!isValidPluginId(pluginId)) return { ok: false, error: 'Invalid plugin id' };
+    const raw = String(relPath ?? '')
+      .replace(/\\/g, '/')
+      .trim();
+    if (!raw) {
+      // empty/missing relPath = plugin root listing (allowed, unlike readAsset)
+    } else {
+      if (/^\/+/.test(raw) || /^[a-zA-Z]:/.test(raw) || /[\0:<>"|?*]/.test(raw)) {
+        return { ok: false, error: 'Invalid path' };
+      }
+      if (raw.split('/').some((seg) => !seg || /^\.\.+$/.test(seg))) {
+        return { ok: false, error: 'Invalid path' };
+      }
+    }
+    const root = path.resolve(getPluginsDir(), pluginId);
+    const target = raw ? path.resolve(root, raw) : root;
+    if (target !== root && !target.startsWith(root + path.sep)) {
+      return { ok: false, error: 'Path escapes plugin dir' };
+    }
+    try {
+      if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
+        return { ok: true, entries: [] };
+      }
+      const entries = fs
+        .readdirSync(target, { withFileTypes: true })
+        .map((e) => {
+          const st = fs.statSync(path.join(target, e.name));
+          return {
+            name: e.name,
+            type: e.isDirectory() ? 'dir' : 'file',
+            size: st.size,
+            mtimeMs: st.mtimeMs
+          };
+        })
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      return { ok: true, entries };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err) };
+    }
+  });
+
+  // ---- System32 bsdtar: zip / tgz / tar.gz universal extraction ----
+  function tarBin() {
+    return process.platform === 'win32'
+      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+      : 'tar';
+  }
+
+  function validateSubdirPath(pluginId, relPath) {
+    if (!isValidPluginId(pluginId)) return { ok: false, error: 'Invalid plugin id' };
+    const raw = String(relPath ?? '')
+      .replace(/\\/g, '/')
+      .trim();
+    if (!raw) return { ok: false, error: 'relPath cannot be empty' };
+    if (/^\/+/.test(raw) || /^[a-zA-Z]:/.test(raw) || /[\0:<>"|?*]/.test(raw)) {
+      return { ok: false, error: 'Invalid path' };
+    }
+    const segs = raw.split('/').filter(Boolean);
+    if (!segs.length || segs.some((seg) => /^\.\.+$/.test(seg))) {
+      return { ok: false, error: 'Invalid path' };
+    }
+    const root = path.resolve(getPluginsDir(), pluginId);
+    const target = path.resolve(root, raw);
+    // 严禁逃逸出插件目录，且严禁直接指向插件根目录本身（防止误删或覆盖 index.js/manifest.json）
+    if (target === root || !target.startsWith(root + path.sep)) {
+      return { ok: false, error: 'Path escapes plugin dir' };
+    }
+    return { ok: true, root, target, relPath: raw };
+  }
+
+  // 通用归档下载与解压安装到插件子目录：支持 npm tarball (.tgz) 与 zip
+  register('plugin.installArchive', async ({ pluginId, relPath, url, fetchImpl, timeoutMs = 60000 }) => {
+    const pCheck = validateSubdirPath(pluginId, relPath);
+    if (!pCheck.ok) return { ok: false, error: pCheck.error };
+    const targetDir = pCheck.target;
+
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+      return { ok: false, error: 'Invalid archive URL (http/https only)' };
+    }
+
+    const tmpHolder = path.join(getUserDataDir(), 'tmp', `arch-${pluginId}-${Date.now()}`);
+    fs.mkdirSync(tmpHolder, { recursive: true });
+    const archiveFile = path.join(tmpHolder, 'archive.bin');
+    const extractDir = path.join(tmpHolder, 'extracted');
+    fs.mkdirSync(extractDir, { recursive: true });
+
+    const fetchFn = fetchImpl || defaultFetch;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(new Error(`timeout ${timeoutMs}ms`)), timeoutMs);
+    timer.unref?.();
+
+    try {
+      const res = await fetchFn(url, { signal: ctrl.signal });
+      if (!res.ok) {
+        throw new Error(`下载失败 (HTTP ${res.status}): ${url}`);
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      fs.writeFileSync(archiveFile, buf);
+
+      // 调用 bsdtar 解压
+      const tar = spawnSync(tarBin(), ['-xf', archiveFile, '-C', extractDir]);
+      if (tar.error) throw new Error(`解压失败: ${tar.error.message}`);
+      if (tar.status !== 0) throw new Error(`解压退出码异常 (exit ${tar.status})`);
+
+      // 自动下钻剥离单层包裹目录（如 npm tarball 常见的 package/）
+      const entries = fs.readdirSync(extractDir, { withFileTypes: true });
+      const srcDir =
+        entries.length === 1 && entries[0].isDirectory()
+          ? path.join(extractDir, entries[0].name)
+          : extractDir;
+
+      // 目标替换：如已存在则先清理
+      if (fs.existsSync(targetDir)) {
+        fs.rmSync(targetDir, { recursive: true, force: true });
+      }
+      fs.mkdirSync(path.dirname(targetDir), { recursive: true });
+      fs.cpSync(srcDir, targetDir, { recursive: true });
+
+      return {
+        ok: true,
+        name: path.basename(targetDir),
+        relPath: pCheck.relPath,
+        filesCount: fs.readdirSync(targetDir).length
+      };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err) };
+    } finally {
+      clearTimeout(timer);
+      try {
+        fs.rmSync(tmpHolder, { recursive: true, force: true });
+      } catch {}
+    }
+  });
+
+  // 通用安全删除插件子目录
+  register('plugin.removeDir', async ({ pluginId, relPath }) => {
+    const pCheck = validateSubdirPath(pluginId, relPath);
+    if (!pCheck.ok) return { ok: false, error: pCheck.error };
+    try {
+      if (fs.existsSync(pCheck.target)) {
+        fs.rmSync(pCheck.target, { recursive: true, force: true });
+      }
+      return { ok: true, relPath: pCheck.relPath };
     } catch (err) {
       return { ok: false, error: String(err?.message || err) };
     }

@@ -130,6 +130,7 @@ function makeGateway() {
 
 function makeDeps(overrides = {}) {
   const scheduler = makeScheduler();
+  const configWrites = [];
   return {
     deps: {
       platform: 'win32',
@@ -138,9 +139,12 @@ function makeDeps(overrides = {}) {
       schedule: scheduler.schedule,
       cancelSchedule: scheduler.cancelSchedule,
       logger: { info() {}, warn() {}, debug() {} },
+      readConfig: () => null,
+      writeConfig: (cfg) => configWrites.push(cfg),
       ...overrides
     },
-    scheduler
+    scheduler,
+    configWrites
   };
 }
 
@@ -149,10 +153,10 @@ const flush = () => new Promise((r) => setImmediate(r));
 async function setup(overrides = {}) {
   const mod = await loadFreshModule();
   FakeBrowserWindow.reset();
-  const { deps, scheduler } = makeDeps(overrides);
+  const { deps, scheduler, configWrites } = makeDeps(overrides);
   const gw = makeGateway();
   const ok = mod.registerBubbleHud(gw, deps);
-  return { mod, gw, deps, scheduler, ok };
+  return { mod, gw, deps, scheduler, configWrites, ok };
 }
 
 function decodedHtml(win, call = 0) {
@@ -170,10 +174,16 @@ function expectWidth(title, body = '') {
 }
 
 test('bubble hud suite', async (t) => {
-  await t.test('registers three RPC methods and is idempotent', async () => {
+  await t.test('registers five RPC methods and is idempotent', async () => {
     const { gw, ok } = await setup();
     assert.equal(ok, true);
-    assert.deepEqual([...gw.handlers.keys()].sort(), ['bubble.hide', 'bubble.show', 'bubble.status']);
+    assert.deepEqual([...gw.handlers.keys()].sort(), [
+      'bubble.getConfig',
+      'bubble.hide',
+      'bubble.setConfig',
+      'bubble.show',
+      'bubble.status'
+    ]);
 
     const { mod, deps } = await setup();
     const gw2 = makeGateway();
@@ -435,5 +445,235 @@ test('bubble hud suite', async (t) => {
     // 后续 show 走全新创建而非复用已销毁窗口
     await gw.dispatch('bubble.show', { kind: 'info', title: 'again' });
     assert.equal(FakeBrowserWindow.instances.length, 2);
+  });
+
+  // ---- v0.2 自定义：position / margin / scale / theme ----
+
+  await t.test('six positions pin the bubble inside the cursor display workArea', async () => {
+    const { gw } = await setup();
+    const w = 200; // 'Hi' 触发最小宽度
+    const h = 56; // scale 1 默认窗口高
+    const m = 12; // 默认 margin
+    const cases = [
+      ['top-center', Math.round((1920 - w) / 2), 0 + m - 6],
+      ['top-left', m, m - 6],
+      ['top-right', 1920 - w - m, m - 6],
+      ['bottom-center', Math.round((1920 - w) / 2), 0 + 1040 - h - m + 12],
+      ['bottom-left', m, 1040 - h - m + 12],
+      ['bottom-right', 1920 - w - m, 1040 - h - m + 12]
+    ];
+    for (const [position, x, y] of cases) {
+      await gw.dispatch('bubble.show', { kind: 'info', title: 'Hi', position });
+      const b = FakeBrowserWindow.instances[0].boundsCalls.at(-1);
+      assert.equal(b.width, w, position);
+      assert.equal(b.height, h, position);
+      assert.equal(b.x, x, `${position} x`);
+      assert.equal(b.y, y, `${position} y`);
+    }
+  });
+
+  await t.test('positions honor the cursor display origin (second monitor)', async () => {
+    const { gw } = await setup({ screen: makeScreen({ cursor: { x: 2500, y: 500 } }) });
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'Hi', position: 'top-left' });
+    let b = FakeBrowserWindow.instances[0].boundsCalls.at(-1);
+    assert.equal(b.x, 1920 + 12);
+    assert.equal(b.y, 30 + 12 - 6);
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'Hi', position: 'bottom-right' });
+    b = FakeBrowserWindow.instances[0].boundsCalls.at(-1);
+    assert.equal(b.x, 1920 + 1920 - 200 - 12);
+    assert.equal(b.y, 30 + 1040 - 56 - 12 + 12);
+  });
+
+  await t.test('scale multiplies window width/height and HTML metrics', async () => {
+    const { gw } = await setup();
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'Hi', scale: 1.5 });
+    const win = FakeBrowserWindow.instances[0];
+    let b = win.boundsCalls.at(-1);
+    assert.equal(b.width, 300, 'min width 200 * 1.5');
+    assert.equal(b.height, 6 + 57 + 12, 'round(38*1.5)=57');
+    const html = decodedHtml(win);
+    assert.ok(html.includes('height: 57px'), 'row height scaled');
+    assert.ok(html.includes('font-size: 20px'), 'round(13*1.5)=20');
+    assert.ok(html.includes('width="24" height="24"'), 'icon 16*1.5');
+    assert.ok(html.includes('border-radius: 18px'), '12*1.5');
+    assert.ok(html.includes('gap: 15px'), '10*1.5');
+    assert.ok(html.includes('padding: 0 27px'), '18*1.5');
+    // 同窗复用：恢复默认 scale 时尺寸同步还原
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'Hi' });
+    b = win.boundsCalls.at(-1);
+    assert.equal(b.width, 200);
+    assert.equal(b.height, 56);
+  });
+
+  await t.test('margin clamps into [0, 200] (negative / huge)', async () => {
+    const { gw } = await setup();
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'Hi', position: 'top-left', margin: -50 });
+    let b = FakeBrowserWindow.instances[0].boundsCalls.at(-1);
+    assert.equal(b.x, 0, 'negative margin clamps to 0');
+    assert.equal(b.y, -6);
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'Hi', position: 'top-right', margin: 9999 });
+    b = FakeBrowserWindow.instances[0].boundsCalls.at(-1);
+    assert.equal(b.x, 1920 - 200 - 200, 'huge margin clamps to 200');
+    assert.equal(b.y, 200 - 6);
+  });
+
+  await t.test('scale clamps into [0.6, 2.0]', async () => {
+    const { gw } = await setup();
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'Hi', scale: 3 });
+    let b = FakeBrowserWindow.instances[0].boundsCalls.at(-1);
+    assert.equal(b.width, 400, '200 * 2');
+    assert.equal(b.height, 6 + 76 + 12);
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'Hi', scale: 0.1 });
+    b = FakeBrowserWindow.instances[0].boundsCalls.at(-1);
+    assert.equal(b.width, 120, '200 * 0.6');
+    assert.equal(b.height, 6 + 23 + 12, 'round(38*0.6)=23');
+  });
+
+  await t.test('setConfig/getConfig: roundtrip, clamping, invalid values fall back to defaults', async () => {
+    const { gw, configWrites } = await setup();
+    const r = await gw.dispatch('bubble.setConfig', {
+      position: 'bottom-left',
+      margin: 24,
+      scale: 1.3,
+      theme: 'dark'
+    });
+    assert.deepEqual(r, {
+      ok: true,
+      config: { position: 'bottom-left', margin: 24, scale: 1.3, theme: 'dark' }
+    });
+    assert.deepEqual(configWrites.at(-1), r.config, 'normalized config is what gets persisted');
+    assert.deepEqual((await gw.dispatch('bubble.getConfig', {})).config, r.config);
+
+    const bad = await gw.dispatch('bubble.setConfig', {
+      position: 'diagonal',
+      margin: 'abc',
+      scale: null,
+      theme: 'blue'
+    });
+    assert.deepEqual(bad.config, { position: 'top-center', margin: 12, scale: 1, theme: 'auto' });
+    assert.deepEqual(configWrites.at(-1), bad.config);
+
+    const clamped = await gw.dispatch('bubble.setConfig', { margin: -8, scale: 500 });
+    assert.deepEqual(clamped.config, { position: 'top-center', margin: 0, scale: 2, theme: 'auto' });
+  });
+
+  await t.test('persisted config drives geometry when show has no params', async () => {
+    const { gw } = await setup({
+      readConfig: () => ({ position: 'bottom-right', margin: 40, scale: 1.2, theme: 'dark' })
+    });
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'Hi' });
+    const win = FakeBrowserWindow.instances[0];
+    const b = win.boundsCalls[0];
+    assert.equal(b.width, 240, 'min width 200 * 1.2');
+    assert.equal(b.height, 6 + 46 + 12, 'round(38*1.2)=46');
+    assert.equal(b.x, 1920 - 240 - 40);
+    assert.equal(b.y, 1040 - 64 - 40 + 12);
+    assert.ok(decodedHtml(win).includes('data-theme="dark"'));
+  });
+
+  await t.test('call params override persisted config per-key', async () => {
+    const { gw } = await setup({
+      readConfig: () => ({ position: 'bottom-right', margin: 40, scale: 1.2, theme: 'dark' })
+    });
+    // 只覆盖 position/margin；scale/theme 仍取持久化
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'Hi', position: 'top-left', margin: 5 });
+    const win = FakeBrowserWindow.instances[0];
+    const b = win.boundsCalls.at(-1);
+    assert.equal(b.x, 5);
+    assert.equal(b.y, 5 - 6);
+    assert.equal(b.width, 240, 'persisted scale 1.2 still applies');
+    assert.equal(b.height, 64);
+    assert.ok(decodedHtml(win).includes('data-theme="dark"'), 'persisted theme still applies');
+  });
+
+  await t.test('readConfig failure falls back to defaults', async () => {
+    const { gw } = await setup({
+      readConfig: () => {
+        throw new Error('disk boom');
+      }
+    });
+    assert.deepEqual((await gw.dispatch('bubble.getConfig', {})).config, {
+      position: 'top-center',
+      margin: 12,
+      scale: 1,
+      theme: 'auto'
+    });
+  });
+
+  await t.test('writeConfig failure: setConfig reports error and keeps previous config', async () => {
+    const { gw } = await setup({
+      writeConfig: () => {
+        throw new Error('write boom');
+      }
+    });
+    const r = await gw.dispatch('bubble.setConfig', { position: 'top-left' });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /write boom/);
+    assert.deepEqual((await gw.dispatch('bubble.getConfig', {})).config, {
+      position: 'top-center',
+      margin: 12,
+      scale: 1,
+      theme: 'auto'
+    });
+  });
+
+  await t.test('html: explicit light/dark branches plus auto media query', async () => {
+    const { gw } = await setup();
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'T', theme: 'light' });
+    const light = decodedHtml(FakeBrowserWindow.instances[0]);
+    assert.ok(light.includes('data-theme="light"'));
+    assert.ok(light.includes('html[data-theme="light"] .indicator'));
+    assert.ok(light.includes('color: #202124; background: rgba(255, 255, 255, 0.96)'));
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'T', theme: 'dark' });
+    const dark = decodedHtml(FakeBrowserWindow.instances[0]);
+    assert.ok(dark.includes('data-theme="dark"'));
+    assert.ok(dark.includes('html[data-theme="dark"] .indicator'));
+    assert.ok(dark.includes('color: #f8fafc; background: rgba(35, 38, 43, 0.96)'));
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'T' });
+    const auto = decodedHtml(FakeBrowserWindow.instances[0], 2);
+    assert.ok(auto.includes('data-theme="auto"'));
+    assert.ok(auto.includes('@media (prefers-color-scheme: dark)'));
+  });
+
+  await t.test('retry rebuilds with the failed show custom geometry', async () => {
+    const { gw, scheduler } = await setup();
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'T', scale: 1.5 });
+    const win1 = FakeBrowserWindow.instances[0];
+    win1.loadURLImpl = () => Promise.reject(new Error('load boom'));
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'T', scale: 1.5 });
+    scheduler.runMs(250);
+    await flush();
+    assert.equal(FakeBrowserWindow.instances.length, 2);
+    const b = FakeBrowserWindow.instances[1].boundsCalls[0];
+    assert.equal(b.width, 300);
+    assert.equal(b.height, 75);
+  });
+
+  await t.test('custom coordinates and offsets: coordX/coordY and offsetX/offsetY', async () => {
+    const { gw } = await setup();
+    // coordMode: coord, coordX: 20% of (1920 - 200) = 344, offsetX: 50 → x = 394
+    // coordY: 30% of (1040 - 56) = 295, offsetY: -10 → y = 285
+    await gw.dispatch('bubble.show', {
+      kind: 'info',
+      title: 'Coord test',
+      coordMode: 'coord',
+      coordX: 20,
+      coordY: 30,
+      offsetX: 50,
+      offsetY: -10
+    });
+    const win = FakeBrowserWindow.instances[0];
+    const b = win.boundsCalls[0];
+    assert.equal(b.x, 394);
+    assert.equal(b.y, 285);
+  });
+
+  await t.test('pinned mode: pinned:true prevents auto-hide timer', async () => {
+    const { gw, scheduler } = await setup();
+    await gw.dispatch('bubble.show', { kind: 'success', title: 'Pinned', pinned: true });
+    // autoHideTimer should not be scheduled when pinned
+    assert.equal(scheduler.count(5000), 0, 'pinned bubble does not schedule auto hide');
+    const win = FakeBrowserWindow.instances[0];
+    assert.equal(win.hidden, false, 'window is shown and stays visible');
   });
 });

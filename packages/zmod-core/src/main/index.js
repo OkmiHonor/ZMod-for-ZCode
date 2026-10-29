@@ -2,8 +2,9 @@ import { registerPrivileges, registerProtocolHandler } from './protocol.js';
 import { rpcGateway, installTelemetryTap } from './rpc.js';
 import { installNotificationTap } from './notifications.js';
 import { installWindowShortcuts } from './shortcuts.js';
-import { ensureDirectories } from '../common/paths.js';
+import { ensureDirectories, getUserDataDir } from '../common/paths.js';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 let electronModule = null;
@@ -17,12 +18,21 @@ try {
 
 function installAgentRouterHook() {
   try {
+    const dataDir = getUserDataDir();
+    // 优先加载插件目录自包含的 agent-router.cjs（实现插件解耦独立更新），不存在时回退基座内置兜底
+    const pluginHook = path.join(dataDir, 'plugins', 'smart-subagent', 'agent-router.cjs');
     const currentDir = path.dirname(fileURLToPath(import.meta.url));
-    const hookPath = path.join(currentDir, 'agent-router.cjs').replaceAll(path.sep, '/');
+    const fallbackHook = path.join(currentDir, 'agent-router.cjs');
+    const hookFile = fs.existsSync(pluginHook) ? pluginHook : fallbackHook;
+    const hookPath = hookFile.replaceAll(path.sep, '/');
+
+    // 子进程（agent 补丁钩子）读插件配置依赖此变量：agent-router.cjs 按 ZMOD_USER_DATA_DIR
+    // 定位 <data>/plugin-data/smart-subagent/config.json，需在 fork 前显式写入以便继承。
+    process.env.ZMOD_USER_DATA_DIR = dataDir;
     const existing = process.env.NODE_OPTIONS || '';
     if (!existing.includes('agent-router.cjs')) {
       process.env.NODE_OPTIONS = `${existing} --require "${hookPath}"`.trim();
-      console.log('[ZMod:Core] agent router preload hook installed in NODE_OPTIONS');
+      console.log(`[ZMod:Core] agent router preload hook installed: ${hookPath}`);
     }
 
     const up = electronModule?.utilityProcess ?? electronModule?.default?.utilityProcess;

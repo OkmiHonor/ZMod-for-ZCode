@@ -1,8 +1,8 @@
 {
   "id": "bubble-notifications",
   "name": "任务气泡通知",
-  "version": "0.1.0",
-  "description": "把任务通知以屏幕顶部气泡弹出：完成/出错/等待分类强调色，可配开关与停留时长",
+  "version": "0.2.0",
+  "description": "把任务通知以屏幕顶部气泡弹出：完成/出错/等待分类强调色，可配开关与停留时长，可自定义位置/大小/主题",
   "author": "ZMod Team",
   "category": "productivity",
   "engine": { "zmod": ">=1.1.0-beta" }

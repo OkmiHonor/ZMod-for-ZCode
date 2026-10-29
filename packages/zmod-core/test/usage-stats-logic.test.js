@@ -3,9 +3,14 @@ import assert from 'node:assert/strict';
 
 const {
   PRICING,
+  BAILIAN_PRICING,
   isPeakHour,
   costTable,
   calculateCost,
+  formatCost,
+  quotaTable,
+  resolveQuotaTable,
+  calculateQuotaPercent,
   buildBucketFromRequests,
   ingestTelemetryPayload,
   pickScoped
@@ -441,8 +446,236 @@ test('buildBucketFromRequests: aggregates SQLite model_usage rows by turnId with
   assert.equal(bucket.turnsById.turn_1.input, 2_000_000);
   assert.equal(bucket.turnsById.turn_1.output, 1_000_000);
   assert.equal(bucket.turnsById.turn_1.hit, 1_400_000);
+  assert.equal(bucket.turnsById.turn_1.reqCount, 2, 'req_1 + req_2 = 2 distinct requests');
+  assert.equal(bucket.turnsById.turn_2.reqCount, 1);
+  assert.equal(bucket.reqCount, 3);
   assert.equal(bucket.stepsSeen.req_1, 1);
   assert.equal(bucket.stepsSeen.req_2, 1);
   assert.equal(bucket.stepsSeen.req_3, 1);
+});
+
+test('costTable: bailian snapshots win over official deepseek tables', () => {
+  assert.equal(costTable('deepseek-v4.1-flash'), BAILIAN_PRICING.dsv41flash);
+  assert.equal(costTable('deepseek-v4.1-flash-1017'), BAILIAN_PRICING.dsv41flash, '-1017 snapshot stays bailian');
+  assert.equal(costTable('deepseek-v4-pro-0813'), BAILIAN_PRICING.dsv4pro, '-0813 snapshot → bailian dsv4pro');
+  assert.equal(costTable('deepseek-v4-pro'), PRICING.v4pro, 'bare v4-pro stays official tiered table');
+  assert.equal(costTable('qwen3.8-max'), BAILIAN_PRICING.qwen38max);
+  assert.equal(costTable('qwen3.8-max-0902'), BAILIAN_PRICING.qwen38max);
+  assert.equal(costTable('qwen3.8-flash'), BAILIAN_PRICING.qwen38flash);
+  assert.equal(costTable('glm-5.3'), BAILIAN_PRICING.glm53);
+  assert.equal(costTable('glm-5.2'), BAILIAN_PRICING.glm53);
+  assert.equal(costTable('kimi-k3'), null, 'unknown family → null (宁缺勿错)');
+  assert.equal(costTable('gpt-5.2'), null);
+  // 原 deepseek 分支全部保持
+  assert.equal(costTable('deepseek-flash'), PRICING.flash);
+  assert.equal(costTable('deepseek-v4-pro-preview'), PRICING.v4pro);
+  assert.equal(costTable('deepseek-reasoner'), PRICING.r1legacy);
+  assert.equal(costTable('deepseek-r1'), PRICING.r1legacy);
+  assert.equal(costTable('deepseek-chat'), PRICING.v3legacy);
+  assert.equal(costTable('deepseek-v3'), PRICING.v3legacy);
+  assert.equal(costTable('deepseek-something-new'), PRICING.flash);
+});
+
+test('calculateCost: bailian fixed table — no peak/off-peak, no cache discount tier', () => {
+  // qwen3.8-max: 入 100万 × 12 + 出 50万 × 36 = 12 + 18 = 30 元
+  assert.equal(calculateCost('qwen3.8-max', 0, 1e6, 0.5e6, MON_PEAK), 30);
+  assert.equal(calculateCost('qwen3.8-max', 0, 1e6, 0.5e6, MON_NIGHT), 30, '峰谷同价（无峰谷档）');
+  assert.equal(calculateCost('qwen3.8-max', 1e6, 0, 0.5e6, MON_PEAK), 30, 'cached+miss 合计入价，无缓存折扣');
+  // deepseek-v4.1-flash: 入 200万 × 1 + 出 100万 × 4 = 6 元
+  assert.equal(calculateCost('deepseek-v4.1-flash', 0, 2e6, 1e6, MON_PEAK), 6);
+  assert.equal(calculateCost('deepseek-v4.1-flash', 0, 2e6, 1e6, MON_NIGHT), 6, '两个时段同值 = 无峰谷');
+  // deepseek-v4-pro-0813 → 百炼 dsv4pro：入 100万 × 4.5 + 出 100万 × 13.5 = 18
+  assert.equal(calculateCost('deepseek-v4-pro-0813', 1e6, 0, 1e6, MON_PEAK), 4.5 + 13.5);
+});
+
+test('calculateCost: bare deepseek-v4-pro keeps official tiered spread', () => {
+  const peak = calculateCost('deepseek-v4-pro', 0, 1e6, 1e6, MON_PEAK);
+  const offPeak = calculateCost('deepseek-v4-pro', 0, 1e6, 1e6, MON_NIGHT);
+  assert.equal(peak, PRICING.v4pro.miss[1] + PRICING.v4pro.out[1]);
+  assert.equal(offPeak, PRICING.v4pro.miss[0] + PRICING.v4pro.out[0]);
+  assert.notEqual(peak, offPeak, 'official v4pro keeps peak/off-peak spread');
+});
+
+test('formatCost: >=0.01 → 3 decimals, <0.01 → 4 decimals', () => {
+  assert.equal(formatCost(0.0004), '0.0004');
+  assert.equal(formatCost(0.0123), '0.012');
+  assert.equal(formatCost(1.5), '1.500');
+  assert.equal(formatCost(0), '0.0000');
+  assert.equal(formatCost(NaN), '0.0000');
+  assert.equal(formatCost(0.00999), '0.0100', 'rounds up across the 0.01 boundary');
+});
+
+test('quotaTable: gemini flash/pro tiers for 5h/weekly/daily windows, non-gemini null', () => {
+  // 默认 5小时额度窗口 (5h)
+  assert.equal(quotaTable('gemini-3.8-flash').limit, 150);
+  assert.equal(quotaTable('gemini-3.8-flash').windowLabel, '5小时额度');
+  assert.equal(quotaTable('Gemini-3.8-Flash').limit, 150, 'case-insensitive flash tier');
+  assert.equal(quotaTable('gemini-3.8-pro').limit, 50);
+  assert.equal(quotaTable('gemini-whatever').limit, 50, 'non-flash gemini defaults to pro tier');
+  assert.ok(quotaTable('gemini-3.8-pro').label.includes('Google AI Pro'));
+  assert.ok(quotaTable('gemini-3.8-pro').label.includes('5小时额度'));
+
+  // 周额度窗口 (weekly)
+  assert.equal(quotaTable('gemini-3.8-flash', 'weekly').limit, 1500);
+  assert.equal(quotaTable('gemini-3.8-pro', 'weekly').limit, 500);
+  assert.equal(quotaTable('gemini-3.8-pro', 'weekly').windowLabel, '周额度');
+  assert.ok(quotaTable('gemini-3.8-pro', 'weekly').label.includes('周额度'));
+
+  // 日额度兼容 (daily)
+  assert.equal(quotaTable('gemini-3.8-flash', 'daily').daily, 250);
+  assert.equal(quotaTable('gemini-3.8-pro', 'daily').daily, 100);
+
+  // 非 gemini 返回 null
+  assert.equal(quotaTable('kimi-k3'), null);
+  assert.equal(quotaTable(''), null);
+  assert.equal(quotaTable(undefined), null);
+});
+
+test('resolveQuotaTable: custom dict overrides builtin, invalid input falls back', () => {
+  assert.equal(resolveQuotaTable('gemini-3.8-pro', { 'gemini-3.8-pro': 150 }).limit, 150, 'object form');
+  assert.equal(resolveQuotaTable('gemini-3.8-pro', '{"gemini-3.8-pro": 150}').limit, 150, 'JSON string form');
+  assert.equal(resolveQuotaTable('GEMINI-3.8-PRO', { 'gemini-3.8-pro': 42 }).limit, 42, 'case-insensitive key hit');
+  assert.equal(resolveQuotaTable('gemini-3.8-pro', '{invalid json').limit, 50, '非法 JSON 不崩 → builtin 5h');
+  assert.equal(resolveQuotaTable('gemini-3.8-pro', '{"gemini-3.8-pro": 0}').limit, 50, '非正值回退 builtin 5h');
+  assert.equal(resolveQuotaTable('gemini-3.8-pro', {}, 'weekly').limit, 500, 'no key hit + weekly → weekly builtin');
+  assert.equal(resolveQuotaTable('gemini-3.8-pro', null).limit, 50);
+  assert.equal(resolveQuotaTable('gemini-3.8-pro', '[1,2]').limit, 50, 'array is not a dict → builtin');
+  const custom = resolveQuotaTable('kimi-k3', { 'kimi-k3': 42 });
+  assert.equal(custom.limit, 42, 'custom may cover models without builtin rule');
+  assert.equal(custom.custom, true);
+  assert.equal(resolveQuotaTable('kimi-k3', { 'other': 42 }), null, 'no builtin + no custom hit → null');
+});
+
+test('calculateQuotaPercent: builtin / custom override / no-table zero', () => {
+  // 5h 窗口 (pro=50, flash=150)
+  assert.equal(calculateQuotaPercent('gemini-3.8-pro', 25, null, '5h'), 50);
+  assert.ok(Math.abs(calculateQuotaPercent('gemini-3.8-flash', 150, null, '5h') - 100) < 1e-9);
+
+  // weekly 窗口 (pro=500)
+  assert.equal(calculateQuotaPercent('gemini-3.8-pro', 250, null, 'weekly'), 50);
+
+  // 自定义覆盖
+  assert.ok(Math.abs(calculateQuotaPercent('gemini-3.8-pro', 75, '{"gemini-3.8-pro": 150}') - 50) < 1e-9);
+  assert.ok(calculateQuotaPercent('gemini-3.8-pro', 250, null) > 100, 'may exceed 100');
+  assert.equal(calculateQuotaPercent('kimi-k3', 10, null), 0, 'no quota table → 0');
+  assert.equal(calculateQuotaPercent('gemini-3.8-pro', undefined, null), 0);
+});
+
+const mkStepPayload = (over = {}) => {
+  const { eventExtraDetail, ...rest } = over;
+  return {
+    elementName: 'agent_step',
+    talkId: 'TALK_RQ',
+    messageId: 'MSG_RQ1',
+    eventExtraDetail: {
+      step_id: 'step_rq',
+      step_type: 'generation',
+      token_usage_scope: 'model_request',
+      model_request_id: '',
+      model_name: 'qwen3.8-max',
+      input_tokens: 1000,
+      cached_tokens: 0,
+      output_tokens: 100,
+      ...(eventExtraDetail || {})
+    },
+    ...rest
+  };
+};
+
+test('reqCount: two distinct model_request_ids in one turn → turn/bucket/session all 2', () => {
+  const st = mkState({ activeTalkId: 'TALK_RQ' });
+  assert.equal(
+    ingestTelemetryPayload(
+      st,
+      mkStepPayload({ eventExtraDetail: { step_id: 's1', model_request_id: 'req_r1', model_name: 'qwen3.8-max', input_tokens: 1000, cached_tokens: 500, output_tokens: 100 } }),
+      { now: 1000 }
+    ),
+    true
+  );
+  assert.equal(
+    ingestTelemetryPayload(
+      st,
+      mkStepPayload({ eventExtraDetail: { step_id: 's2', model_request_id: 'req_r2', model_name: 'qwen3.8-max', input_tokens: 2000, cached_tokens: 800, output_tokens: 200 } }),
+      { now: 1100 }
+    ),
+    true
+  );
+  const bk = st.byTalk.TALK_RQ;
+  assert.equal(bk.turns, 1, 'same messageId → still one turn');
+  assert.equal(bk.turnsById.MSG_RQ1.reqCount, 2);
+  assert.equal(bk.reqCount, 2);
+  assert.equal(st.session.reqCount, 2);
+  assert.equal(st.lastTurn.reqCount, 2);
+  // duplicate model_request_id (new step_id) must not add another request
+  assert.equal(
+    ingestTelemetryPayload(
+      st,
+      mkStepPayload({ eventExtraDetail: { step_id: 's3', model_request_id: 'req_r2', model_name: 'qwen3.8-max', input_tokens: 3000, output_tokens: 300 } }),
+      { now: 1200 }
+    ),
+    false,
+    'seen model_request_id is rejected by the gate'
+  );
+  assert.equal(bk.reqCount, 2);
+  assert.equal(bk.turnsById.MSG_RQ1.reqCount, 2);
+});
+
+test('reqCount: message_completion solo turn → reqCount=1; dedup paths never inflate', () => {
+  const st = mkState({ activeTalkId: 'TALK_RQ2' });
+  const donePayload = {
+    elementName: 'message_completion',
+    talkId: 'TALK_RQ2',
+    messageId: 'MSG_C1',
+    eventExtraDetail: { model_name: 'glm-5.3', input_tokens: 500, output_tokens: 100 }
+  };
+  assert.equal(ingestTelemetryPayload(st, donePayload, { now: 1000 }), true);
+  assert.equal(st.byTalk.TALK_RQ2.turnsById.MSG_C1.reqCount, 1);
+  assert.equal(st.byTalk.TALK_RQ2.reqCount, 1);
+  assert.equal(st.session.reqCount, 1);
+  // duplicate completion rejected → reqCount unchanged
+  assert.equal(ingestTelemetryPayload(st, donePayload, { now: 1100 }), false);
+  assert.equal(st.byTalk.TALK_RQ2.reqCount, 1);
+
+  // turn already established by a step: completion must not add another request
+  const st2 = mkState({ activeTalkId: 'TALK_RQ3' });
+  assert.equal(
+    ingestTelemetryPayload(
+      st2,
+      mkStepPayload({ talkId: 'TALK_RQ3', messageId: 'MSG_S1', eventExtraDetail: { step_id: 'ss1', model_request_id: 'rq1', model_name: 'glm-5.3', input_tokens: 100, output_tokens: 10 } }),
+      { now: 1000 }
+    ),
+    true
+  );
+  assert.equal(
+    ingestTelemetryPayload(
+      st2,
+      {
+        elementName: 'message_completion',
+        talkId: 'TALK_RQ3',
+        messageId: 'MSG_S1',
+        eventExtraDetail: { model_name: 'glm-5.3', input_tokens: 100, output_tokens: 10 }
+      },
+      { now: 1100 }
+    ),
+    false
+  );
+  assert.equal(st2.byTalk.TALK_RQ3.turnsById.MSG_S1.reqCount, 1);
+  assert.equal(st2.byTalk.TALK_RQ3.reqCount, 1);
+});
+
+test('buildBucketFromRequests: reqCount dedups by logicalRequestId and sums per bucket', () => {
+  const peakTs = MON_PEAK.getTime();
+  const rows = [
+    { id: 'r1', logicalRequestId: 'L1', turnId: 't1', modelId: 'qwen3.8-max', startedAt: peakTs, input: 1e6, output: 1e5, cached: 0 },
+    { id: 'r2', logicalRequestId: 'L1', turnId: 't1', modelId: 'qwen3.8-max', startedAt: peakTs + 100, input: 1e6, output: 1e5, cached: 0 },
+    { id: 'r3', logicalRequestId: 'L2', turnId: 't1', modelId: 'qwen3.8-max', startedAt: peakTs + 200, input: 1e6, output: 1e5, cached: 0 },
+    { id: 'r4', turnId: 't2', modelId: 'deepseek-chat', startedAt: peakTs + 300, input: 1e6, output: 1e5, cached: 0 }
+  ];
+  const bucket = buildBucketFromRequests('SESS_RQ', rows, true);
+  assert.equal(bucket.turnsById.t1.reqCount, 2, 'L1 counted once within t1');
+  assert.equal(bucket.turnsById.t2.reqCount, 1);
+  assert.equal(bucket.reqCount, 3);
+  assert.equal(bucket.lastTurn.turnId, 't2');
+  assert.equal(bucket.lastTurn.reqCount, 1);
 });
 

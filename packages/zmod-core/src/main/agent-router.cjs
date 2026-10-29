@@ -49,6 +49,8 @@ const KNOWN_TIER_RULES = [
     matcher: (providerId, modelId) => /bailian|dashscope|aliyun/i.test(providerId) || /^qwen/i.test(modelId),
     resolve: (modelId) => {
       if (/turbo|flash/i.test(modelId)) return modelId;
+      // Qwen3.8 系非 flash 命名（如 qwen3.8-max-0902）收敛到用户百炼渠道实际可用的轻量模型
+      if (/3\.8/i.test(modelId)) return "qwen3.8-flash";
       return "qwen-turbo";
     }
   },
@@ -63,12 +65,15 @@ const KNOWN_TIER_RULES = [
     }
   },
   // DeepSeek 官方渠道或 DeepSeek 官方系列模型
+  // ZCode 官方 DeepSeek 通道的轻量档为 deepseek-flash（deepseek-chat 在该通道不存在）；
+  // 开放平台旧名 V3 Chat 本就是轻量档，命中原样保留。
   {
     matcher: (providerId, modelId) => /deepseek/i.test(providerId) || /^deepseek-/i.test(modelId),
     resolve: (modelId) => {
-      if (/chat/i.test(modelId)) return modelId;
-      if (/reasoner|r1/i.test(modelId)) return "deepseek-chat";
-      return "deepseek-chat";
+      if (/flash/i.test(modelId)) return modelId;
+      if (/v4.?pro/i.test(modelId) || /reasoner|r1/i.test(modelId)) return "deepseek-flash";
+      if (/chat/i.test(modelId) || /v3/i.test(modelId)) return modelId;
+      return "deepseek-flash";
     }
   }
 ];
@@ -84,7 +89,13 @@ function getPluginConfig() {
         ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "ZMod")
         : path.join(os.homedir(), ".config", "zmod"));
 
+    // 候选顺序：
+    // 1) 部署布局：本文件安装于 <data>/runtime/main/agent-router.cjs，向上两级即 <data>，
+    //    直接命中 <data>/plugin-data/smart-subagent/config.json（与主进程 RPC 落盘位置一致）；
+    // 2) 显式/推断数据目录（ZMOD_USER_DATA_DIR 由主进程 installAgentRouterHook 注入）；
+    // 3) 历史开发布局兜底（repo 根 /data，仅旧版源码运行时可能命中）。
     const candidatePaths = [
+      path.resolve(__dirname, "../../plugin-data/smart-subagent/config.json"),
       path.join(dataDir, "plugin-data", "smart-subagent", "config.json"),
       path.resolve(__dirname, "../../../../data/plugin-data/smart-subagent/config.json")
     ];
@@ -151,9 +162,11 @@ function resolveSubagentTierSelection(params) {
   const reduceThinking = pluginCfg?.reduceThinking !== false;
 
   // 1. 用户自定义映射规则优先 (customRules)
+  // 目标必须是非空字符串才采用，防止空串/非字符串值把子代理指到无效模型名
   const customMap = pluginCfg?.customRules || {};
-  if (customMap[providerId] || customMap[modelId]) {
-    const targetModelId = customMap[providerId] || customMap[modelId];
+  const customTarget = customMap[providerId] || customMap[modelId];
+  if (typeof customTarget === "string" && customTarget.trim()) {
+    const targetModelId = customTarget;
     return {
       resolved: true,
       selection: {

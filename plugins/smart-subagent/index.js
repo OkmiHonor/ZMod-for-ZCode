@@ -4,7 +4,7 @@ export default definePlugin({
   id: 'smart-subagent',
   name: '子代理智能模型路由',
   description: '自动感知当前会话订阅源，派发子代理时动态降级选用同源 Flash/Haiku/Mini/Turbo 轻量模型',
-  version: '1.0.0',
+  version: '1.0.1',
   author: 'ZMod Team',
 
   settings: {
@@ -34,7 +34,7 @@ export default definePlugin({
     },
     groupRules: {
       type: 'group',
-      title: '内置已支持的主流官方通道：Google Gemini (Pro→Flash) · Claude (Sonnet/Opus→Haiku) · OpenAI (GPT-4o→Mini) · 阿里百炼 (Max/Plus→Turbo) · 智谱GLM (GLM-5→Flash) · DeepSeek (R1→V3 Chat)'
+      title: '内置已支持的主流官方通道：Google Gemini (Pro→Flash) · Claude (Sonnet/Opus→Haiku) · OpenAI (GPT-4o→Mini) · 阿里百炼 (Qwen3.8 Max→Qwen3.8 Flash, Max/Plus→Turbo) · 智谱GLM (GLM-5→Flash) · DeepSeek (V4 Pro/R1→DeepSeek Flash)'
     }
   },
 

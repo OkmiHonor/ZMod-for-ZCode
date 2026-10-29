@@ -1,22 +1,28 @@
 import { definePlugin } from '@zmod/sdk';
 import {
   buildBucketFromRequests,
+  calculateQuotaPercent,
+  formatCost,
   ingestTelemetryPayload,
-  pickScoped
+  pickScoped,
+  resolveQuotaTable
 } from './lib.js';
 
 /**
  * Usage & Token statistics — v2 port of v1 token-monitor (v3.x).
  *
- * Dual-engine session-aware architecture (v1.3.1):
+ * Dual-engine session-aware architecture (v1.4.0):
  * 1. Self-contained per-session telemetry state machine (turnsById / stepsSeen)
  *    + DOM session detection ([data-session-id]) + draft isolation;
  * 2. Optional authoritative SQLite calibration (usage.getSessionStats RPC) when
- *    supported by the host runtime, falling back gracefully on older runtimes.
+ *    supported by the host runtime, falling back gracefully on older runtimes;
+ * 3. Cost estimation covers DeepSeek (official USD×7, peak/off-peak) + Bailian
+ *    (DashScope RMB fixed) model families; subscription quota estimation
+ *    (requests/day, e.g. Google AI Pro) with custom JSON override.
  */
 
-const STORAGE_KEY = 'zmod_token_stats_v2_2';
-const LEGACY_STORAGE_KEYS = ['zmod_token_stats_v2_1'];
+const STORAGE_KEY = 'zmod_token_stats_v2_3';
+const LEGACY_STORAGE_KEYS = ['zmod_token_stats_v2_2', 'zmod_token_stats_v2_1'];
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
@@ -27,10 +33,10 @@ function esc(s) {
 function freshState() {
   return {
     byTalk: {},
-    lastTurn: { hit: 0, miss: 0, input: 0, output: 0, reasoning: 0, total: 0, ratio: 0, cost: 0, model: '' },
+    lastTurn: { hit: 0, miss: 0, input: 0, output: 0, reasoning: 0, total: 0, ratio: 0, cost: 0, reqCount: 0, model: '' },
     session: {
       turns: 0, hitTokens: 0, missTokens: 0, totalInput: 0, outputTokens: 0,
-      reasoningTokens: 0, totalTokens: 0, totalCost: 0, avgRatio: 0
+      reasoningTokens: 0, totalTokens: 0, totalCost: 0, reqCount: 0, avgRatio: 0
     },
     currentModel: '',
     activeTalkId: null,
@@ -70,8 +76,8 @@ function detectDomTalkId(popEl) {
 export default definePlugin({
   id: 'usage-stats',
   name: 'Token 用量统计',
-  version: '1.3.1',
-  description: '非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知，跨会话不串数），费用估算仅 DeepSeek 系模型，余额走数据源系统',
+  version: '1.4.0',
+  description: '非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知，跨会话不串数），费用估算覆盖 DeepSeek 系 + 百炼系模型，订阅源额度估算，余额走数据源系统',
   author: 'ZMod Team',
 
   settings: {
@@ -86,8 +92,35 @@ export default definePlugin({
     enableCost: {
       type: 'switch',
       title: '启用费用估算',
-      description: '按 DeepSeek 定价表（峰谷时段）估算费用，仅供参考',
+      description: 'DeepSeek 系按官方定价（USD×7 折算、峰谷时段），百炼系按 RMB 固定价，仅供参考',
       default: true
+    },
+    quota: {
+      type: 'group',
+      title: '额度估算'
+    },
+    enableQuota: {
+      type: 'switch',
+      title: '订阅额度估算',
+      description: '按订阅商官方公布档位估算额度消耗（支持 5小时额度与周额度，浮窗明确标注周期）',
+      default: true
+    },
+    quotaWindow: {
+      type: 'select',
+      title: '额度统计周期',
+      description: '选择订阅额度的统计窗口：Google AI Pro / Antigravity 支持 5小时滚动 或 周额度',
+      options: [
+        { value: '5h', label: '5小时额度 (滚动窗口)' },
+        { value: 'weekly', label: '周额度 (每周额度)' },
+        { value: 'daily', label: '日额度 (每日额度)' }
+      ],
+      default: '5h'
+    },
+    customQuota: {
+      type: 'text',
+      title: '自定义额度表 (JSON)',
+      description: 'JSON 字典覆盖内置额度，如 {"gemini-3.8-pro": 50}（模型名 → 周期请求次数上限）',
+      default: '{}'
     }
   },
 
@@ -95,12 +128,21 @@ export default definePlugin({
     const { settings: s, patcher, cleanup } = ctx;
     const state = freshState();
 
-    // ---- purge legacy dirty cache & restore persisted stats ----
+    // ---- restore persisted stats; legacy keys migrate (copy → new key → clear) ----
     try {
-      for (const k of LEGACY_STORAGE_KEYS) {
-        localStorage.removeItem(k);
+      let raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) {
+        for (const k of LEGACY_STORAGE_KEYS) {
+          const legacy = localStorage.getItem(k);
+          if (legacy) {
+            raw = legacy;
+            try { localStorage.setItem(STORAGE_KEY, legacy); } catch {}
+            break;
+          }
+        }
       }
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      for (const k of LEGACY_STORAGE_KEYS) localStorage.removeItem(k);
+      const saved = JSON.parse(raw || 'null');
       if (saved && ((saved.session?.turns || 0) > 0 || (saved.lastTurn?.input || 0) > 0 || saved.byTalk)) {
         Object.assign(state.session, saved.session || {});
         state.lastTurn = { ...state.lastTurn, ...(saved.lastTurn || {}) };
@@ -276,12 +318,42 @@ export default definePlugin({
         : sess.totalInput != null
           ? `入 ${fmtWan(sess.totalInput)} / 出 ${fmtWan(sess.outputTokens)} / 命中 ${fmtWan(sess.hitTokens)}`
           : `${sess.turns} 轮 / 共 ${fmtWan(sess.totalTokens)} / 命中 ${fmtWan(sess.hitTokens)}`;
+      const costOn = s.get('enableCost', true);
+      // 额度行：订阅源（如 Google AI Pro）按 5小时 / 周额度档位估算，周期在标签中明确标出
+      let quotaRow = '';
+      const quotaModel = (lt && lt.model) || state.currentModel;
+      const customQuotaRaw = s.get('customQuota', '{}');
+      const quotaWindow = s.get('quotaWindow', '5h');
+      const qt = quotaModel ? resolveQuotaTable(quotaModel, customQuotaRaw, quotaWindow) : null;
+      const isQuotaModel = Boolean(qt);
+
+      if (s.get('enableQuota', true) && qt) {
+        const reqCount = (sess && sess.reqCount) || 0;
+        if (reqCount > 0) {
+          const pct = calculateQuotaPercent(quotaModel, reqCount, customQuotaRaw, quotaWindow);
+          const limit = qt.limit || qt.daily || 1;
+          const quotaLabel = `会话额度 (${qt.windowLabel || '5小时额度'})`;
+          quotaRow = row(
+            quotaLabel,
+            `${reqCount} / ${limit} 次 (${pct >= 100 ? '⚠ ' : ''}${pct.toFixed(1)}%)`
+          );
+        }
+      }
+
+      // 互斥铁律：命中订阅额度的模型（如 Google AI Pro 买断订阅源），不显示费用（本轮与会话均不量化金钱）
+      const showCost = costOn && !isQuotaModel;
+      const turnCostSuffix =
+        showCost && lt && (lt.cost || 0) > 0 ? ` · ¥${formatCost(lt.cost)}` : '';
+      const sessionCostRow =
+        showCost && sess && (sess.totalCost || 0) > 0
+          ? row('会话费用估算', '¥' + formatCost(sess.totalCost))
+          : '';
+
       wrap.innerHTML =
-        row('本轮', lt && lt.total > 0 ? `入 ${fmtWan(lt.input)} / 出 ${fmtWan(lt.output)}` : '—') +
+        row('本轮', lt && lt.total > 0 ? `入 ${fmtWan(lt.input)} / 出 ${fmtWan(lt.output)}${turnCostSuffix}` : '—') +
         row('本会话', sessionVal) +
-        (s.get('enableCost', true) && sess && (sess.totalCost || 0) > 0
-          ? row('会话费用估算', '¥' + sess.totalCost.toFixed(3))
-          : '');
+        sessionCostRow +
+        quotaRow;
       return wrap;
     }
 
@@ -321,6 +393,6 @@ export default definePlugin({
       for (const t of pendingSyncTimers.values()) clearTimeout(t);
       pendingSyncTimers.clear();
     });
-    console.log('[usage-stats] ready (v1.3.1; telemetry + sqlite calibration)');
+    console.log('[usage-stats] ready (v1.4.0; telemetry + sqlite calibration)');
   }
 });

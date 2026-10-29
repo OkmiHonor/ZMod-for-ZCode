@@ -1,7 +1,7 @@
 {
   "id": "smart-subagent",
   "name": "子代理智能模型路由",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "自动感知当前主会话订阅源，派发子代理时智能降级使用同源 Flash/Haiku/Mini/Turbo 轻量模型，大幅降低 Token 成本并提升响应并发速度",
   "author": "ZMod Team",
   "category": "productivity",

@@ -53,11 +53,16 @@ const ICONS = {
   chevronRight:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>',
   spinner:
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>',
+  zap:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>',
+  bot:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path></svg>'
 };
 
 function iconHtml(name, cls = 'size-4') {
-  return ICONS[name].replace('<svg ', `<svg class="${cls}" `);
+  const rawSvg = ICONS[name] || ICONS.puzzle;
+  return rawSvg.replace('<svg ', `<svg class="${cls}" `);
 }
 
 function esc(s) {
@@ -176,10 +181,12 @@ const NAV_BTN_BASE =
 const NAV_BTN_IDLE = 'text-remote-foreground-muted hover:bg-surface-hover hover:text-foreground';
 const NAV_BTN_ACTIVE = 'bg-surface-hover text-foreground';
 
-const NAV_ITEMS = [
+const BASE_NAV_ITEMS = [
   { id: 'plugins', label: '扩展插件', icon: 'puzzle' },
   { id: 'datasources', label: '数据源', icon: 'database' }
 ];
+
+const DSH_NAV_ITEM = { id: 'dsh-compat', label: 'DSH 插件', icon: 'zap' };
 
 /* ------------------------------------------------------------------ *
  * Native mode constants
@@ -193,12 +200,20 @@ const NATIVE_GROUP_TITLE_ID = 'zmod.settings.group.title';
 const NATIVE_MESSAGES = {
   [NATIVE_GROUP_TITLE_ID]: 'ZMod',
   'zmod.settings.plugins.title': '扩展插件',
-  'zmod.settings.datasources.title': '数据源'
+  'zmod.settings.datasources.title': '数据源',
+  'zmod.settings.dsh-compat.title': 'DSH 插件'
 };
-const NATIVE_SECTIONS = [
+const BASE_NATIVE_SECTIONS = [
   { id: 'zmod', itemId: 'plugins', label: '扩展插件', icon: 'puzzle', titleId: 'zmod.settings.plugins.title' },
   { id: 'zmod-datasources', itemId: 'datasources', label: '数据源', icon: 'database', titleId: 'zmod.settings.datasources.title' }
 ];
+const DSH_NATIVE_SECTION = {
+  id: 'zmod-dsh-compat',
+  itemId: 'dsh-compat',
+  label: 'DSH 插件',
+  icon: 'zap',
+  titleId: 'zmod.settings.dsh-compat.title'
+};
 
 /* Official Switch/primary-button classes, verbatim from the host bundle —
    injected classes only have CSS if the official bundle generated it, so
@@ -462,6 +477,62 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     }
   });
 
+  function isDshCompatEnabled() {
+    return Boolean(registry?.isActive?.('dsh-compat'));
+  }
+
+  function getNavItems() {
+    return isDshCompatEnabled() ? [...BASE_NAV_ITEMS, DSH_NAV_ITEM] : BASE_NAV_ITEMS;
+  }
+
+  function getNativeSections() {
+    return isDshCompatEnabled() ? [...BASE_NATIVE_SECTIONS, DSH_NATIVE_SECTION] : BASE_NATIVE_SECTIONS;
+  }
+
+  events.on('plugin:enabled', async (id) => {
+    if (id === 'dsh-compat' && dialogOpen) {
+      if (mode === 'native' && nativeReg) {
+        nativeReg.undo?.();
+        nativeReg = null;
+        teardownNativeDom();
+        const rec = await registerNativeSections();
+        if (rec) {
+          nativeReg = rec;
+          ensureNativeMessages();
+          nativeSync();
+        }
+      } else if (navEl) {
+        detachNav();
+        attachNav(navEl);
+      }
+    }
+  });
+
+  events.on('plugin:disabled', async (id) => {
+    if (id === 'dsh-compat' && dialogOpen) {
+      if (activeItem === 'dsh-compat') {
+        activeItem = 'plugins';
+        if (mode === 'native') {
+          document.querySelector('nav [data-settings-section-nav="zmod"]')?.click();
+        }
+      }
+      if (mode === 'native' && nativeReg) {
+        nativeReg.undo?.();
+        nativeReg = null;
+        teardownNativeDom();
+        const rec = await registerNativeSections();
+        if (rec) {
+          nativeReg = rec;
+          ensureNativeMessages();
+          nativeSync();
+        }
+      } else if (navEl) {
+        detachNav();
+        attachNav(navEl);
+      }
+    }
+  });
+
   // Native mode bookkeeping
   let nativeSupported = null; // null = untried, true = verified, false = give up this session
   let nativeAttempts = 0;
@@ -559,7 +630,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     groupEl.innerHTML = `
       <div id="zmod-settings-group-title"
         class="px-2.5 pb-1 text-ui-sm font-medium text-remote-foreground-muted max-lg:sr-only">ZMod</div>`;
-    for (const item of NAV_ITEMS) {
+    for (const item of getNavItems()) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.setAttribute('data-zmod-nav-item', item.id);
@@ -603,7 +674,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   function activate(itemId) {
     activeItem = itemId;
     detail = null;
-    for (const item of NAV_ITEMS) {
+    for (const item of getNavItems()) {
       const btn = groupEl?.querySelector(`[data-zmod-nav-item="${item.id}"]`);
       if (!btn) continue;
       const on = item.id === itemId;
@@ -619,7 +690,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     activeItem = null;
     detail = null;
     pendingForceRefresh.clear();
-    for (const item of NAV_ITEMS) {
+    for (const item of getNavItems()) {
       const btn = groupEl?.querySelector(`[data-zmod-nav-item="${item.id}"]`);
       if (btn) {
         btn.className = `${NAV_BTN_BASE} ${NAV_BTN_IDLE}`;
@@ -715,7 +786,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
    * by overlay and native mode.
    */
   function detailTitleBlock() {
-    const item = NAV_ITEMS.find((i) => i.id === activeItem);
+    const item = getNavItems().find((i) => i.id === activeItem);
     const wrap = document.createElement('div');
     wrap.className = 'flex flex-wrap items-center justify-between gap-3';
     const h2 = document.createElement('h2');
@@ -760,7 +831,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     const scroll = document.createElement('div');
     scroll.className = 'flex min-h-0 flex-1 flex-col overflow-y-auto [scrollbar-gutter:stable]';
     const col = contentColumn();
-    const item = NAV_ITEMS.find((i) => i.id === activeItem);
+    const item = getNavItems().find((i) => i.id === activeItem);
     col.appendChild(detail ? detailTitleBlock() : pageTitleBlock(item?.label || ''));
     const body = contentList();
     col.appendChild(body);
@@ -773,7 +844,74 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   /** Page bodies are identical in both modes; only the chrome differs. */
   function renderPage(root) {
     if (activeItem === 'plugins') renderPluginsPage(root);
+    else if (activeItem === 'dsh-compat') renderDshCompatPage(root);
     else renderDatasourcesPage(root);
+  }
+
+  async function renderDshCompatPage(root) {
+    const wrap = document.createElement('div');
+    wrap.className = 'flex flex-col gap-4';
+    root.appendChild(wrap);
+
+    const isEnabled = isDshCompatEnabled();
+    const dshPlugin = registry?.getPlugin?.('dsh-compat') || registry?._plugins?.get?.('dsh-compat');
+    if (!dshPlugin || !isEnabled) {
+      const empty = document.createElement('div');
+      empty.className =
+        'flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border px-4 py-8 text-center text-ui-sm text-foreground-subtle';
+
+      const icon = document.createElement('div');
+      icon.className = 'text-foreground-subtle/60';
+      icon.innerHTML = iconHtml('zap', 'size-8');
+      empty.appendChild(icon);
+
+      const msg = document.createElement('span');
+      msg.textContent = 'DSH 插件兼容层未启用，请在「扩展插件」中开启。';
+      empty.appendChild(msg);
+
+      if (dshPlugin) {
+        const enableBtn = document.createElement('button');
+        enableBtn.type = 'button';
+        enableBtn.className =
+          'inline-flex h-8 cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-border bg-primary px-3 text-ui-sm font-medium text-primary-foreground transition-opacity hover:opacity-90';
+        enableBtn.textContent = '立即启用 DSH 兼容层';
+        enableBtn.addEventListener('click', async () => {
+          enableBtn.disabled = true;
+          try {
+            await registry.enable('dsh-compat', { persist: true });
+            ui.showToast('DSH 插件兼容层已启用', 'success');
+            renderContent();
+          } catch (e) {
+            ui.showToast(`启用失败: ${e?.message || e}`, 'error');
+          } finally {
+            enableBtn.disabled = false;
+          }
+        });
+        empty.appendChild(enableBtn);
+      }
+
+      wrap.appendChild(empty);
+      return;
+    }
+
+    if (typeof dshPlugin.renderSettings === 'function') {
+      dshPlugin.renderSettings(wrap, {
+        onAction: async (actionKey) => {
+          const action = dshPlugin.actions?.[actionKey];
+          const active = registry?._active?.get?.('dsh-compat') || registry?.getActive?.('dsh-compat');
+          if (typeof action?.run === 'function') {
+            const res = await action.run(active?.ctx);
+            if (res?.message) ui.showToast(res.message, res.ok ? 'success' : 'error');
+            return res;
+          }
+        },
+        toast: (msg, type) => ui.showToast(msg, type),
+        onChange: async (key, val) => {
+          const active = registry?._active?.get?.('dsh-compat') || registry?.getActive?.('dsh-compat');
+          if (active) await active.ctx.settings.set(key, val);
+        }
+      });
+    }
   }
 
   /* ------------------------------------------------------------ *
@@ -903,7 +1041,8 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
 
   /** Build a component that renders one of our SVGs through the host runtime. */
   function makeIcon(template, name) {
-    const doc = new DOMParser().parseFromString(ICONS[name], 'image/svg+xml');
+    const raw = ICONS[name] || ICONS.puzzle;
+    const doc = new DOMParser().parseFromString(raw, 'image/svg+xml');
     const convert = (node) => {
       const props = {};
       for (const attr of node.attributes) props[toReactProp(attr.name)] = attr.value;
@@ -939,13 +1078,14 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       }
       // A missing catalogue entry makes formatMessage echo the id — refuse to
       // register rather than render "zmod.settings.plugins.title" in the nav.
-      if (intl.formatMessage({ id: NATIVE_SECTIONS[0].titleId }) === NATIVE_SECTIONS[0].titleId) {
+      const nativeSections = getNativeSections();
+      if (intl.formatMessage({ id: nativeSections[0].titleId }) === nativeSections[0].titleId) {
         for (const key of addedMessages) delete intl.messages[key];
         return null;
       }
 
       const group = { id: NATIVE_GROUP_ID, titleId: NATIVE_GROUP_TITLE_ID, sections: [] };
-      const sections = NATIVE_SECTIONS.map((s) => ({
+      const sections = nativeSections.map((s) => ({
         id: s.id,
         icon: makeIcon(template, s.icon),
         titleId: s.titleId,
@@ -970,10 +1110,10 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
         return null;
       }
       await nextPaint();
-      if (!document.querySelector(`nav [data-settings-section-nav="${NATIVE_SECTIONS[0].id}"]`)) {
+      if (!document.querySelector(`nav [data-settings-section-nav="${nativeSections[0].id}"]`)) {
         // One extra frame: the scheduler may have deferred the re-render.
         await nextPaint();
-        if (!document.querySelector(`nav [data-settings-section-nav="${NATIVE_SECTIONS[0].id}"]`)) {
+        if (!document.querySelector(`nav [data-settings-section-nav="${nativeSections[0].id}"]`)) {
           undo();
           return null;
         }
@@ -993,13 +1133,13 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
   function nativeRegAlive() {
     if (!nativeReg) return false;
     if (!nativeReg.value.settingsSections.includes(nativeReg.sections[0])) return false;
-    return Boolean(document.querySelector(`nav [data-settings-section-nav="${NATIVE_SECTIONS[0].id}"]`));
+    return Boolean(document.querySelector(`nav [data-settings-section-nav="${getNativeSections()[0].id}"]`));
   }
 
   /** The host rebuilds its i18n object on provider remounts. */
   function ensureNativeMessages() {
     if (!nativeReg?.intl?.messages) return;
-    if (nativeReg.intl.formatMessage({ id: NATIVE_SECTIONS[0].titleId }) === NATIVE_SECTIONS[0].titleId) {
+    if (nativeReg.intl.formatMessage({ id: getNativeSections()[0].titleId }) === getNativeSections()[0].titleId) {
       Object.assign(nativeReg.intl.messages, NATIVE_MESSAGES);
     }
   }
@@ -1054,7 +1194,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     const root = document.querySelector('[data-active-section]');
     if (!root) return;
     const id = root.getAttribute('data-active-section');
-    const section = NATIVE_SECTIONS.find((s) => s.id === id);
+    const section = getNativeSections().find((s) => s.id === id);
     if (!section) {
       intentNative = null;
       teardownNativeDom();
@@ -2412,7 +2552,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
       if (activeItem === 'plugins') renderContent();
     },
     open() {
-      const first = NATIVE_SECTIONS[0];
+      const first = getNativeSections()[0];
       if (mode === 'native') {
         document.querySelector(`nav [data-settings-section-nav="${first.id}"]`)?.click();
         return;

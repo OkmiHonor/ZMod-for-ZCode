@@ -1,3 +1,7 @@
+import path from 'node:path';
+import fs from 'node:fs';
+import { getPluginDataDir } from '../common/paths.js';
+
 let electron = null;
 try {
   electron = await import('electron');
@@ -10,7 +14,9 @@ const electronScreen = electron?.screen ?? electron?.default?.screen;
 /**
  * 通用气泡 HUD 服务（泛化自宿主 CUA 操作指示气泡，视觉基因与窗口参数 1:1 复刻）。
  * 插件经 RPC bubble.show 触发四态任务通知：success / error / waiting / info。
- * v0.1 纯展示：鼠标穿透，不可交互。
+ * v0.2 可自定义：弹出位置 / 屏幕边距 / 整体缩放 / 明暗主题，
+ * 优先级：每次调用参数 > 持久化服务配置（bubble.setConfig）> 内置默认。
+ * 鼠标穿透，不可交互。
  */
 
 export const BUBBLE_KINDS = ['success', 'error', 'waiting', 'info'];
@@ -20,7 +26,7 @@ const ACCENTS = { success: '#16a34a', error: '#dc2626', waiting: '#d97706', info
 
 // 宿主 padding 基因：容器 padding-top 6 / bottom 12，内容行高 38
 const PAD = { top: 6, right: 8, bottom: 12, left: 8 };
-const WINDOW_HEIGHT = PAD.top + 38 + PAD.bottom;
+const ROW_HEIGHT = 38;
 
 // 宽度估算基因：icon(20) + gap(10) + 文案 + 左右 padding(36) + 余量(20)，CJK≈13.4、ASCII≈7.3
 const ICON_W = 20;
@@ -30,8 +36,6 @@ const SLACK = 20;
 const MIN_WIDTH = 200;
 const CJK_CHAR_W = 13.4;
 const ASCII_CHAR_W = 7.3;
-// 定位基因：workArea 顶部视觉边距 12，扣除容器 padding-top 6（宿主原式 y+12-6）
-const TOP_MARGIN = 12;
 
 const TITLE_MAX = 120;
 const BODY_MAX = 160;
@@ -40,6 +44,120 @@ const DURATION_MAX = 30000;
 const DURATION_DEFAULT = 5000;
 const LEAVE_MS = 120; // 宿主退场动画时长，之后 hide()
 const RETRY_MS = 250; // 宿主 discardFailedWindow 后的重建间隔
+
+// ---- 自定义配置（service 级持久化于 <data>/plugin-data/bubble-hud/config.json） ----
+export const BUBBLE_POSITIONS = [
+  'top-center',
+  'top-left',
+  'top-right',
+  'bottom-center',
+  'bottom-left',
+  'bottom-right'
+];
+export const BUBBLE_THEMES = ['auto', 'light', 'dark'];
+const POSITION_SET = new Set(BUBBLE_POSITIONS);
+const THEME_SET = new Set(BUBBLE_THEMES);
+export const BUBBLE_DEFAULT_CONFIG = Object.freeze({
+  position: 'top-center',
+  margin: 12,
+  scale: 1,
+  theme: 'auto'
+});
+
+function firstFiniteNumber(...vals) {
+  for (const v of vals) {
+    if (v == null || v === '') continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+/** margin 钳制 0..200，非数值回退默认 12 */
+function clampMargin(...vals) {
+  const n = firstFiniteNumber(...vals);
+  if (n == null) return BUBBLE_DEFAULT_CONFIG.margin;
+  return Math.min(Math.max(Math.round(n), 0), 200);
+}
+
+/** scale 钳制 0.6..2.0（两位小数），非数值回退默认 1 */
+function clampScale(...vals) {
+  const n = firstFiniteNumber(...vals);
+  if (n == null) return BUBBLE_DEFAULT_CONFIG.scale;
+  return Math.min(Math.max(Math.round(n * 100) / 100, 0.6), 2);
+}
+
+/** 水平/垂直位移像素偏移 -2000..2000，非数值回退 0 */
+function clampOffset(...vals) {
+  const n = firstFiniteNumber(...vals);
+  if (n == null) return 0;
+  return Math.min(Math.max(Math.round(n), -2000), 2000);
+}
+
+/** 屏幕水平/垂直坐标百分比 0..100 */
+function clampCoord(val, defaultVal = 50) {
+  const n = firstFiniteNumber(val);
+  if (n == null) return defaultVal;
+  return Math.min(Math.max(Math.round(n), 0), 100);
+}
+
+/**
+ * 逐项合成有效配置：params > persisted > 内置默认。
+ * 数值项钳制；枚举项非法时逐层回退。
+ * 保持基础 4 字段签名对齐；仅当传入坐标/偏移扩展参数时才输出扩展键。
+ */
+function effectiveConfig(persisted, params) {
+  const p = params || {};
+  const base = persisted || {};
+  const position = POSITION_SET.has(p.position)
+    ? p.position
+    : POSITION_SET.has(base.position)
+      ? base.position
+      : BUBBLE_DEFAULT_CONFIG.position;
+  const theme = THEME_SET.has(p.theme)
+    ? p.theme
+    : THEME_SET.has(base.theme)
+      ? base.theme
+      : BUBBLE_DEFAULT_CONFIG.theme;
+  const margin = clampMargin(p.margin, base.margin);
+  const scale = clampScale(p.scale, base.scale);
+  const res = { position, margin, scale, theme };
+
+  // 扩展定位支持：水平位移 offsetX / 垂直位移 offsetY / 屏幕坐标 coordX, coordY
+  const hasOffX = p.offsetX != null || base.offsetX != null;
+  const hasOffY = p.offsetY != null || base.offsetY != null;
+  const hasCoordX = p.coordX != null || base.coordX != null;
+  const hasCoordY = p.coordY != null || base.coordY != null;
+  const hasCoordMode = p.coordMode != null || base.coordMode != null;
+
+  if (hasOffX) res.offsetX = clampOffset(p.offsetX, base.offsetX);
+  if (hasOffY) res.offsetY = clampOffset(p.offsetY, base.offsetY);
+  if (hasCoordX) res.coordX = clampCoord(p.coordX != null ? p.coordX : base.coordX, 50);
+  if (hasCoordY) res.coordY = clampCoord(p.coordY != null ? p.coordY : base.coordY, 0);
+  if (hasCoordMode) res.coordMode = (p.coordMode || base.coordMode) === 'coord' ? 'coord' : 'preset';
+
+  return res;
+}
+
+/** 任意脏输入 → 合法配置（setConfig 持久化前、readConfig 回读后都过这里） */
+function normalizeConfig(raw) {
+  return effectiveConfig(BUBBLE_DEFAULT_CONFIG, raw);
+}
+
+const defaultReadConfig = () => {
+  try {
+    const file = path.join(getPluginDataDir('bubble-hud'), 'config.json');
+    if (!fs.existsSync(file)) return null;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null; // 读失败/缺文件回退默认
+  }
+};
+const defaultWriteConfig = (cfg) => {
+  const dir = getPluginDataDir('bubble-hud');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(cfg, null, 2), 'utf8');
+};
 
 const defaultSchedule = (fn, ms) => setTimeout(fn, ms);
 const defaultCancelSchedule = (timer) => clearTimeout(timer);
@@ -75,12 +193,17 @@ function estimateTextWidth(text) {
   return sum;
 }
 
-function windowWidth(title, body) {
+function windowWidth(title, body, scale) {
   const text = body ? `${title} · ${body}` : title;
-  return Math.max(MIN_WIDTH, Math.round(ICON_W + ICON_GAP + estimateTextWidth(text) + TEXT_PAD + SLACK));
+  const base = ICON_W + ICON_GAP + estimateTextWidth(text) + TEXT_PAD + SLACK;
+  return Math.max(Math.round(MIN_WIDTH * scale), Math.round(base * scale));
 }
 
-function iconMarkup(kind) {
+function windowHeight(scale) {
+  return PAD.top + Math.round(ROW_HEIGHT * scale) + PAD.bottom;
+}
+
+function iconMarkup(kind, scale) {
   if (kind === 'waiting') {
     return (
       '<span class="dots" aria-hidden="true">' +
@@ -92,8 +215,9 @@ function iconMarkup(kind) {
     error: '<path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2"/>',
     info: '<circle cx="8" cy="8" r="6.3"/><path d="M8 7.3v3.6"/><path d="M8 5v.1"/>'
   };
+  const size = Math.round(16 * scale);
   return (
-    `<svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" ` +
+    `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" ` +
     `stroke="${ACCENTS[kind]}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ` +
     `aria-hidden="true">${paths[kind]}</svg>`
   );
@@ -101,8 +225,10 @@ function iconMarkup(kind) {
 
 function bubbleHtml(spec) {
   const text = spec.body ? `${escapeHtml(spec.title)} · ${escapeHtml(spec.body)}` : escapeHtml(spec.title);
+  const s = spec.scale;
+  const rowH = Math.round(ROW_HEIGHT * s);
   return `<!doctype html>
-<html lang="en" data-state="active">
+<html lang="en" data-state="active" data-theme="${spec.theme}">
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
@@ -112,19 +238,19 @@ function bubbleHtml(spec) {
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
     body { display: flex; align-items: center; justify-content: center; padding: 6px 8px 12px; font-family: "Segoe UI Variable", "Segoe UI", sans-serif; }
     .indicator {
-      display: flex; align-items: center; justify-content: center; gap: 10px;
-      width: 100%; height: 38px; padding: 0 18px;
+      display: flex; align-items: center; justify-content: center; gap: ${Math.round(ICON_GAP * s)}px;
+      width: 100%; height: ${rowH}px; padding: 0 ${Math.round(18 * s)}px;
       color: #202124; background: rgba(255, 255, 255, 0.96);
-      border: 1px solid rgba(15, 23, 42, 0.14); border-radius: 12px;
+      border: 1px solid rgba(15, 23, 42, 0.14); border-radius: ${Math.round(12 * s)}px;
       box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08), 0 6px 12px -6px rgba(15, 23, 42, 0.18);
-      font-size: 13px; font-weight: 600; line-height: 1; white-space: nowrap;
+      font-size: ${Math.round(13 * s)}px; font-weight: 600; line-height: 1; white-space: nowrap;
       opacity: 1; transform: translateY(0);
       transition: opacity 120ms ease, transform 120ms ease;
       animation: enter 140ms ease-out both;
     }
     .icon { flex: 0 0 auto; }
-    .dots { display: flex; align-items: center; gap: 3px; }
-    .dot { width: 4px; height: 4px; border-radius: 50%; background: ${ACCENTS.waiting}; animation: pulse 1.2s ease-in-out infinite; }
+    .dots { display: flex; align-items: center; gap: ${Math.round(3 * s)}px; }
+    .dot { width: ${Math.round(4 * s)}px; height: ${Math.round(4 * s)}px; border-radius: 50%; background: ${ACCENTS.waiting}; animation: pulse 1.2s ease-in-out infinite; }
     .dot:nth-child(2) { animation-delay: 120ms; }
     .dot:nth-child(3) { animation-delay: 240ms; }
     html[data-state="leaving"] .indicator { opacity: 0; transform: translateY(-6px); }
@@ -133,13 +259,15 @@ function bubbleHtml(spec) {
     @media (prefers-color-scheme: dark) {
       .indicator { color: #f8fafc; background: rgba(35, 38, 43, 0.96); border-color: rgba(255, 255, 255, 0.14); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18), 0 6px 12px -6px rgba(0, 0, 0, 0.28); }
     }
+    html[data-theme="light"] .indicator { color: #202124; background: rgba(255, 255, 255, 0.96); border-color: rgba(15, 23, 42, 0.14); box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08), 0 6px 12px -6px rgba(15, 23, 42, 0.18); }
+    html[data-theme="dark"] .indicator { color: #f8fafc; background: rgba(35, 38, 43, 0.96); border-color: rgba(255, 255, 255, 0.14); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18), 0 6px 12px -6px rgba(0, 0, 0, 0.28); }
     @media (prefers-reduced-motion: reduce) {
       .indicator, .dot { animation: none; transition: opacity 1ms linear; transform: none; }
       html[data-state="leaving"] .indicator { transform: none; }
     }
   </style>
 </head>
-<body><div class="indicator" role="status" aria-live="polite">${iconMarkup(spec.kind)}<span>${text}</span></div></body>
+<body><div class="indicator" role="status" aria-live="polite">${iconMarkup(spec.kind, s)}<span>${text}</span></div></body>
 </html>`;
 }
 
@@ -150,6 +278,8 @@ function bubbleDataUrl(spec) {
 /**
  * 单窗复用控制器。deps 全量可注入（照宿主 createWindowsCuaOperationIndicator
  * 的 DI 设计）以便单测；窗口创建延迟到首次 show，那时 app 必然 ready。
+ * deps: { platform, BrowserWindow, screen, schedule, cancelSchedule, logger,
+ *         readConfig, writeConfig }
  */
 export function createBubbleHudController(deps) {
   const platform = deps.platform ?? process.platform;
@@ -158,14 +288,24 @@ export function createBubbleHudController(deps) {
   const schedule = deps.schedule ?? defaultSchedule;
   const cancelSchedule = deps.cancelSchedule ?? defaultCancelSchedule;
   const logger = deps.logger ?? defaultLogger;
+  const readConfig = deps.readConfig ?? defaultReadConfig;
+  const writeConfig = deps.writeConfig ?? defaultWriteConfig;
 
   const state = {
     win: null,
     autoHideTimer: null,
     leaveTimer: null,
     retryTimer: null,
-    lastShow: null
+    lastShow: null,
+    config: null
   };
+
+  try {
+    state.config = normalizeConfig(readConfig());
+  } catch (err) {
+    logger.debug('bubble config read failed, using defaults:', err?.message || err);
+    state.config = normalizeConfig(null);
+  }
 
   function cancelAutoHide() {
     if (state.autoHideTimer) {
@@ -188,10 +328,10 @@ export function createBubbleHudController(deps) {
     }
   }
 
-  function createWindow(width) {
+  function createWindow(width, height) {
     const win = new BrowserWindow({
       width,
-      height: WINDOW_HEIGHT,
+      height,
       alwaysOnTop: true,
       focusable: false,
       frame: false,
@@ -229,15 +369,48 @@ export function createBubbleHudController(deps) {
     }
   }
 
-  function positionWindow(win, width) {
+  /**
+   * 窗口定位（workArea 内）：
+   * 1. 自定义坐标模式（coordMode === 'coord'）：按屏幕分辨率百分比换算 + 偏移微调；
+   * 2. 传统六向模式（coordMode === 'preset'）：按 position 六向停靠 + margin + 偏移微调。
+   * 无论何种模式，均支持 offsetX / offsetY 像素级位移微调，并钳制在屏幕工作区内。
+   */
+  function positionWindow(win, width, height, cfg) {
     const point = screen.getCursorScreenPoint();
     const { workArea } = screen.getDisplayNearestPoint(point);
-    win.setBounds({
-      width,
-      height: WINDOW_HEIGHT,
-      x: Math.round(workArea.x + (workArea.width - width) / 2),
-      y: Math.round(workArea.y + TOP_MARGIN - PAD.top)
-    });
+    const offX = cfg.offsetX || 0;
+    const offY = cfg.offsetY || 0;
+    let x, y;
+
+    if (cfg.coordMode === 'coord') {
+      const pctX = (typeof cfg.coordX === 'number' ? cfg.coordX : 50) / 100;
+      x = Math.round(workArea.x + (workArea.width - width) * pctX) + offX;
+      if (typeof cfg.coordY === 'number' && cfg.coordY != null && cfg.coordY >= 0) {
+        const pctY = cfg.coordY / 100;
+        y = Math.round(workArea.y + (workArea.height - height) * pctY) + offY;
+      } else {
+        y = (cfg.position?.startsWith('bottom-')
+          ? workArea.y + workArea.height - height - cfg.margin + PAD.bottom
+          : workArea.y + cfg.margin - PAD.top) + offY;
+      }
+    } else {
+      if (cfg.position?.endsWith('-left')) {
+        x = workArea.x + cfg.margin + offX;
+      } else if (cfg.position?.endsWith('-right')) {
+        x = workArea.x + workArea.width - width - cfg.margin + offX;
+      } else {
+        x = Math.round(workArea.x + (workArea.width - width) / 2) + offX;
+      }
+      y = (cfg.position?.startsWith('bottom-')
+        ? workArea.y + workArea.height - height - cfg.margin + PAD.bottom
+        : workArea.y + cfg.margin - PAD.top) + offY;
+    }
+
+    // 边界安全钳制：防止窗口完全漂出屏幕
+    const minX = workArea.x - width / 2;
+    const maxX = workArea.x + workArea.width - width / 2;
+    const clampedX = Math.min(Math.max(x, minX), maxX);
+    win.setBounds({ width, height, x: Math.round(clampedX), y: Math.round(y) });
   }
 
   function showOnTop(win) {
@@ -289,17 +462,21 @@ export function createBubbleHudController(deps) {
   }
 
   async function present(spec) {
-    const width = windowWidth(spec.title, spec.body);
+    const width = windowWidth(spec.title, spec.body, spec.scale);
+    const height = windowHeight(spec.scale);
     let win = state.win && !state.win.isDestroyed() ? state.win : null;
-    if (!win) win = createWindow(width);
+    if (!win) win = createWindow(width, height);
     cancelAutoHide();
     cancelLeave();
-    positionWindow(win, width);
+    positionWindow(win, width, height, spec);
     await win.loadURL(bubbleDataUrl(spec));
     // load 期间窗口可能被关闭或被更新的 show 接管
     if (state.win !== win || win.isDestroyed()) return;
     showOnTop(win);
-    scheduleAutoHide(spec.durationMs);
+    // 常驻预览（pinned: true）或 durationMs 为 0 时不启动超时淡出，直到显式 hide 或更新
+    if (!spec.pinned && spec.durationMs > 0) {
+      scheduleAutoHide(spec.durationMs);
+    }
   }
 
   function scheduleRetry() {
@@ -328,11 +505,16 @@ export function createBubbleHudController(deps) {
     }
     if (platform !== 'win32') return { ok: true, shown: false };
 
+    // 优先级：调用参数 > 持久化配置 > 内置默认
+    const cfg = effectiveConfig(state.config, params);
+    const isPinned = Boolean(params.pinned || params.durationMs === 0);
     const spec = {
       kind,
       title: truncate(params.title, TITLE_MAX),
       body: params.body ? truncate(params.body, BODY_MAX) : '',
-      durationMs: clampDuration(params.durationMs)
+      durationMs: isPinned ? 0 : clampDuration(params.durationMs),
+      pinned: isPinned,
+      ...cfg
     };
     state.lastShow = spec;
     cancelRetry();
@@ -365,7 +547,23 @@ export function createBubbleHudController(deps) {
     };
   }
 
-  return { show, hide, status };
+  /** 持久化服务配置：逐项校验钳制后写入，成功即热生效（下次 show 起作用） */
+  function setConfig(params) {
+    const next = normalizeConfig(params);
+    try {
+      writeConfig(next);
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err) };
+    }
+    state.config = next;
+    return { ok: true, config: { ...next } };
+  }
+
+  function getConfig() {
+    return { ok: true, config: { ...state.config } };
+  }
+
+  return { show, hide, status, setConfig, getConfig };
 }
 
 let registered = false;
@@ -373,7 +571,8 @@ let registered = false;
 /**
  * 幂等注册：成功返回 true，重复注册或 gateway 不合法返回 false。
  * deps 注入面（照宿主工厂设计，全部可注入以便单测）：
- * { platform, BrowserWindow, screen, schedule, cancelSchedule, logger }
+ * { platform, BrowserWindow, screen, schedule, cancelSchedule, logger,
+ *   readConfig, writeConfig }
  */
 export function registerBubbleHud(gateway, injected = {}) {
   if (registered) return false;
@@ -384,12 +583,18 @@ export function registerBubbleHud(gateway, injected = {}) {
     screen: injected.screen,
     schedule: injected.schedule,
     cancelSchedule: injected.cancelSchedule,
-    logger: injected.logger
+    logger: injected.logger,
+    readConfig: injected.readConfig,
+    writeConfig: injected.writeConfig
   });
   gateway.register('bubble.show', (params) => controller.show(params || {}));
   gateway.register('bubble.hide', () => controller.hide());
   gateway.register('bubble.status', () => controller.status());
+  gateway.register('bubble.setConfig', (params) => controller.setConfig(params || {}));
+  gateway.register('bubble.getConfig', () => controller.getConfig());
   registered = true;
-  defaultLogger.info('bubble HUD ready (methods: bubble.show / bubble.hide / bubble.status)');
+  defaultLogger.info(
+    'bubble HUD ready (methods: bubble.show / bubble.hide / bubble.status / bubble.setConfig / bubble.getConfig)'
+  );
   return true;
 }
