@@ -1,6 +1,6 @@
 {
   "name": "@zmod/core",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "description": "ZMod Core Runtime - Scheme loader, unified RPC, and microkernel",
   "type": "module",
   "main": "src/main/index.js",
