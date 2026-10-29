@@ -1,6 +1,6 @@
 {
   "name": "@zmod/sdk",
-  "version": "1.6.5",
+  "version": "1.6.6",
   "description": "ZMod Plugin Developer SDK - Types, definePlugin, and standard schema",
   "type": "module",
   "main": "src/index.js",
