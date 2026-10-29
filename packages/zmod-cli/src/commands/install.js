@@ -162,6 +162,7 @@ export async function install(opts = {}) {
   teeConsoleTo(path.join(getLogsDir(), 'install-latest.log'));
   console.log(`\n🚀 [ZMod Installer] v${VERSION} — ${new Date().toISOString()}\n`);
 
+  console.log('[1/6] 正在检测 ZCode 宿主与运行环境...');
   const hostDir = locateZCode({ explicit: opts.path });
   if (!hostDir) {
     console.error('✖ ZCode install directory not found. Use --path <dir> or set the ZCODE_PATH env var.');
@@ -215,7 +216,7 @@ export async function install(opts = {}) {
 
     // ---- 2. Extract + patch ----
     const extractDir = path.join(tmpRoot, 'extract');
-    console.log('• Extracting official asar...');
+    console.log('[2/6] 正在解包官方 app.asar（本步约需 1 分钟，请耐心等待）...');
     const unpackedHint = `${asarPath}.unpacked`;
     await extractAll(pristineSource, extractDir, fs.existsSync(unpackedHint) ? unpackedHint : null);
 
@@ -229,6 +230,7 @@ export async function install(opts = {}) {
       }
     }
 
+    console.log('[3/6] 正在写入 ZMod 四通道挂载点...');
     const main = patchMainSource(fs.readFileSync(mainPath, 'utf8'), VERSION, getUserDataDir());
     fs.writeFileSync(mainPath, main.code, 'utf8');
     const preload = patchPreloadSource(fs.readFileSync(preloadPath, 'utf8'), VERSION);
@@ -236,24 +238,26 @@ export async function install(opts = {}) {
     const html = patchIndexHtmlSource(fs.readFileSync(htmlPath, 'utf8'), VERSION);
     fs.writeFileSync(htmlPath, html.code, 'utf8');
     console.log(
-      `• Patches: main(head${main.changed ? '✔' : '=0'}+tail) preload${preload.changed ? '✔' : '=0'} renderer${html.changed ? '✔' : '=0'}`
+      `• 挂载点写入完成: main(head${main.changed ? '✔' : '=0'}+tail) preload${preload.changed ? '✔' : '=0'} renderer${html.changed ? '✔' : '=0'}`
     );
 
     // ---- 3. Repack + verify ----
-    console.log('• Repacking asar (verifying node-pty/ssh2 native unpack set)...');
+    console.log('[4/6] 正在重新打包 app.asar（校验 node-pty/ssh2 原生模块 unpack 清单，本步也较耗时）...');
     const newAsar = path.join(tmpRoot, 'app.asar.new');
     const unpackedCount = await packAndVerify(extractDir, newAsar, pristineSource);
-    console.log(`• Unpacked set matches baseline: ${unpackedCount} entries`);
+    console.log(`• 打包完成，unpacked 清单与基线一致: ${unpackedCount} 项`);
 
     // ---- 4. Deploy runtime (no client restart needed for this part) ----
+    console.log('[5/6] 正在部署 ZMod 运行时与数据目录...');
     const runtimeDir = deployRuntimeAndPlugins();
-    console.log(`• Runtime deployed (pure base, no bundled plugins): ${runtimeDir}`);
+    console.log(`• 运行时已部署（纯基座，不随发插件）: ${runtimeDir}`);
     // 升级安装清理旧版残留：run-install.cmd 新版已不分发（NSIS 卸载兜底也会删）
     try {
       fs.rmSync(path.join(path.dirname(getUserDataDir()), 'run-install.cmd'), { force: true });
     } catch {}
 
     // ---- 5. Swap the asar (evidence-based lock handling: try first) ----
+    console.log('[6/6] 正在替换 app.asar（如客户端被占用会自动重试）...');
     let killed = false;
     if (opts.force && isZcodeRunning()) {
       console.log('• --force: killing ZCode process...');
@@ -290,7 +294,7 @@ export async function install(opts = {}) {
       process.exitCode = 2;
       return;
     }
-    console.log(`• Written: ${asarPath}`);
+    console.log(`• app.asar 已替换: ${asarPath}`);
 
     configManager.set('installPath', hostDir);
     if (killed) {
@@ -301,9 +305,11 @@ export async function install(opts = {}) {
       }
     }
 
-    console.log('\n✔ ZMod install complete!');
-    console.log('  Launch ZCode and press Ctrl+Shift+M to open the management panel.');
-    console.log(`  Restore official: zmod restore (baseline snapshot: ${baseSnapshot})\n`);
+    console.log('\n✔ ZMod 基座安装完成！');
+    console.log('  本安装包仅为扩展基座，未预装任何 Mod。');
+    console.log('  启动 ZCode 后，打开「设置」（左下角齿轮）→ 侧栏底部「ZMod」分组，');
+    console.log('  即可管理扩展插件与数据源，并从插件市场安装 Mod。');
+    console.log(`  恢复官方客户端: zmod restore（基线快照: ${baseSnapshot}）\n`);
   } finally {
     try {
       fs.rmSync(tmpRoot, { recursive: true, force: true });

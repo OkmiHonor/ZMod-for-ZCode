@@ -27,7 +27,7 @@ Var /GLOBAL unKeepDataCheckbox
 Icon "${__FILEDIR__}\icons\installer.ico"
 UninstallIcon "${__FILEDIR__}\icons\uninstaller.ico"
 !insertmacro MUI_PAGE_WELCOME
-!define MUI_DIRECTORYPAGE_TEXT_TOP "ZMod 文件将被释放到此目录（与 ZCode 客户端目录无关，保持默认即可）"
+!define MUI_DIRECTORYPAGE_TEXT_TOP "ZMod 文件将被释放到此目录（与 ZCode 客户端目录无关，保持默认即可）。$\r$\n安装最后一步需要解包并注入官方 app.asar，约需 1 分钟，请耐心等待，中途请勿关闭安装器。"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -171,7 +171,7 @@ close_zcode:
   System::Call 'kernel32::SetEnvironmentVariable(t "ELECTRON_RUN_AS_NODE", t "1")'
 
 install_run:
-  DetailPrint "正在安装 ZMod 到 ZCode ..."
+  DetailPrint "正在安装 ZMod 基座到 ZCode（解包+注入，约需 1 分钟，请勿关闭）..."
   nsExec::ExecToLog '"$R9" "$INSTDIR\packages\zmod-cli\bin\zmod.js" install'
   Pop $0
   System::Call 'kernel32::SetEnvironmentVariable(t "ELECTRON_RUN_AS_NODE", n)'
@@ -183,7 +183,7 @@ install_run:
     ${EndIf}
     DetailPrint "install exit code: $0"
   ${Else}
-    MessageBox MB_OK|MB_ICONINFORMATION "ZMod 安装成功！$\r$\n$\r$\n启动 ZCode 后按 Ctrl+Shift+M 打开 ZMod 管理面板。"
+    MessageBox MB_OK|MB_ICONINFORMATION "ZMod 基座安装成功！$\r$\n$\r$\n本安装包仅为扩展基座，未预装任何 Mod。$\r$\n启动 ZCode 后，打开「设置」（左下角齿轮）→ 侧栏底部「ZMod」分组，$\r$\n即可管理扩展插件与数据源，并从插件市场安装 Mod。"
   ${EndIf}
   Goto install_done
 
