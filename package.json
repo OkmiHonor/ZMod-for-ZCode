@@ -12,6 +12,8 @@
   },
   "scripts": {
     "test": "node --test packages/*/test/*.test.js",
+    "release": "node tools/release.cjs",
+    "deploy": "node tools/release.cjs --deploy-only",
     "zmod": "node packages/zmod-cli/bin/zmod.js",
     "doctor": "node packages/zmod-cli/bin/zmod.js doctor",
     "install-mod": "node packages/zmod-cli/bin/zmod.js install",
