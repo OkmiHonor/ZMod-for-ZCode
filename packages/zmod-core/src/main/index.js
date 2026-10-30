@@ -2,6 +2,8 @@ import { registerPrivileges, registerProtocolHandler } from './protocol.js';
 import { rpcGateway, installTelemetryTap } from './rpc.js';
 import { installNotificationTap } from './notifications.js';
 import { installWindowShortcuts } from './shortcuts.js';
+import { installWindowLifecycleHook } from './windows.js';
+import { installContextMenuHook } from './context-menu.js';
 import { ensureDirectories, getUserDataDir } from '../common/paths.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -87,6 +89,8 @@ export function bootstrap() {
     .then(() => {
       registerProtocolHandler();
       installWindowShortcuts();
+      installWindowLifecycleHook();
+      installContextMenuHook();
       // Official telemetry handler registers around app ready; retry once
       // shortly after in case it is not there yet.
       if (!installTelemetryTap()) {

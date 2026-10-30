@@ -12,7 +12,7 @@ import { createSettingsPageIntegration, makeSwitch } from './settings-page.js';
 import { applyPluginChange } from './plugin-bridge.js';
 import { mergeMarketView, normalizeInstallUrl } from './market-view.js';
 
-const ZMOD_VERSION = '1.6.6';
+const ZMOD_VERSION = '1.6.7';
 
 if (window.__ZMOD_V2_INITIALIZED__) {
   // Reload safety: a fresh document never has this flag, but double execution
@@ -433,7 +433,69 @@ function main() {
           }
         },
         /** Shared data source registry (providers, instances, cached status). */
-        datasources: dataSourceRegistry ? dataSourceRegistry.forPlugin(id) : null
+        datasources: dataSourceRegistry ? dataSourceRegistry.forPlugin(id) : null,
+        /** Native context menu extension */
+        contextMenu: {
+          register: async (itemDef) => {
+            if (!itemDef || !itemDef.id) return { ok: false, error: 'itemDef.id is required' };
+            const fullKey = `${id}:${itemDef.id}`;
+            const offClick = events.on('zmod:context-menu-click', (payload) => {
+              if (payload?.key === fullKey) {
+                try {
+                  itemDef.onClick?.(payload.context);
+                } catch (e) {
+                  console.error(`[ZMod:ContextMenu] error in "${fullKey}" onClick:`, e);
+                }
+              }
+            });
+            offs.push(offClick);
+            const teardown = () => {
+              offClick();
+              api.invoke('contextMenu.unregister', { pluginId: id, id: itemDef.id }).catch(() => {});
+            };
+            offs.push(teardown);
+            const res = await api.invoke('contextMenu.register', {
+              pluginId: id,
+              id: itemDef.id,
+              label: itemDef.label,
+              when: itemDef.when,
+              order: itemDef.order
+            });
+            return res;
+          }
+        },
+        /** Local SQLite tasks index read-only watcher */
+        tasks: {
+          listRecent: (opts = {}) => api.invoke('tasks.listRecent', opts),
+          onChanged: (fn) => {
+            api.invoke('tasks.subscribe', { subscriberId: id }).catch(() => {});
+            const off = events.on('zmod:tasks-changed', fn);
+            const cleanup = () => {
+              off();
+              api.invoke('tasks.unsubscribe', { subscriberId: id }).catch(() => {});
+            };
+            offs.push(cleanup);
+            return cleanup;
+          }
+        },
+        /** Multi-window management and shared styles */
+        windows: {
+          list: () => api.invoke('window.list', {}),
+          onLifecycle: (fn) => {
+            const off = events.on('zmod:window-lifecycle', fn);
+            offs.push(off);
+            return off;
+          },
+          injectSharedStyle: async (styleId, css, targetKinds) => {
+            const fullId = `${id}:${styleId}`;
+            const res = await api.invoke('window.setSharedStyle', { id: fullId, css, targetKinds });
+            const cleanup = () => {
+              api.invoke('window.removeSharedStyle', { id: fullId }).catch(() => {});
+            };
+            offs.push(cleanup);
+            return res;
+          }
+        }
       };
 
       try {
@@ -1183,6 +1245,15 @@ function main() {
     api.on('zmod:config-changed', () => {
       dataSourceRegistry.reload().catch(() => {});
       events.emit('zmod:config-changed');
+    });
+    api.on('zmod:window-lifecycle', (payload) => {
+      events.emit('zmod:window-lifecycle', payload);
+    });
+    api.on('zmod:context-menu-click', (payload) => {
+      events.emit('zmod:context-menu-click', payload);
+    });
+    api.on('zmod:tasks-changed', (payload) => {
+      events.emit('zmod:tasks-changed', payload);
     });
   }
 

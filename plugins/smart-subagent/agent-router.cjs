@@ -261,21 +261,31 @@ function patchZCodeInMemory(code) {
     );
   }
 
-  // 4. runExploreAgent 调用 m8o: 传入上下文
+  // 4. runExploreAgent 调用 m8o / $qo: 传入上下文
   const callM8oTarget = '{selection:u,hasConcreteModel:f}=m8o({profileSelection:t.profile.modelSelection,parentSelection:this.getSessionModelSelection(),overrideSelection:n?.modelOverride?.selection,resolveSelection:e.resolveEffectiveModelSelection})';
   if (patched.includes(callM8oTarget)) {
     patched = patched.replace(
       callM8oTarget,
       '{selection:u,hasConcreteModel:f}=m8o({profileSelection:t.profile.modelSelection,parentSelection:this.getSessionModelSelection(),overrideSelection:n?.modelOverride?.selection,resolveSelection:e.resolveEffectiveModelSelection,tier:t.tier,agentType:t.agentType,profile:t.profile})'
     );
+  } else {
+    patched = patched.replace(
+      /\{selection:([a-zA-Z0-9_$]+),hasConcreteModel:([a-zA-Z0-9_$]+)\}=([a-zA-Z0-9_$]+)\(\{profileSelection:([a-zA-Z0-9_$]+)\.profile\.modelSelection,parentSelection:this\.getSessionModelSelection\(\),overrideSelection:([a-zA-Z0-9_$]+)\?\.modelOverride\?\.selection,resolveSelection:([a-zA-Z0-9_$]+)\.resolveEffectiveModelSelection\}\)/,
+      '{selection:$1,hasConcreteModel:$2}=$3({profileSelection:$4.profile.modelSelection,parentSelection:this.getSessionModelSelection(),overrideSelection:$5?.modelOverride?.selection,resolveSelection:$6.resolveEffectiveModelSelection,tier:$4.tier,agentType:$4.agentType,profile:$4.profile})'
+    );
   }
 
-  // 5. m8o 定义: 引入全局暴露的路由决议器
+  // 5. m8o / $qo 定义: 引入全局暴露的路由决议器
   const m8oDefTarget = 'function m8o(e){let t=e.profileSelection,n=e.overrideSelection?{effectiveSelection:e.overrideSelection}:t?e.resolveSelection?e.resolveSelection(A0(t)):{effectiveSelection:t}:{effectiveSelection:e.parentSelection??null};';
   if (patched.includes(m8oDefTarget)) {
     patched = patched.replace(
       m8oDefTarget,
       'function m8o(e){let t=e.profileSelection;try{if(globalThis.__ZMOD_AGENT_ROUTER__){let _res=globalThis.__ZMOD_AGENT_ROUTER__.resolveSubagentTierSelection({parentSelection:e.parentSelection,tier:e.tier,agentType:e.agentType,profile:e.profile});if(_res&&_res.resolved&&_res.selection){return{hasConcreteModel:_res.isConcrete,selection:A0(_res.selection)}}}}catch(_err){}let n=e.overrideSelection?{effectiveSelection:e.overrideSelection}:t?e.resolveSelection?e.resolveSelection(A0(t)):{effectiveSelection:t}:{effectiveSelection:e.parentSelection??null};'
+    );
+  } else {
+    patched = patched.replace(
+      /function ([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\)\{let ([a-zA-Z0-9_$]+)=\2\.profileSelection,([a-zA-Z0-9_$]+)=\2\.overrideSelection\?\{effectiveSelection:\2\.overrideSelection\}:\3\?\2\.resolveSelection\?\2\.resolveSelection\(([a-zA-Z0-9_$]+)\(\3\)\):\{effectiveSelection:\3\}:\{effectiveSelection:\2\.parentSelection\?\?null\};/,
+      'function $1($2){let $3=$2.profileSelection;try{if(globalThis.__ZMOD_AGENT_ROUTER__){let _res=globalThis.__ZMOD_AGENT_ROUTER__.resolveSubagentTierSelection({parentSelection:$2.parentSelection,tier:$2.tier,agentType:$2.agentType,profile:$2.profile});if(_res&&_res.resolved&&_res.selection){return{hasConcreteModel:_res.isConcrete,selection:$5(_res.selection)}}}}catch(_err){}let $4=$2.overrideSelection?{effectiveSelection:$2.overrideSelection}:$3?$2.resolveSelection?$2.resolveSelection($5($3)):{effectiveSelection:$3}:{effectiveSelection:$2.parentSelection??null};'
     );
   }
 

@@ -10,6 +10,9 @@ import { registerPluginAssetApi } from './plugin-assets.js';
 import { registerBubbleHud } from './bubble-hud.js';
 import { registerWhaleService } from './whale-service.js';
 import { notificationTapStatus } from './notifications.js';
+import { registerWindowLifecycleService } from './windows.js';
+import { registerContextMenuService } from './context-menu.js';
+import { registerTasksWatchService } from './tasks-watch.js';
 
 let electron = null;
 try {
@@ -428,6 +431,15 @@ class RpcGateway {
 
     // ---- Whale widget services (custom skins directory + sqlite model probe) ----
     registerWhaleService(this);
+
+    // ---- Window lifecycle & shared styles ----
+    registerWindowLifecycleService(this);
+
+    // ---- Native context menu extension ----
+    registerContextMenuService(this);
+
+    // ---- Local SQLite tasks watcher ----
+    registerTasksWatchService(this);
   }
 
   _toggleMainWindow() {

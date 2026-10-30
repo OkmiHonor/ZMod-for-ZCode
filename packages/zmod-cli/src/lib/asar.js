@@ -12,7 +12,17 @@ export async function loadAsar() {
   return _asar;
 }
 
-export const UNPACK_GLOB = '**/node_modules/@(node-pty|ssh2)/**/@(*.node|*.dll|*.exe)';
+export const UNPACK_GLOB = '**/node_modules/@(node-pty|ssh2|@img)/**/@(*.node|*.dll|*.exe)';
+
+/**
+ * Build a minimatch unpack glob that matches the exact relative paths in
+ * unpackedPaths under any srcDir prefix.
+ */
+export function buildUnpackGlob(unpackedPaths) {
+  if (!unpackedPaths || unpackedPaths.length === 0) return undefined;
+  if (unpackedPaths.length === 1) return `**/${unpackedPaths[0]}`;
+  return `**/{${unpackedPaths.join(',')}}`;
+}
 
 /**
  * Scan raw asar bytes for marker strings. Works because every stored file's
@@ -87,8 +97,9 @@ export async function extractAll(archivePath, destDir, unpackedHint = null) {
  */
 export async function packAndVerify(srcDir, outFile, referenceArchive) {
   const asar = await loadAsar();
-  await asar.createPackageWithOptions(srcDir, outFile, { unpack: UNPACK_GLOB });
   const expected = await getUnpackedSet(referenceArchive);
+  const unpack = buildUnpackGlob(expected);
+  await asar.createPackageWithOptions(srcDir, outFile, unpack ? { unpack } : {});
   const got = await getUnpackedSet(outFile);
   if (expected.length !== got.length || expected.some((p, i) => p !== got[i])) {
     const missing = expected.filter((p) => !got.includes(p));
