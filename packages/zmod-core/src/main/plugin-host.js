@@ -565,6 +565,7 @@ const dirWatch = {
   retries: new Map(),
   suppress: new Map(),
   known: new Set(),
+  mtimes: new Map(),
   broadcastImpl: () => {},
   nowImpl: () => Date.now(),
   debounceMs: WATCH_DEBOUNCE_MS,
@@ -603,8 +604,15 @@ function onWatchEvent(_eventType, filename) {
   const st = dirWatch;
   try {
     if (!filename) return;
-    const target = String(filename).replace(/\\/g, '/').split('/')[0];
+    const relSegs = String(filename).replace(/\\/g, '/').split('/');
+    const target = relSegs[0];
     if (!target || target.startsWith('.')) return;
+    // 深层子树事件（target/x/y…，depth ≥ 3）一律忽略：递归监视下，插件自带的数据
+    // 子目录（如 dsh-compat/dsh-plugins/** 由兼容层自行管理）的任何写入都会被折叠成
+    // "该插件 updated" 广播 → 渲染层 disable+enable 全量热重载 → 插件卡片在启用/
+    // 未启用两组间反复横跳。插件自身根文件（depth 2）与目录出现/消失（depth 1）
+    // 仍照常处理；全新插件目录投放本来就有 depth 1 事件兜底，深层事件无需参与。
+    if (relSegs.length >= 3) return;
     if (st.pending.has(target)) return; // 窗口内同目标事件合并
     st.retries.delete(target);
     const t = setTimeout(() => {
@@ -689,6 +697,20 @@ function handleDirDrop(dirname, full) {
     }
     const entry = getInstalledEntry(st.dataDir, id);
     if (entry) {
+      const manifestPath = path.join(full, 'manifest.json');
+      const entryRel = typeof manifest.entry === 'string' && manifest.entry ? manifest.entry : 'index.js';
+      const entryPath = path.join(full, entryRel);
+      let manifestMtime = 0;
+      let entryMtime = 0;
+      try { manifestMtime = fs.statSync(manifestPath).mtimeMs; } catch {}
+      try { entryMtime = fs.statSync(entryPath).mtimeMs; } catch {}
+      const prev = st.mtimes?.get(id);
+      if (prev && prev.manifest === manifestMtime && prev.entry === entryMtime) {
+        // manifest.json 和入口文件 mtime 均未变动（仅仅是子目录临时文件改动冒泡），不广播 updated
+        return;
+      }
+      st.mtimes?.set(id, { manifest: manifestMtime, entry: entryMtime });
+
       // 升级/内容刷新：目录内容已在位，只刷新账本并广播 updated（保留原 source 与 installedAt）
       recordInstalled(st.dataDir, id, {
         ...entry,
@@ -709,6 +731,14 @@ function handleDirDrop(dirname, full) {
       { dir: full, manifest, source: 'dir', sourceRef: `watch:${dirname}`, shasum: '', inPlace: true }
     );
     st.known.add(res.id);
+    try {
+      const manifestPath = path.join(full, 'manifest.json');
+      const entryRel = typeof manifest.entry === 'string' && manifest.entry ? manifest.entry : 'index.js';
+      const entryPath = path.join(full, entryRel);
+      const manifestMtime = fs.existsSync(manifestPath) ? fs.statSync(manifestPath).mtimeMs : 0;
+      const entryMtime = fs.existsSync(entryPath) ? fs.statSync(entryPath).mtimeMs : 0;
+      st.mtimes?.set(res.id, { manifest: manifestMtime, entry: entryMtime });
+    } catch {}
   } catch (err) {
     warnWatch(`目录 ${dirname} 投放处理失败，忽略: ${err?.message || err}`);
   }
@@ -756,6 +786,7 @@ function handleDisappeared(target) {
   const st = dirWatch;
   if (!st.known.has(target)) return false;
   st.known.delete(target);
+  st.mtimes?.delete(target);
   if (getInstalledEntry(st.dataDir, target)) removeInstalled(st.dataDir, target);
   try { configManager.deletePluginEnabled(target); } catch {}
   st.broadcastImpl({ action: 'removed', id: target, entryUrl: null, manifest: null });
@@ -805,6 +836,7 @@ export function startPluginDirWatch(opts = {}) {
   }
   st.dataDir = dataDir;
   st.pluginsDir = pluginsDir;
+  st.mtimes?.clear();
   st.known = scanKnownPlugins(pluginsDir, dataDir);
   st.suppress.clear();
   st.pending.clear();
@@ -856,6 +888,7 @@ export const __pluginWatchTestHooks = {
     st.retries.clear();
     st.suppress.clear();
     st.known.clear();
+    st.mtimes?.clear();
     st.nowImpl = () => Date.now();
   }
 };

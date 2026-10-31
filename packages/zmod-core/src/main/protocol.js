@@ -30,7 +30,9 @@ export const MIME = {
   '.m4a': 'audio/mp4',
   '.aac': 'audio/aac',
   '.flac': 'audio/flac',
-  '.webm': 'audio/webm',
+  '.webm': 'video/webm',
+  '.mp4': 'video/mp4',
+  '.mov': 'video/quicktime',
   '.opus': 'audio/ogg'
 };
 

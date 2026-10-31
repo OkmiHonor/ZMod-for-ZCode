@@ -1,0 +1,13 @@
+{
+  "id": "dsh-compat",
+  "name": "DSH 插件兼容层",
+  "version": "0.2.1",
+  "description": "装载可兼容的 DSH（DeepSeek Harness）客户端插件：支持输入插件名或链接直接从 npm 下载安装；提供 ModuleLoader 垫片 + react 种子模块 + Cordis 风格 ctx 模拟；纯客户端视觉类插件完整可用，依赖宿主服务的插件降级运行",
+  "author": "ZMod Team",
+  "engine": {
+    "zmod": ">=1.0.0-beta"
+  },
+  "permissions": [],
+  "category": "productivity",
+  "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+}

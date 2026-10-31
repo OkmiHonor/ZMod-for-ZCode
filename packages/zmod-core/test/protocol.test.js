@@ -58,7 +58,7 @@ test('protocol security & routing suite', async (t) => {
     assert.equal(MIME['.m4a'], 'audio/mp4');
     assert.equal(MIME['.aac'], 'audio/aac');
     assert.equal(MIME['.flac'], 'audio/flac');
-    assert.equal(MIME['.webm'], 'audio/webm');
+    assert.equal(MIME['.webm'], 'video/webm');
     assert.equal(MIME['.opus'], 'audio/ogg');
   });
 });

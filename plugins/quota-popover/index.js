@@ -103,6 +103,37 @@ function renderV1DetailBody(type, status) {
     if (groupCards) return `<div class="flex flex-wrap gap-2.5">${groupCards}</div>`;
     return `<div class="text-ui-sm text-foreground-subtle">配额组里没有可用桶</div>`;
   }
+  if (type === 'magpie') {
+    // 每账号一卡：桶即模型配额窗口（window=模型名，frac=剩余比例），下方 30 天用量
+    const groupCards = (status.groups || []).map((g) => {
+      const bars = (g.buckets || [])
+        .map((b) => barRow(b.window || '窗口', Math.max(0, Math.min(100, Math.round(b.frac * 100)))))
+        .join('');
+      return (
+        `<div class="flex-1 min-w-[210px] rounded-lg border border-border/60 bg-surface-hover/20 p-3 flex flex-col justify-between gap-2.5 hover:border-border transition-colors">` +
+        `<div class="flex items-center justify-between gap-2">` +
+        `<span class="text-ui-xs font-semibold text-foreground tracking-tight">${esc(g.name || '配额')}</span>` +
+        (g.plan ? `<span class="text-[10px] font-mono text-foreground-subtle truncate">${esc(g.plan)}</span>` : '') +
+        `</div>` +
+        `<div class="space-y-2">${bars}</div>` +
+        `</div>`
+      );
+    }).join('');
+    const usage = status.usage;
+    const usageRow = usage && isFinite(usage.calls) && usage.calls > 0
+      ? `<div class="flex flex-wrap gap-2.5">` +
+        bentoSubCard('30 天调用', `${usage.calls} 次`, { foot: usage.errors ? `失败 ${usage.errors} 次` : null }) +
+        bentoSubCard('30 天费用（网关估算）', usage.cost != null ? '$' + usage.cost.toFixed(2) : '—', {
+          foot: `入 ${fmtTokCn(usage.input)} · 出 ${fmtTokCn(usage.output)} · 缓存 ${fmtTokCn(usage.cacheRead)}`
+        }) +
+        `</div>`
+      : '';
+    if (!groupCards && !usageRow) return `<div class="text-ui-sm text-foreground-subtle">配额窗口里没有可用数据</div>`;
+    return `<div class="space-y-2.5">` +
+      (groupCards ? `<div class="flex flex-wrap gap-2.5">${groupCards}</div>` : '') +
+      usageRow +
+      `</div>`;
+  }
   if (type === 'deepseek') {
     const total = parseFloat(status.balance) || 0;
     const grant = numFrom(rowValue(rows, '赠送余额'));
@@ -173,6 +204,14 @@ function fmtReset(iso) {
     if (h < 48) return Math.round(h) + '小时后刷新';
     return Math.round(h / 24) + '天后刷新';
   } catch { return null; }
+}
+
+/** 78054272 → 7805.4万 — magpie 用量卡的中文数量级缩写 */
+function fmtTokCn(n) {
+  n = Number(n) || 0;
+  if (n >= 1e8) return (n / 1e8).toFixed(1) + '亿';
+  if (n >= 1e4) return (n / 1e4).toFixed(1) + '万';
+  return String(Math.round(n));
 }
 
 /** v1 balCard: dark rounded card, 11px title / 18px amount / 10px currency+sub */
@@ -280,7 +319,8 @@ const ERROR_TITLES = {
   deepseek: '账户余额 · DeepSeek',
   mimo: '今日余额 · MiMo',
   'bailian-bss': '账户余额 · 阿里云百炼',
-  antigravity: '模型配额 · Antigravity'
+  antigravity: '模型配额 · Antigravity',
+  magpie: '模型配额 · Magpie'
 };
 
 /** Render one datasource instance's popover section in v1 card semantics:
@@ -373,6 +413,26 @@ function renderV1Section(type, status, sel, instName) {
     }
     return v1CardWrap(ERROR_TITLES.antigravity, [v1InfoCard('状态', '配额组里没有可用桶')], 1);
   }
+  if (type === 'magpie') {
+    // 桶即模型配额窗口（window=模型名，frac=剩余比例）：每桶一条 v1 配额条，
+    // 末尾补一条 30 天调用 infoCard；费用不在浮窗展示（订阅制，避免误导）
+    const groups = status.groups || [];
+    const multi = groups.length > 1;
+    const cards = [];
+    for (const g of groups) {
+      for (const b of g.buckets || []) {
+        cards.push(v1QuotaCard(multi ? `${g.name} · ${b.window}` : b.window, b.frac, b.reset));
+      }
+    }
+    const usage = status.usage;
+    if (usage && isFinite(usage.calls) && usage.calls > 0) {
+      cards.push(v1InfoCard('30天调用', `${usage.calls} 次`));
+    }
+    if (cards.length) {
+      return v1CardWrap('模型配额 · Magpie', cards, cards.length > 1 ? 2 : 1);
+    }
+    return v1CardWrap(ERROR_TITLES.magpie, [v1InfoCard('状态', '配额窗口里没有可用数据')], 1);
+  }
   // generic engines (custom-http / openai-compatible / console-web): v1 never
   // had a family for these — keep its typography (balCard + infoCard rows)
   const cards = [];
@@ -393,7 +453,7 @@ const REFRESH_MARK = 'zmod-quota-refresh';
 export default definePlugin({
   id: 'quota-popover',
   name: '余量弹窗与模型页余量',
-  version: '1.4.2',
+  version: '1.5.0',
   description: '官方「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1）+ 官方设置模型页供应商详情注入 v1 Bento 账户额度卡（数据源驱动，不改官方文件）',
   author: 'ZMod Team',
 
@@ -632,7 +692,7 @@ export default definePlugin({
       const rows = ok ? status.rows || [] : [];
       // header meta per v1: money sources show 可用总额, antigravity shows its tier pill
       let meta = '';
-      if (ok && inst.type === 'antigravity') {
+      if (ok && (inst.type === 'antigravity' || inst.type === 'magpie')) {
         const tier = rowValue(rows, '订阅档位');
         if (tier) {
           meta = `<span class="rounded-full px-2 py-0.5 text-[10px] font-semibold bg-primary/10 text-primary border border-primary/20 tracking-wider">${esc(tier)}</span>`;

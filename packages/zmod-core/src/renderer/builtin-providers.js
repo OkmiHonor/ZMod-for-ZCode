@@ -102,6 +102,14 @@ function summarize(json) {
   return s.length > 60 ? s.slice(0, 57) + '…' : s;
 }
 
+/** 1.2M → 120万；1.2e9 → 12亿 — magpie 用量行的中文数量级缩写 */
+function fmtTokensCn(n) {
+  n = Number(n) || 0;
+  if (n >= 1e8) return (n / 1e8).toFixed(1) + '亿';
+  if (n >= 1e4) return (n / 1e4).toFixed(1) + '万';
+  return String(Math.round(n));
+}
+
 /* Antigravity Tools 网关配额（v1 quota 桥的 antigravity 源等价）：GET
    {网关}/api/accounts/{id}/quota → quota_groups[].buckets[]（window=weekly/5h，
    remaining_fraction 剩余比例）。文件快照回退通道不再保留——渲染层无文件权限，
@@ -157,6 +165,88 @@ async function antigravityQuotaStatus(settings, ctx) {
         .filter((b) => isFinite(Number(b.remaining_fraction)))
         .map((b) => ({ window: b.window, frac: Number(b.remaining_fraction), reset: b.reset_time || '' }))
     }))
+  };
+}
+
+/* Magpie 本地网关（magpie.exe）专属遥测通道：GET {网关}/v1/magpie/quotas →
+   data[].windows[]（每模型一窗：used/remaining 为百分比，amount/limit 为 token
+   数，resetsAt 为重置点）+ GET /v1/magpie/usage?period=30d（调用/费用汇总）。
+   本机端点免鉴权；usage 拉取失败不致命，仅丢弃用量行。 */
+export async function magpieStatus(settings, ctx) {
+  const base = String(settings.url || 'http://127.0.0.1:3425').replace(/\/+$/, '');
+  const headers = settings.token ? { Authorization: `Bearer ${settings.token}` } : {};
+  const res = await ctx.net.fetch({ url: `${base}/v1/magpie/quotas`, method: 'GET', headers });
+  if (!res.ok && res.status === 0) return { ok: false, message: (res.error || '网络请求失败') + '（magpie 网关未启动？）' };
+  let json = null;
+  try { json = JSON.parse(res.text); } catch { return { ok: false, message: `响应不是 JSON（HTTP ${res.status}）` }; }
+  if (!res.ok) {
+    const apiErr = dot(json, 'error.message');
+    return { ok: false, message: `HTTP ${res.status}${apiErr ? `：${apiErr}` : ''}` };
+  }
+  const accounts = Array.isArray(json.data) ? json.data : [];
+  const fmtReset = (t) => {
+    try {
+      const d = new Date(t);
+      if (isNaN(d.getTime())) return '';
+      return `${d.getMonth() + 1}月${d.getDate()}日`;
+    } catch { return ''; }
+  };
+  const rows = [];
+  const groups = [];
+  const models = [];
+  for (const acc of accounts) {
+    const accName = String(acc.name || acc.provider || '配额');
+    const buckets = [];
+    for (const w of Array.isArray(acc.windows) ? acc.windows : []) {
+      const remaining = Number(w.remaining);
+      if (!isFinite(remaining)) continue;
+      const reset = fmtReset(w.resetsAt);
+      rows.push({
+        label: `${accName} · ${w.name || '窗口'}`,
+        value: `${remaining.toFixed(1)}% 剩余${reset ? ` · ${reset}重置` : ''}`
+      });
+      buckets.push({
+        window: String(w.name || ''),
+        frac: remaining / 100,
+        reset: w.resetsAt || '',
+        display: String(w.display || '')
+      });
+      if (w.name && isFinite(Number(w.used))) {
+        models.push({ name: String(w.name).toLowerCase(), percentage: Number(w.used), reset: w.resetsAt || '' });
+      }
+    }
+    groups.push({ name: accName, plan: String(acc.plan || ''), buckets });
+  }
+  if (rows.length === 0) return { ok: false, message: '响应无配额窗口（网关未登录上游账号？）' };
+  let usage = null;
+  try {
+    const u = await ctx.net.fetch({ url: `${base}/v1/magpie/usage?period=30d`, method: 'GET', headers });
+    if (u.ok) {
+      const uj = JSON.parse(u.text);
+      if (uj && isFinite(Number(uj.calls))) {
+        usage = {
+          period: String(uj.period || '30d'),
+          calls: Number(uj.calls),
+          errors: Number(uj.errors) || 0,
+          input: Number(uj.input) || 0,
+          output: Number(uj.output) || 0,
+          cacheRead: Number(uj.cache_read) || 0,
+          cost: isFinite(Number(uj.cost)) ? Number(uj.cost) : null
+        };
+        rows.push({ label: '30天调用', value: `${usage.calls} 次${usage.errors ? ` · 失败 ${usage.errors}` : ''}` });
+        rows.push({ label: '30天 Tokens', value: `入 ${fmtTokensCn(usage.input)} · 出 ${fmtTokensCn(usage.output)} · 缓存 ${fmtTokensCn(usage.cacheRead)}` });
+        if (usage.cost != null) rows.push({ label: '30天费用', value: `$${usage.cost.toFixed(2)}` });
+      }
+    }
+  } catch { /* usage is optional */ }
+  const plan = groups.map((g) => g.plan).find(Boolean);
+  return {
+    ok: true,
+    rows: plan ? [{ label: '订阅档位', value: plan }, ...rows] : rows,
+    // structured raw data for model-level matching + quota rendering (quota-popover)
+    models,
+    groups,
+    usage
   };
 }
 
@@ -646,6 +736,37 @@ export function registerBuiltinProviders(datasourceRegistry) {
   );
   ds.registerProvider(
     preset({
+      type: 'magpie',
+      label: 'Magpie 本地网关',
+      description: 'Magpie 网关的模型配额与 30 天用量（/v1/magpie/quotas + /usage，本机免鉴权），网关未启动时直接报错提示',
+      settings: {
+        url: {
+          title: '网关地址',
+          default: 'http://127.0.0.1:3425',
+          placeholder: 'http://127.0.0.1:3425'
+        },
+        modelKeywords: {
+          title: '供应商/模型匹配关键字（可选）',
+          description: '逗号分隔。当前选中的供应商名或模型名含任一关键字时，用量浮窗显示此源；留空则按实例名称相似度自动匹配',
+          placeholder: 'magpie, zcode'
+        },
+        token: {
+          title: '访问令牌（可选）',
+          description: '本机网关默认免鉴权，留空即可；远程部署时以 Bearer 头发送，加密保存'
+        },
+        pathsJson: { default: '' }
+      },
+      fetchStatus: magpieStatus,
+      test: async (settings, ctx) => {
+        const r = await magpieStatus(settings, ctx);
+        return r.ok
+          ? { ok: true, message: `连接成功，${(r.groups || []).reduce((n, g) => n + (g.buckets || []).length, 0)} 个配额窗口` }
+          : r;
+      }
+    })
+  );
+  ds.registerProvider(
+    preset({
       type: 'bailian-bss',
       label: '阿里云百炼资金账户（BSS）',
       description: 'BSS QueryAccountBalance/QueryCashCoupons 查现金余额与代金券（RAM 用户 + AliyunBSSReadOnlyAccess 授权；sk- API Key 查不了余额，这是唯一正路）',
@@ -717,6 +838,6 @@ export function registerBuiltinProviders(datasourceRegistry) {
     }
   });
 
-  console.log('[ZMod:DataSources] registered 8 builtin data source providers');
-  return 8;
+  console.log('[ZMod:DataSources] registered 9 builtin data source providers');
+  return 9;
 }

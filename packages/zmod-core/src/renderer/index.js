@@ -104,6 +104,16 @@ function main() {
    * UIManager — namespaced styles, toasts, declarative settings form
    * ------------------------------------------------------------------ */
   class UIManager {
+    getPortal() {
+      let p = document.getElementById('zmod-mount-portal');
+      if (!p) {
+        p = document.createElement('div');
+        p.id = 'zmod-mount-portal';
+        p.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147480000;';
+        (document.body || document.documentElement).appendChild(p);
+      }
+      return p;
+    }
     injectStyle(id, css) {
       let el = document.getElementById(`zmod-style-${id}`);
       if (!el) {
@@ -166,7 +176,10 @@ function main() {
       form.className = 'flex flex-col';
       const defs = plugin.settings || {};
       const keys = Object.keys(defs);
-      const hasCustom = typeof plugin?.renderSettings === 'function';
+      // dsh-compat 的自定义渲染器就是整个「DSH 插件」页壳；卡片/浮动面板表单内跳过，
+      // 否则整页壳会在表单里重复渲染。声明式控件（enabled/packageList）保留。
+      const hasCustom =
+        typeof plugin?.renderSettings === 'function' && plugin.id !== 'dsh-compat';
       if (keys.length === 0 && !hasCustom) {
         const empty = document.createElement('div');
         empty.className = 'py-2 text-ui-sm text-foreground-subtle';

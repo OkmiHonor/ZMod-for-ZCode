@@ -16,10 +16,10 @@ function makeFakeRegistry() {
   };
 }
 
-test('registerBuiltinProviders registers the 8 builtin provider types', () => {
+test('registerBuiltinProviders registers the 9 builtin provider types', () => {
   const fake = makeFakeRegistry();
   const n = registerBuiltinProviders(fake);
-  assert.equal(n, 8);
+  assert.equal(n, 9);
   const types = fake.registered.map((d) => d.type);
   assert.deepEqual(
     types.sort(),
@@ -29,6 +29,7 @@ test('registerBuiltinProviders registers the 8 builtin provider types', () => {
       'console-web',
       'custom-http',
       'deepseek',
+      'magpie',
       'mimo',
       'official-account',
       'openai-compatible'
@@ -60,6 +61,7 @@ test('secret-typed settings are declared where credentials apply', () => {
   assert.equal(byType.get('bailian-bss').settings.accessKeySecret.type, 'secret');
   assert.equal(byType.get('mimo').settings.cookie.type, 'secret');
   assert.equal(byType.get('antigravity').settings.token.type, 'secret');
+  assert.equal(byType.get('magpie').settings.token.type, 'secret');
   // official-account is zero-credential: no secret settings
   for (const [key, def] of Object.entries(byType.get('official-account').settings)) {
     assert.notEqual(def.type, 'secret', `official-account.${key} 不应声明为 secret`);

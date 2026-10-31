@@ -489,18 +489,32 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     return isDshCompatEnabled() ? [...BASE_NATIVE_SECTIONS, DSH_NATIVE_SECTION] : BASE_NATIVE_SECTIONS;
   }
 
-  events.on('plugin:enabled', async (id) => {
+  // dsh-compat 启停触发的原生分区重注册代际号：async 处理器交错时旧代际自动作废，
+  // 防止 undo/register 交错导致原生侧栏出现重复或残留的「DSH 插件」分区（表现为反复显隐）
+  let dshRegen = 0;
+  const reregisterNativeAfterDshToggle = async () => {
+    const gen = ++dshRegen;
+    nativeReg?.undo?.();
+    nativeReg = null;
+    teardownNativeDom();
+    await new Promise((r) => setTimeout(r, 0));
+    if (gen !== dshRegen || !dialogOpen) return;
+    const rec = await registerNativeSections();
+    if (gen !== dshRegen) {
+      rec?.undo?.();
+      return;
+    }
+    if (rec) {
+      nativeReg = rec;
+      ensureNativeMessages();
+      nativeSync();
+    }
+  };
+
+  events.on('plugin:enabled', (id) => {
     if (id === 'dsh-compat' && dialogOpen) {
       if (mode === 'native' && nativeReg) {
-        nativeReg.undo?.();
-        nativeReg = null;
-        teardownNativeDom();
-        const rec = await registerNativeSections();
-        if (rec) {
-          nativeReg = rec;
-          ensureNativeMessages();
-          nativeSync();
-        }
+        void reregisterNativeAfterDshToggle();
       } else if (navEl) {
         detachNav();
         attachNav(navEl);
@@ -508,7 +522,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     }
   });
 
-  events.on('plugin:disabled', async (id) => {
+  events.on('plugin:disabled', (id) => {
     if (id === 'dsh-compat' && dialogOpen) {
       if (activeItem === 'dsh-compat') {
         activeItem = 'plugins';
@@ -517,15 +531,7 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
         }
       }
       if (mode === 'native' && nativeReg) {
-        nativeReg.undo?.();
-        nativeReg = null;
-        teardownNativeDom();
-        const rec = await registerNativeSections();
-        if (rec) {
-          nativeReg = rec;
-          ensureNativeMessages();
-          nativeSync();
-        }
+        void reregisterNativeAfterDshToggle();
       } else if (navEl) {
         detachNav();
         attachNav(navEl);
@@ -2043,6 +2049,23 @@ export function createSettingsPageIntegration({ api, events, registry, datasourc
     const id = def.id;
     const wrap = document.createElement('div');
     wrap.className = 'flex flex-col gap-2 rounded-xl border border-border bg-surface px-4 py-3';
+    if (id === 'dsh-compat') {
+      // dsh-compat 的自定义渲染器就是整个「DSH 插件」页（本页内容区），卡片表单内跳过，
+      // 否则整页壳会在插件卡里重复渲染；声明式开关（enabled）仍保留。
+      wrap.appendChild(
+        ui.renderSettingsForm({ ...def, renderSettings: null }, registry.getActiveSettings(id), async (key, value) => {
+          const active = registry._active.get(id);
+          if (active) {
+            await active.ctx.settings.set(key, value);
+          } else {
+            await api.invoke('config.setPluginSetting', { pluginId: id, key, value });
+          }
+        }, async () => {
+          ui.showToast('请在上方 DSH 插件页执行操作', 'info');
+        })
+      );
+      return wrap;
+    }
     wrap.appendChild(
       ui.renderSettingsForm(def, registry.getActiveSettings(id), async (key, value) => {
         const active = registry._active.get(id);

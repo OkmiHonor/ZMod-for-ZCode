@@ -21,7 +21,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execSync } = require('node:child_process');
+const { execSync, spawnSync } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const PROD_DATA_DIR = 'D:\\ZMod\\data';
@@ -146,6 +146,18 @@ function runTests() {
   }
 }
 
+// 发版前隐私/敏感信息扫描门禁：ERROR 级命中或扫描器异常时阻断发版
+function runSecretScan() {
+  console.log('🔐 发版前隐私/敏感信息扫描 (Preflight Secret Scan)...');
+  const res = spawnSync(process.execPath, [path.join(__dirname, 'preflight-secret-scan.cjs'), '--worktree'], { cwd: ROOT, stdio: 'inherit' });
+  if (res.error || res.status !== 0) {
+    console.error('❌ 隐私/敏感信息扫描未通过（或扫描器异常退出），发版终止！');
+    console.error('   请处理上方扫描报告后重试；全仓存量审计: node tools/preflight-secret-scan.cjs --all');
+    process.exit(1);
+  }
+  console.log('  ✔ 隐私扫描通过，未发现 ERROR 级敏感信息！\n');
+}
+
 function gitAndRelease(version, notesFile) {
   console.log(`\n🚀 [3/4] 提交 Git 与 Tag (v${version})...`);
   sh('git add package.json packages/zmod-cli/package.json packages/zmod-core/package.json packages/zmod-sdk/package.json packages/zmod-core/src/renderer/index.js');
@@ -196,6 +208,7 @@ async function main() {
   }
 
   if (args.includes('--check')) {
+    runSecretScan();
     console.log('🔍 检查版本号一致性:');
     const cur = checkVersions();
     if (cur) {
@@ -203,6 +216,8 @@ async function main() {
     }
     return;
   }
+
+  runSecretScan();
 
   const curVer = checkVersions();
   if (!curVer) {

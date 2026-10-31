@@ -388,3 +388,60 @@ test('目录删除: 未知目标（临时文件等）→ 忽略不广播', async
   assert.deepEqual(env.broadcasts, []);
   cleanup(env);
 });
+
+// ---------------------------------------------------------------------------
+// 深层子树事件折叠防护（dsh-compat 案：插件自带数据子目录自管理，不得触发宿主重载）
+// ---------------------------------------------------------------------------
+
+test('深层事件: 已知插件子树写入（depth≥3）→ 忽略不广播，根文件（depth 2）→ updated 广播', async () => {
+  const env = setupWatch({
+    seed: (dd) => {
+      const dir = path.join(dd, 'plugins', 'deepplug');
+      makeFixturePlugin(dir, { id: 'deepplug', version: '1.0.0' });
+      recordInstalled(dd, 'deepplug', { version: '1.0.0', source: 'dir' });
+    }
+  });
+
+  // depth 3：子目录内写入（dsh-compat/dsh-plugins/<pkg>/... 形态）→ 直接忽略
+  hooks.onWatchEvent('change', 'deepplug/datasub/nested/file.js');
+  assert.equal(hooks.state.pending.size, 0, '深层事件不入队');
+
+  // depth 2：插件根文件写入 → 正常入队处理为 updated
+  hooks.onWatchEvent('change', 'deepplug/index.js');
+  assert.equal(hooks.state.pending.size, 1, '根文件事件入队');
+  await hooks.flushPending();
+  assert.equal(env.broadcasts.length, 1, '根文件变更广播 updated');
+  assert.equal(env.broadcasts[0].action, 'updated');
+  assert.equal(env.broadcasts[0].id, 'deepplug');
+
+  // depth 1：目录自身出现/消失仍照常（删除 → removed）
+  fs.rmSync(path.join(env.pluginsDir, 'deepplug'), { recursive: true, force: true });
+  await hooks.processWatchTarget('deepplug');
+  assert.equal(env.broadcasts.length, 2);
+  assert.equal(env.broadcasts[1].action, 'removed');
+  cleanup(env);
+});
+
+test('mtime 未变动: 连续触发目标事件但入口文件与 manifest 未修改 → 不重复广播 updated', async () => {
+  const env = setupWatch();
+  const dir = path.join(env.pluginsDir, 'mtime-plug');
+  makeFixturePlugin(dir, { id: 'mtime-plug', version: '1.0.0' });
+
+  // 首次投放：installed
+  await hooks.processWatchTarget('mtime-plug');
+  assert.equal(env.broadcasts.length, 1);
+  assert.equal(env.broadcasts[0].action, 'installed');
+
+  // 子目录临时改动冒泡（未修改 index.js / manifest.json mtime）→ handleDirDrop 命中已有 entry 但 mtime 未变 → 不广播 updated
+  await hooks.processWatchTarget('mtime-plug');
+  assert.equal(env.broadcasts.length, 1, 'mtime 未变时不广播 updated');
+
+  // 修改 index.js mtime → 再次触发应广播 updated
+  const future = new Date(Date.now() + 5000);
+  fs.utimesSync(path.join(dir, 'index.js'), future, future);
+  await hooks.processWatchTarget('mtime-plug');
+  assert.equal(env.broadcasts.length, 2, '入口文件 mtime 变更后广播 updated');
+  assert.equal(env.broadcasts[1].action, 'updated');
+
+  cleanup(env);
+});

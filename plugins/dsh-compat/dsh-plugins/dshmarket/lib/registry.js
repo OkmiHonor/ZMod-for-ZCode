@@ -1,0 +1,287 @@
+/**
+ * Registry access: the curated list from awesome-dsh-plugin.com, fetched
+ * fresh on every request. See `loadRegistry` for why there is nothing
+ * behind it any more.
+ */
+import { BODY_STALL_TIMEOUT_MS, HEADERS_TIMEOUT_MS, readBodyWhileProgressing } from './body-progress.js';
+import { logEvent } from './log.js';
+import { configuredProxy, marketFetch } from './net.js';
+import { catalogFromPackage } from './catalog-npm.js';
+import { activeRegion, catalogSourcesFor, routesFor } from './regions.js';
+import { NPM_NAME_RE } from './sources.js';
+/**
+ * Category ids for one catalog entry, de-duplicated in declaration order.
+ *
+ * Catalog JSON is an external input, so malformed array members are omitted
+ * here and an entry with no usable category is rejected by `asRegistry`.
+ */
+export function pluginCategories(plugin) {
+    const values = Array.isArray(plugin.category) ? plugin.category : [plugin.category];
+    const categories = [];
+    const seen = new Set();
+    for (const value of values) {
+        if (typeof value !== 'string' || value === '' || seen.has(value))
+            continue;
+        seen.add(value);
+        categories.push(value);
+    }
+    return categories;
+}
+/**
+ * Former npm names for one catalog entry, normalized (#1012).
+ *
+ * Catalog JSON is external input, so a malformed declaration is dropped
+ * rather than trusted: only syntactically valid npm names survive, an entry
+ * may not list itself (its own `npm` or `name`), and duplicates collapse in
+ * declaration order. Cross-entry rules — a former name that is still live
+ * elsewhere, or two entries claiming one former name — cannot be judged per
+ * entry; the validator enforces them for the catalog, and
+ * `findCatalogRename` fails closed on ambiguity at runtime.
+ */
+export function pluginPreviousNpm(plugin) {
+    const declared = plugin.previousNpm;
+    const values = Array.isArray(declared) ? declared : declared === undefined || declared === null ? [] : [declared];
+    const own = new Set([plugin.name.toLowerCase()]);
+    if (typeof plugin.npm === 'string' && plugin.npm !== '')
+        own.add(plugin.npm.toLowerCase());
+    const names = [];
+    const seen = new Set();
+    for (const value of values) {
+        if (typeof value !== 'string' || value === '' || !NPM_NAME_RE.test(value))
+            continue;
+        const key = value.toLowerCase();
+        if (own.has(key) || seen.has(key))
+            continue;
+        seen.add(key);
+        names.push(value);
+    }
+    return names;
+}
+/**
+ * Where the curated list comes from now lives in the region routing table
+ * (src/regions.ts), because it is one of several addresses that move
+ * together when a user changes download region.
+ *
+ * `DSHM_REGISTRY_URL` keeps its meaning there, unchanged: overridable
+ * through the process environment ONLY — the layer-3 e2e points it at a
+ * local fixture catalog so the install route can be driven end to end
+ * without publishing anything.
+ *
+ * This does not weaken the install route's registry check. That check exists
+ * to stop a malicious PAGE from POSTing an arbitrary source at the local
+ * server; a page cannot set environment variables, and anyone who can set
+ * this process's environment already controls the process. What the override
+ * changes is WHICH list is curated, never WHETHER the check runs.
+ */
+/**
+ * The catalog we were last served, with the validator identifying it.
+ *
+ * This is NOT the cache that was removed, and the difference is the whole
+ * point. That cache SKIPPED the request for an hour and answered from
+ * memory — it asserted freshness without ever asking. This asks the origin
+ * every single time; the validator only lets the origin answer "still the
+ * same" (304) instead of resending a megabyte. Freshness is verified on
+ * every call either way, so `data` below is only ever returned when the
+ * server has just confirmed it is current.
+ *
+ * In memory rather than on disk: a restart is rare enough that paying one
+ * full download for it costs nothing, and a file would be one more thing
+ * that can be found on a machine and mistaken for the catalog itself.
+ *
+ * Measured against the live origin (GitHub Pages behind Fastly, which
+ * serves both `etag` and `last-modified`): 295 KB and 1.3s unconditional,
+ * 0 bytes and 0.5s for a 304. The reporter whose fetch took 9.9s was
+ * downloading the full 1.07 MB every time they opened the market.
+ */
+let served = null;
+/** Identity of a catalog source, for scoping the validator to its origin. */
+function sourceKey(source) {
+    return source.kind === 'npm' ? `npm:${source.registry}/${source.pkg}` : `url:${source.url}`;
+}
+/** A parsed catalog, or a thrown explanation of why it is not one. */
+function asRegistry(value) {
+    const data = value;
+    if (!Array.isArray(data.plugins) || data.plugins.length === 0)
+        throw new Error('the catalog came back empty');
+    const plugins = data.plugins.map((plugin, index) => {
+        const category = pluginCategories(plugin);
+        if (category.length === 0)
+            throw new Error(`catalog plugin ${String(index)} carries no usable category`);
+        const previousNpm = pluginPreviousNpm(plugin);
+        // An entry with nothing usable to declare looks exactly like one that
+        // declared nothing, so the field stays absent rather than becoming [].
+        if (previousNpm.length === 0) {
+            const { previousNpm: _declared, ...rest } = plugin;
+            return { ...rest, category };
+        }
+        return { ...plugin, category, previousNpm };
+    });
+    return { ...data, plugins };
+}
+/**
+ * Drop what we remember, so the next call is unconditional.
+ *
+ * Exists for tests: the memo is module state, and a spec that asserted a
+ * 304 would otherwise leak a validator into the next one.
+ */
+export function forgetCatalog() {
+    served = null;
+}
+/**
+ * The catalog, revalidated every time it is asked for.
+ *
+ * There used to be three answers here — live, a one-hour in-memory cache,
+ * and a snapshot bundled into the npm package — and only the first was
+ * correct. The other two were indistinguishable from it on screen, so a
+ * machine that could not reach the registry browsed the publish-time file
+ * (839 entries against 1367 live, and frozen forever for anyone on an older
+ * release), while a machine that COULD reach it still saw an hour-old
+ * listing of a catalog that grows by ~250 entries a day.
+ *
+ * For a catalog, stale is not a degraded answer, it is a wrong one: a plugin
+ * published this morning reads as "does not exist". So there is one source
+ * now, and a failure is a failure — the caller reports it and offers a
+ * retry, which is a state the user can act on. In particular a network
+ * failure is NEVER answered from `served`: an origin that cannot be reached
+ * has not confirmed anything, and quietly handing back the last catalog
+ * would rebuild exactly the fallback this replaced.
+ * @throws when the catalog cannot be fetched or does not look like one.
+ */
+export async function loadRegistry(region = activeRegion()) {
+    const started = Date.now();
+    let last;
+    let attempts = 0;
+    /**
+     * Every source that failed, in order (#750).
+     *
+     * Only the LAST failure used to be reported, so a primary source that was
+     * DNS-blocked, refused, or answering 404 disappeared from the message as
+     * soon as the fallback failed too: the user was told about the mirror they
+     * never chose (and can do nothing about) and not about the one that broke
+     * first. Which source said what IS the diagnosis here — the two fail for
+     * different reasons, and usually only one of them is worth acting on.
+     */
+    const failures = [];
+    // Sources in order, each a fallback for the one before it. The catalog is
+    // the FIRST request the market makes, so a mirror that has gone down must
+    // mean a slow market rather than an empty one — the list ends at the
+    // address that has always worked.
+    //
+    // The list runs one entry past the region's own sources on purpose (#891):
+    // the region probe measures the npm registry, so it cannot see a network
+    // where npm is fast and the catalog's host is blocked — and the region is
+    // decided once and persisted. The catalog's published package, on the
+    // registry the probe just proved reachable, is the repair that needs
+    // neither the probe nor the decision to change.
+    const ownSources = routesFor(region).catalog.length;
+    const catalogSources = catalogSourcesFor(region);
+    for (const [sourceIndex, source] of catalogSources.entries()) {
+        const key = sourceKey(source);
+        const servedBy = (data) => {
+            if (sourceIndex >= ownSources) {
+                logEvent('warn', 'registry', `catalog: the ${region} sources did not answer; read the catalog package from ${key} instead (#891)`);
+            }
+            return data;
+        };
+        // Two attempts each. A catalog fetch crossing a long, lossy path fails
+        // transiently often enough that one retry is worth more than the second
+        // or two it costs — and with nothing behind this call any more, a
+        // transient failure is a market with no plugins in it.
+        for (let attempt = 0; attempt < 2; attempt++) {
+            attempts += 1;
+            try {
+                // A validator only ever goes back to the source that issued it.
+                // Carried across a region switch it could earn a "not modified" from
+                // an origin whose body we have never seen.
+                const reusable = served?.key === key ? served : null;
+                if (source.kind === 'npm') {
+                    const { version, data } = await catalogFromPackage(source.registry, source.pkg, reusable?.version ?? undefined);
+                    // `data === null` means the published version is the one in hand.
+                    if (data === null && reusable !== null)
+                        return servedBy(reusable.data);
+                    if (data === null)
+                        throw new Error('the catalog package reported no change with nothing to reuse');
+                    const parsed = asRegistry(data);
+                    served = { key, etag: null, modified: null, version, data: parsed };
+                    return servedBy(parsed);
+                }
+                // ETag first: it is exact, while a date has one-second resolution and
+                // a catalog republished twice within the same second would validate
+                // as unchanged. Only one is sent — an origin given both must satisfy
+                // both, which turns a weak ETag match into an unnecessary 200.
+                const headers = {};
+                if (reusable?.etag != null)
+                    headers['if-none-match'] = reusable.etag;
+                else if (reusable?.modified != null)
+                    headers['if-modified-since'] = reusable.modified;
+                // Headers and body run on different clocks. The fixed budget covers
+                // only the wait for the response to START; the body itself is read
+                // under a stall watchdog, because the catalog takes longer than any
+                // honest fixed budget on a slow link, and "bytes still moving" is the
+                // one signal that separates slow from stuck.
+                const controller = new AbortController();
+                const headersDeadline = setTimeout(() => {
+                    controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+                }, HEADERS_TIMEOUT_MS);
+                let res;
+                try {
+                    res = await marketFetch(source.url, { signal: controller.signal, headers });
+                }
+                finally {
+                    clearTimeout(headersDeadline);
+                }
+                if (res.status === 304) {
+                    // Only reachable when we sent a validator, so `reusable` is present.
+                    // Guarded anyway: answering a 304 with nothing to reuse would
+                    // otherwise surface as a confusing parse error on an empty body.
+                    if (reusable === null)
+                        throw new Error('the catalog answered "not modified" with nothing to revalidate');
+                    return servedBy(reusable.data);
+                }
+                if (!res.ok)
+                    throw new Error(`HTTP ${String(res.status)}`);
+                const data = asRegistry(JSON.parse(new TextDecoder().decode(await readBodyWhileProgressing(res, BODY_STALL_TIMEOUT_MS))));
+                served = {
+                    key, etag: res.headers.get('etag'), modified: res.headers.get('last-modified'), version: null, data,
+                };
+                return servedBy(data);
+            }
+            catch (error) {
+                last = error;
+                failures.push({
+                    source: sourceKey(source),
+                    reason: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+    }
+    throw new Error(describeFetchFailure(last, Date.now() - started, attempts, failures));
+}
+/**
+ * A catalog failure with the facts needed to classify it, in the message
+ * itself.
+ *
+ * The market shows this string and the log export carries it, so it is the
+ * whole of what a bug report will contain. "The operation was aborted due to
+ * timeout" alone cannot distinguish a slow link from a blocked one from a
+ * proxy this process cannot use — and Node's `fetch` ignores HTTP_PROXY
+ * entirely (measured on Node 25), so a machine whose only route out is a
+ * proxy fails here every time while every other tool on it works.
+ */
+export function describeFetchFailure(error, elapsedMs, attempts = 2, failures = []) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const proxy = configuredProxy();
+    const parts = [`${reason} (${String(Math.round(elapsedMs / 1000))}s, ${String(attempts)} attempts)`];
+    if (proxy !== null) {
+        parts.push(`tried through the configured proxy ${proxy.replace(/\/\/[^@]*@/u, '//***@')}`);
+    }
+    // The sources that failed BEFORE the last one, so the primary's own reason
+    // survives into the message instead of being replaced by the fallback's
+    // (#750). One entry per source, reasons clipped: this lands in a banner, and
+    // the first reason is usually the only actionable one.
+    const earlier = failures.slice(0, -1);
+    if (earlier.length > 0) {
+        parts.push(`earlier: ${earlier.map(entry => `${entry.source} — ${entry.reason.slice(0, 160)}`).join(' · ')}`);
+    }
+    return parts.join(' · ');
+}

@@ -5,6 +5,7 @@ const {
   PRICING,
   BAILIAN_PRICING,
   isPeakHour,
+  isSubscriptionModel,
   costTable,
   calculateCost,
   formatCost,
@@ -45,6 +46,17 @@ test('costTable: deepseek gate and model mapping', () => {
   assert.equal(costTable('deepseek-something-new'), PRICING.flash, 'unknown deepseek variant → flash default');
   assert.equal(costTable('deepseek-r1chat'), PRICING.v3legacy, 'embedded r1 is not standalone → falls through to /chat/');
   assert.equal(costTable('deepseek-r1x'), PRICING.flash, 'embedded r1 not standalone, no legacy name → flash default');
+});
+
+test('costTable: magpie 订阅源（zcode/ 前缀）禁套百炼价', () => {
+  assert.equal(isSubscriptionModel('zcode/GLM-5.3-Flash'), true, 'magpie 遥测 model_id 原样');
+  assert.equal(isSubscriptionModel('x-zcode/glm'), false, '连字符复合词不算');
+  assert.equal(isSubscriptionModel('magpie/zcode/GLM-5.3-Flash'), true, '带渠道前缀的完整形态');
+  assert.equal(isSubscriptionModel('GLM-5.3-Flash'), false, '官方 zai 渠道无前缀');
+  assert.equal(isSubscriptionModel(''), false);
+  assert.equal(costTable('zcode/GLM-5.3-Flash'), null, '订阅制不计价');
+  assert.equal(costTable('zcode/glm-5.3-flash'), null, '小写同样命中');
+  assert.equal(calculateCost('zcode/GLM-5.3-Flash', 1e6, 1e6, 1e6, MON_PEAK), 0);
 });
 
 test('calculateCost: non-deepseek models cost 0', () => {

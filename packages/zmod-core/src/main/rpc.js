@@ -9,6 +9,8 @@ import { registerPluginHost } from './plugin-host.js';
 import { registerPluginAssetApi } from './plugin-assets.js';
 import { registerBubbleHud } from './bubble-hud.js';
 import { registerWhaleService } from './whale-service.js';
+import { registerDshHelper } from './dsh-helper.js';
+import { registerCatalogNet } from './catalog-net.js';
 import { notificationTapStatus } from './notifications.js';
 import { registerWindowLifecycleService } from './windows.js';
 import { registerContextMenuService } from './context-menu.js';
@@ -431,6 +433,12 @@ class RpcGateway {
 
     // ---- Whale widget services (custom skins directory + sqlite model probe) ----
     registerWhaleService(this);
+
+    // ---- DSH pet desktop helper service (transparent desktop window) ----
+    registerDshHelper(this);
+
+    // ---- Catalog fetch via system-proxy session (host pins defaultSession to direct) ----
+    registerCatalogNet(this);
 
     // ---- Window lifecycle & shared styles ----
     registerWindowLifecycleService(this);

@@ -1,0 +1,531 @@
+/**
+ * Profile filesystem reads — everything the market learns from a dsh
+ * profile directory (manifest, lockfile, installed package trees). Pure
+ * functions of the directory contents; no processes, no network.
+ */
+/**
+ * Whether a profile name follows DSH's own directory-name contract.
+ *
+ * Keep this aligned with `@deepseek-ai/dsh-app-boot`'s
+ * `resolveProfileDir`: dots, spaces, and Unicode are ordinary name
+ * characters; only empty, traversal-shaped, launcher-owned, or
+ * separator-bearing names are refused.
+ */
+export declare function isDshProfileName(profile: string): boolean;
+/**
+ * Resolve a profile name to its directory under DSH_HOME (default ~/.dsh).
+ * An explicit directory is used by hosts, such as DSH Desktop, that own the
+ * active profile location rather than deriving it from process environment.
+ */
+export declare function profileDir(profile: string, explicitDir?: string): string;
+/**
+ * The in-box bundles dsh's profile templates install themselves — the ONLY
+ * names the market hides from the installed list. Community plugins may
+ * legitimately publish under the official scope (#28), so a whole-scope
+ * filter would make them invisible and fail install validation.
+ * (Diagnosis and fix proposed in #28 by @Lograthmic.)
+ */
+export declare const INBOX_BUNDLES: Set<string>;
+/** Community dependencies of the profile (in-box bundles filtered out). */
+export declare function readInstalled(profile: string, explicitDir?: string): Record<string, string>;
+/**
+ * Packages this profile's desktop host manages as generations (#874).
+ *
+ * DSH Desktop materialises such a plugin under
+ * `profiles/.generations/live/<name>+<version>+<hash>` and points the profile
+ * at it with a `link:` in `pnpm.overrides`, while `dependencies` keeps the
+ * plain version. Before IT runs pnpm, the host's own installer suspends that
+ * projection — the names leave `dependencies` / `overrides` for the duration
+ * of the run — and the profile's pnpm-lock.yaml therefore NEVER records them.
+ * That is by design, so a lockfile with no entry for the package is not
+ * evidence about its exact source, and reading it as if it were turned a
+ * completed rollback into "automatic rollback is unavailable" with advice the
+ * user cannot carry out (#874).
+ *
+ * Two declarations are accepted because either can stand alone: the
+ * generation link itself (in `dependencies` or in `pnpm.overrides`), and the
+ * host's own projection list (`dsh.desktop.generationProjection.plugins`).
+ */
+export declare function generationManagedNames(profile: string, explicitDir?: string): Set<string>;
+/**
+ * RAW dependency map of the profile manifest — including the in-box bundles
+ * readInstalled() filters out. This is the rollback snapshot (#65): restoring
+ * a filtered view would delete @deepseek-ai/dsh-base and friends.
+ */
+export declare function readManifestDeps(profile: string, explicitDir?: string): Record<string, string>;
+/**
+ * For each installed package, the OTHER installed package that declares it —
+ * as a dependency, an optional dependency, or a peer dependency — in its own
+ * manifest.
+ *
+ * pnpm's auto-install-peers writes a plugin's peers into the profile manifest
+ * as direct dependencies, so a native binding a plugin needs shows up in the
+ * installed list looking exactly like a plugin the user chose (#634). What
+ * separates them is that somebody else asked for it. Optional dependencies
+ * count for the same reason (#941): a platform-specific binary a plugin lists
+ * under `optionalDependencies` is payload, not a plugin the user chose, even
+ * when pnpm installed that package and the card rendered.
+ *
+ * Ownership is decided by the first owner in sorted order, so the answer does
+ * not depend on the manifest's key order. A package that declares itself is
+ * ignored, and so is a cycle's other half once one owner is chosen.
+ */
+export declare function readDependencyOwners(profile: string, names: readonly string[], explicitDir?: string): Record<string, string>;
+/** Exact rollback state owned by one profile package operation. */
+export interface ProfileManifestSnapshot {
+    dependencies: Record<string, string>;
+    profileBundles: {
+        present: false;
+    } | {
+        present: true;
+        value: unknown;
+    };
+}
+/** Read dependencies and the exact `dsh.profile.bundles` field before a package operation. */
+export declare function readProfileManifestSnapshot(profile: string, explicitDir?: string): ProfileManifestSnapshot;
+/**
+ * Packages a package operation took out of `dsh.profile.bundles` while they are
+ * STILL declared in `dependencies` (#720).
+ *
+ * That combination is the quiet one. A package that is gone from both was
+ * uninstalled; a package in both is composed. A package that is still installed
+ * but no longer in the bundle list stays on disk, stays declared, and simply
+ * stops loading — the only trace is a boot warning about a dangling patch row
+ * (`patch: entry "better-sidebar" not found`), often days later.
+ *
+ * Pure and read-only on purpose. It does not put anything back: the bundle list
+ * is also how the official plugin page switches a package off (#696), so
+ * restoring "what was there before" would undo a deliberate removal. It only
+ * names what changed, so the next occurrence arrives with evidence — which
+ * operation, which package — instead of a user noticing the symptom later.
+ *
+ * Packages the operation itself touched (`except`) are excluded: removing one
+ * from the list is part of what that operation does.
+ */
+export declare function bundlesDroppedFromProfile(before: ProfileManifestSnapshot, profile: string, explicitDir: string | undefined, except?: ReadonlySet<string>): string[];
+/**
+ * Restore the profile manifest fields a package operation may mutate:
+ * `dependencies` and `dsh.profile.bundles`. pnpm and `dsh plugin add` can
+ * write both before a later fetch or build-script failure (#65, #69, #339),
+ * leaving either an unresolvable dependency or a bundle the next boot cannot
+ * activate. Every unrelated manifest field remains untouched. The lockfile is
+ * left as-is; pnpm reconciles it from the manifest on the next run.
+ *
+ * The write is atomic because rollback runs after another operation already
+ * failed; a partial repair must not turn a valid profile into invalid JSON.
+ * @returns names whose entries were dropped or reverted, empty when nothing changed.
+ */
+export declare function restoreProfileManifest(profile: string, snapshot: ProfileManifestSnapshot, explicitDir?: string): string[];
+/**
+ * Declare one dependency at an exact value, leaving every other manifest field
+ * alone.
+ *
+ * Needed for the duration of a package operation that has to be identifiable
+ * afterwards. DSH's desktop plugin manager names the package a run installed by
+ * diffing the manifest before and after pnpm; an operation whose specifier is
+ * byte-identical before and after leaves that diff empty, and its fallback only
+ * recognises a `name@…` spec — so a floating git re-resolve, which is sent as
+ * the bare remote URL, matches neither and fails as `ambiguous-install` after
+ * pnpm has already re-resolved and built the new commit.
+ *
+ * Declaring the package at the commit already on disk gives the diff exactly
+ * one entry, and pnpm writes the floating specifier back as it re-resolves, so
+ * the durable declaration is unchanged.
+ *
+ * The write is atomic, because it runs immediately before a package operation
+ * that may itself fail.
+ * @returns true when the declaration was written.
+ */
+export declare function declareProfileDependency(profile: string, name: string, value: string, explicitDir?: string): boolean;
+/**
+ * Remove a package from BOTH manifest lists — dependencies and
+ * dsh.profile.bundles. The uninstall counterpart of restoreProfileManifest:
+ * pnpm can fail a remove after deleting node_modules but before saving
+ * package.json (the #65 write-order's mirror image — a file locked mid-
+ * unlink aborts the run), leaving the manifest pointing at a package that
+ * no longer exists on disk. The next boot then fails to activate the ghost
+ * dependency. When disk truth says the package is gone, this finishes the
+ * removal the CLI could not. Every other manifest field is untouched.
+ *
+ * Written atomically because it runs only after something already went wrong
+ * mid-uninstall, so it is the worst place to leave a half-written manifest.
+ * @returns true when either list still mentioned the package.
+ */
+export declare function dropFromManifest(profile: string, name: string, explicitDir?: string): boolean;
+/** The version actually present in the profile's node_modules, or null. */
+export declare function readInstalledVersion(profile: string, name: string, explicitDir?: string): string | null;
+/**
+ * The `name` in the package.json of the directory a dependency is installed
+ * under, or null. DSH Desktop requires it to equal the dependency key (#694).
+ */
+export declare function readInstalledPackageName(profile: string, name: string, explicitDir?: string): string | null;
+/** The installed package manifest, or null when absent or malformed. */
+export declare function readInstalledManifest(profile: string, name: string, explicitDir?: string): unknown | null;
+/**
+ * Whether a package or one of its direct dependencies (including
+ * optionalDependencies) ships a native addon.
+ *
+ * The question behind it: can unloading this plugin actually free its files?
+ * For ordinary JavaScript, yes — and on POSIX it does not even matter,
+ * because replacing an open file leaves the old inode to whoever holds it.
+ * For a native addon it is no on both counts: Node has no dlclose, so once a
+ * `.node` is loaded the process holds it until it exits. On Windows that
+ * turns "uninstall, then install again" into an EPERM on the rename, which
+ * is what @yandidan1 hit with node-hid (#441) — and no amount of disabling,
+ * unmounting or uninstalling from inside the running process can fix it.
+ *
+ * Deliberately a cheap structural check rather than a scan. Walking a
+ * dependency's tree for `*.node` means recursing through packages that can
+ * be tens of thousands of files, on the uninstall path, to answer a question
+ * three `existsSync` calls answer for every native module built or shipped
+ * the conventional way: node-gyp's `build/Release`, prebuild's `prebuilds/`,
+ * and the `binding.gyp` that names the addon in the first place.
+ *
+ * Direct `dependencies` and `optionalDependencies` are included because
+ * that is where these live: the plugin is JavaScript and the addon is a
+ * package it depends on, hoisted to the profile root beside it.
+ * optionalDependencies is the same kind of direct declaration —
+ * SinglePlayer ships node-hid there (#441), and asking only `dependencies`
+ * treated that uninstall as ordinary JavaScript.
+ * @param profile - profile name.
+ * @param name - the installed package to ask about.
+ * @param explicitDir - resolved profile directory, when the caller has it.
+ * @returns true when a native addon is present in the package or a direct (optional) dependency.
+ */
+export declare function holdsNativeAddon(profile: string, name: string, explicitDir?: string): boolean;
+/**
+ * Strong repository identities for a locally linked dependency (#141).
+ * Explicit github: specs already carry this evidence; only link:/file: need
+ * filesystem discovery. This compatibility wrapper returns only declared
+ * package.json identities; Git origins are exposed separately as hints.
+ */
+export declare function readInstalledRepoIdentities(profile: string, name: string, spec: string, explicitDir?: string): string[];
+export interface InstalledRepoEvidence {
+    identities: string[];
+    hints: string[];
+}
+/**
+ * Discover declared repository identities and weaker local-origin hints. A
+ * package.json repository declaration is authoritative; Git origin is only a
+ * disambiguation hint because a checkout may legitimately point at a fork.
+ *
+ * Read for local AND registry specs, but never for a spec that already names
+ * its own source (#544 by @QinYupan; boundary from @bulingbuling688 in #548).
+ *
+ * The bug: two same-named catalog entries and an ordinary npm install. The
+ * manifest's `repository` — `git+https://github.com/MrmoLabs/dsh-mermaid.git`
+ * — is the one fact that says WHICH of the two is installed, and it sits in
+ * the same package.json for an npm install as for a local one. This returned
+ * empty for anything not `link:`/`file:`, so the client fell back to name
+ * matching, found two candidates, and matched NEITHER: the Discover card kept
+ * offering Install on a plugin that was running.
+ *
+ * Why a `github:`/URL install must NOT be read the same way: its spec already
+ * states the source, and the manifest can disagree with it. A fork installed
+ * as `github:myfork/plugin` usually still declares the UPSTREAM repository,
+ * because almost nobody edits that field when forking. Adding it as an
+ * identity made the upstream's card read as installed — measured, and the
+ * same mistake as #485: a weaker signal allowed to outvote a definite one.
+ * The first version of this fix widened to every spec kind and had exactly
+ * that hole.
+ *
+ * What stays local-only for the same reason it always was: the git-origin
+ * hint (there is no checkout to read for a registry install) and the local
+ * source directory walk.
+ */
+export declare function readInstalledRepoEvidence(profile: string, name: string, spec: string, explicitDir?: string): InstalledRepoEvidence;
+/**
+ * Pinned commit per `host/owner/repo` from the archive tarball URLs in the
+ * profile lockfile.
+ *
+ * Keyed by host, not by `owner/repo` alone: gitlab.com and bitbucket.org
+ * hand out the same short owner/repo names GitHub does, and an unqualified
+ * key would let one host's commit answer for a plugin installed from
+ * another — reporting a rollback or an update check against a repository
+ * the user never installed. `hostedRepoKey` builds the same key from a
+ * spec, and is how callers should look one up.
+ */
+export declare function readLockCommits(profile: string, explicitDir?: string): Map<string, string>;
+/**
+ * Commit recorded for a non-codeload git resolution (`type: git` in pnpm's
+ * lockfile). Matched against the install spec so a Gitea/GitLab URL can
+ * compare HEAD without mistaking a same-named npm package (#525).
+ *
+ * Two packages of one monorepo resolve from the SAME remote and differ only
+ * by pnpm's `path:` selector, so the spec's subpath has to match too — and
+ * when the spec names no subpath while several entries of that remote do,
+ * there is no answer rather than the first sibling's commit (#632).
+ *
+ * The key on both sides of the comparison is `hostedRepoKey`, the identity
+ * the rest of the market already compares specs by (#851). This function
+ * used to derive its own, and that second spelling lost every install pnpm
+ * writes the shorthand back for: it demanded an `https?://` prefix or a
+ * `.git` suffix, so `github:owner/repo` keyed to nothing at all, and it kept
+ * the `.git` suffix, so the spec side `https://github.com/o/r` could never
+ * equal the lockfile side pnpm writes as `git@github.com:o/r.git`. A floating
+ * shorthand therefore had no commit, and with no commit the update route
+ * refuses to roll back — the market reports "cannot confirm the commit before
+ * the update" for a lockfile that states it plainly.
+ */
+export declare function readGitResolutionCommit(profile: string, spec: string, explicitDir?: string): string | null;
+/** True when the installed package's manifest declares a dsh plugin surface. */
+export declare function hasDshManifest(dir: string): boolean;
+/**
+ * True when the package's declared entry artifact actually exists — github
+ * source checkouts of build-required plugins ship no lib/, and promoting one
+ * into the bundle layer bricks the next boot (ERR_MODULE_NOT_FOUND kills the
+ * whole profile, #18).
+ */
+export declare function entryArtifactExists(dir: string): boolean;
+/**
+ * Package names a bundle patch mounts — the `name:` rows of the package's
+ * declared `dsh.bundle.patch` file. Line-wise on purpose: the strict
+ * hot-mount parser rejects config/expression rows, but for "what does this
+ * bundle bring in" any name row counts.
+ */
+export declare function bundlePatchTargets(dir: string): string[];
+/**
+ * Loader entry ids a bundle patch inserts. Cordis refuses to boot a tree
+ * with a duplicate entry id ("duplicate loader entry id: storage", #122), so
+ * these are what two bundles can collide on.
+ */
+export declare function bundlePatchEntryIds(dir: string): string[];
+/**
+ * Loader entry ids the patch INSERTS — the rows the package owns, as opposed
+ * to rows of OTHER plugins it merely configures (#147).
+ *
+ * A bundle patch has two kinds of entry:
+ *
+ *     - insert:                     ← rows this package brings into the tree
+ *         - id: vision-router
+ *           name: dsh-vision-router
+ *     - id: attachment-local        ← someone else's row, only reconfigured
+ *       config: { maxImageBytes: … }
+ *
+ * Treating both as "this package's rows" made disabling one plugin write
+ * `disabled: true` onto the official rows it tuned — killing attachments and
+ * the DeepSeek model with it.
+ */
+export declare function bundlePatchInsertedIds(dir: string): string[];
+/**
+ * Row ids a package's OWN patch layer ships switched OFF — its opt-in rows.
+ *
+ * A bundle may ship rows `disabled: true` on purpose, and say so in a comment
+ * right there: dsh-mnemon's four `mnemon-strategy-*` rows are "opt-in" and
+ * "stay off until selected". A user patch layer repeating that same
+ * `disabled: true` therefore changes nothing about the package — but counting
+ * it as "the user turned this off" put 「已停用 / 重启后保持关闭」 on a card
+ * whose plugin was demonstrably running (#876). Layer order is the whole
+ * reason: the bundle's own default is the floor, and the market has to ask
+ * what the user did ABOVE it.
+ *
+ * Reads both patch sources like the other readers here — the declared
+ * `dsh.bundle.patch` (one file, or an ordered LIST, #792) and the
+ * conventional root cordis.patch.yml a package may ship instead.
+ */
+export declare function bundleOptOutRowIds(dir: string): string[];
+/**
+ * Row ids a package's own patch sources decide with an EXPRESSION rather
+ * than a literal — `disabled: !!js …` (#1043). The bundle's default for
+ * these rows is whatever the condition evaluates to on the host that
+ * composes the profile, so no literal the market writes above the bundle
+ * layer can stand in for the user: force-writing `disabled: false` switches
+ * on a row the environment keeps off (a TUI row on a Desktop without the TUI
+ * services), which then holds the package pending at activation and fails
+ * the next install's check.
+ *
+ * Reads the same two patch sources as `bundleOptOutRowIds` above.
+ */
+export declare function bundleExpressionRowIds(dir: string): string[];
+/**
+ * Row ids the installed copy of a package DECLARES it inserts (#1012).
+ *
+ * The evidence half of `rowIdsForPackage`: the same two patch sources (the
+ * declared `dsh.bundle.patch`, one file or an ordered list, and the
+ * conventional root `cordis.patch.yml`), insert rows only, and — unlike that
+ * reader — no live loader rows.
+ *
+ * Live rows are exactly what this cannot use. A rename transaction asks the
+ * question twice: of the old package just before it is removed (whose rows are
+ * still live, but whose patch files are about to be the only copy left) and of
+ * the new package right after its first install (which has never been booted,
+ * so the loader has never heard of it). Only the package's own declaration can
+ * answer for both.
+ *
+ * That is the same question, and the same parser, as `renamePredecessor` asks
+ * on the install path — an install never boots the package either, so it
+ * compares declarations too and the two refusals agree on what "one plugin"
+ * means (#1012). Where they differ is the root `cordis.patch.yml`: see
+ * `declaredPatchRowIds` for why this reader covers it and that gate's
+ * declared-only reader does not.
+ */
+export declare function shippedInsertedRowIds(dir: string): string[];
+/**
+ * Rows of one patch file. Exported because a package may ship its patch at
+ * the conventional path INSTEAD of declaring `dsh.bundle.patch`, and the
+ * patch layer has to read that one by the same rules — a second hand-rolled
+ * scan drifted from this one and re-introduced #147 on that path (it closed
+ * the insert block only on `id:` lines, so `- disable:` followed by nested
+ * ids claimed the neighbour's rows).
+ *
+ * Line-wise on purpose: the strict hot-mount parser rejects config/expression
+ * rows, but for "what does this bundle bring in" any row counts. `insertedIds`
+ * is the subset under an `insert:` key (#147) — and "under `insert:`" is not
+ * the same as "deeper than it", because a row's `config:` carries its payload
+ * (#841). `expressionIds` (#1043) is the subset whose `disabled` is decided
+ * by an expression rather than a literal — a row the market must never
+ * answer with a literal of its own, because the host re-evaluates the
+ * condition on every compose and no user-layer value can stand in for it.
+ */
+export declare function parsePatchRows(text: string): {
+    names: string[];
+    ids: string[];
+    insertedIds: string[];
+    disabledIds: string[];
+    expressionIds: string[];
+};
+/**
+ * Where a package's bundle patches live, according to the package itself.
+ *
+ * `dsh.bundle.patch` is the package's own declaration and the only place the
+ * answer is written down. The host accepts a string (one file) or an ordered
+ * array of files — official dsh-web-app ships five — and composes them in
+ * order (`bundlePatchFiles` in dsh-app-boot). The market's read side hands
+ * down no verdict, so an array contributes its string items in order and an
+ * unreadable manifest or a declaration that is neither string nor array
+ * answers none instead of throwing (#792) — the same tolerance check.ts's
+ * `declaredList` applies to the boot check (#676). The path may name a
+ * subdirectory (`aegis` declares `./extensions/dsh/cordis.patch.yml`), not
+ * just the package root — callers that assumed the root file made a plugin
+ * with a declared patch look like one with none (#646) — so the resolution
+ * rule lives here, once.
+ *
+ * @param dir - the installed package directory.
+ * @returns the declared patch files' paths in declaration order, empty when
+ *   the manifest names none (or cannot be read).
+ */
+export declare function declaredBundlePatchFiles(dir: string): string[];
+/** The profile manifest's `dsh.profile.bundles` — what the CLI reconciled. */
+export declare function readProfileBundles(profileDirectory: string): string[];
+/**
+ * Drop one bundle from the profile manifest's `dsh.profile.bundles`, leaving
+ * the package installed as a dependency. This is the carrier-bundle half of a
+ * toggle-off (#224): a bundle whose patch reconfigures plugins it does NOT own
+ * (dsh-postgres-backends disables session-persistence-jsonl and reroutes
+ * storage-domain) keeps applying those side-effect rows on every boot while it
+ * stays in the stack, and the #147 ownership rule deliberately never writes
+ * them — so removing the bundle from the stack is the only thing that stops
+ * them all at once. The package itself stays installed; enabling re-adds it.
+ * @returns true when the bundle was present and removed.
+ */
+export declare function removeProfileBundle(profileDirectory: string, name: string): boolean;
+/**
+ * Re-add a bundle to `dsh.profile.bundles` after a carrier toggle-off (#224).
+ * Idempotent: a bundle already present is left untouched. The name is appended
+ * (the install flow appends too); the loader re-validates ordering on the next
+ * composition, so a declared before/after rule surfaces there rather than here.
+ * @returns true when the bundle was added, false when it was already present.
+ */
+export declare function addProfileBundle(profileDirectory: string, name: string): boolean;
+/**
+ * Loader entry ids a newly added package would collide on with bundles the
+ * profile ALREADY loads (#122).
+ *
+ * Cordis hard-fails the whole tree on a duplicate id, so this is not a
+ * cosmetic conflict: installing a TUI bundle into a web profile (both
+ * declare `id: storage`) leaves DSH unable to start at all, with an error
+ * naming neither plugin. Checked against the profile's own bundle list so a
+ * package is never compared with itself.
+ * @returns colliding ids mapped to the already-installed bundle that owns them.
+ */
+export declare function conflictingEntryIds(profileDirectory: string, candidate: string, installedBundles: readonly string[]): {
+    id: string;
+    owner: string;
+}[];
+/**
+ * Whether the loader has anything to load for this package: its own entry
+ * artifact, or — for CARRIER bundles — patch rows naming other packages that
+ * do have one.
+ *
+ * Carriers are why `entryArtifactExists` alone is the wrong test (#103):
+ * `@linxin666/dsh-skins` ships skin assets plus a patch mounting
+ * `@linxin666/dsh-client-ui-skin-center`, and declares no main/exports/
+ * index.js of its own. Judged by its own entry it looks like the
+ * source-only checkout the #18 guard removes — so the market both flagged it
+ * broken AND uninstalled it right after installing.
+ * @param profileDirectory - resolved profile directory (host-authoritative under Desktop).
+ * @param name - installed package name.
+ */
+export declare function hasLoadableEntry(profileDirectory: string, name: string, hostDirectory?: string | null): boolean;
+/** Plugin subdirectories (depth 2) of a collection checkout, as relative paths. */
+export declare function pluginSubdirs(root: string): string[];
+/**
+ * Allow the given packages' build scripts in the profile's
+ * pnpm-workspace.yaml `allowBuilds` block (the key dsh profiles use),
+ * merging with existing entries and leaving the rest of the yaml intact.
+ * (#6 by @qichuang321.)
+ * @returns every package now allowed.
+ */
+export declare function setAllowBuilds(profile: string, packages: string[], explicitDir?: string): string[];
+/**
+ * Remove the allowBuilds keys pnpm cannot parse as a version range, and say
+ * which (#698).
+ *
+ * pnpm reads an allowBuilds key as `name@<version union>`, and on 10.26 to
+ * the latest 10.x and on 11.0 to 11.5 a git or archive source there —
+ * `name@git+https://…`, `name@https://codeload…` — is rejected as
+ * "Invalid versions union … Use exact versions only". Not the one entry: the
+ * whole workspace file, so EVERY later pnpm command in the profile fails,
+ * including installs that have nothing to do with it. Measured on 9.15,
+ * 10.0 through 10.29, 11.0 through 11.8, 11.21 and 12.4; 10.25 and below
+ * ignore allowBuilds and 11.6 and above accept these keys.
+ *
+ * Those are exactly the keys the market writes for a git source (#68, #285,
+ * #637), because the pnpm versions that need them to authorize anything
+ * read them fine. On the versions in between, a bare name is what
+ * authorizes a git dependency — measured on 10.29 — and it is kept.
+ *
+ * @returns the keys removed; empty when nothing matched, in which case the
+ *   file is left untouched.
+ */
+export declare function dropUnparseableBuildKeys(profile: string, explicitDir?: string): string[];
+/**
+ * Make a profile's `minimumReleaseAgeExclude` readable again (#732).
+ *
+ * pnpm appends a second rule for a package that already has one, while its
+ * `evaluateVersionPolicy` honours only the FIRST rule per package name — so
+ * its own new entry is dead, the young version stays unexcluded, and every
+ * later command in that profile fails lockfile verification with
+ * ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION, including commands that have nothing
+ * to do with that package.
+ *
+ * (#733 reported a separate, unexplained 80 GiB allocation abort on pnpm
+ * 12.4.1 that its author first tied to the union spelling. Review on that
+ * issue — and the reporter's own follow-up, which could no longer reproduce it
+ * — settled that `name@a || b` is a documented pnpm form, that the validator's
+ * "Use exact versions only" is about ranges and name patterns, and that the
+ * abort is not this market's to fix. Do not "repair" a union into a bare name
+ * on the strength of it: see below.)
+ *
+ * pnpm WRITES this key itself, and one of the forms it writes is what breaks a
+ * profile (#732): pnpm 11.7.0 APPENDS a second rule for a package that already
+ * has one, while its `evaluateVersionPolicy` honours only the FIRST rule per
+ * package name. Its own new entry is therefore dead, the young version stays
+ * unexcluded, and every later command in that profile fails lockfile
+ * verification with ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION — installs, updates
+ * and uninstalls alike, including ones that have nothing to do with that
+ * package. Merging the same-name rules into one makes the file readable again.
+ *
+ * The merge keeps the UNION of the versions the file already lists
+ * (`name@1.2.3 || 1.4.0`), which is a documented pnpm spelling. What this
+ * deliberately does NOT do is collapse a version list to a bare package name:
+ * a bare name exempts EVERY version of that package from the cooldown, which
+ * is wider than what the file says, and the market pins exact versions
+ * precisely so a fresh install cannot silently land on an older release
+ * (#594). A form the file cannot be read exactly from is left alone.
+ *
+ * @returns the package names whose rules were merged; empty when the file
+ *   needed no repair or could not be repaired, in which case it is left
+ *   byte-for-byte as it was.
+ */
+export declare function mergeDuplicateReleaseAgeExcludes(profile: string, explicitDir?: string): string[];

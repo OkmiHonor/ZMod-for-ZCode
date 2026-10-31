@@ -57,7 +57,17 @@ export function isPeakHour(date) {
 }
 
 /**
+ * 订阅制模型判定（费用互斥铁律的网关侧延伸）：magpie 本地网关转发的 ZCode 订阅
+ * 模型（model_id 带 zcode/ 前缀，如 zcode/GLM-5.3-Flash）走包月订阅，严禁套用
+ * 百炼按量价——真实余量由数据源 magpie 适配器展示，这里只负责隐藏费用。
+ */
+export function isSubscriptionModel(model) {
+  return /(^|\/)zcode\//i.test(String(model || ''));
+}
+
+/**
  * 模型 → 价目表。匹配顺序：
+ * 0. zcode/ 前缀（magpie 网关订阅源）→ null 不计价（订阅制不量化金钱）；
  * 1. deepseek + v4.1 → 百炼 dsv41flash（v4.1 快照名只在百炼渠道存在，官方渠道
  *    同代模型名是 deepseek-flash，不会误伤）；
  * 2. deepseek + 0813 → 百炼 dsv4pro（带 -0813 快照后缀的才是百炼版）；
@@ -66,6 +76,7 @@ export function isPeakHour(date) {
  *    不计价（宁缺勿错，套用他家居价目表毫无意义）。
  */
 export function costTable(model) {
+  if (isSubscriptionModel(model)) return null;
   const m = String(model || '').toLowerCase();
   if (m.includes('deepseek')) {
     if (/v4\.1/.test(m)) return BAILIAN_PRICING.dsv41flash;
