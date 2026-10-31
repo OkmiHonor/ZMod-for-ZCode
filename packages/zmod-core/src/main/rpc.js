@@ -271,6 +271,20 @@ class RpcGateway {
       }
       return { success: false, error: 'Invalid URL' };
     });
+    this.register('system.openFolder', async ({ path } = {}) => {
+      try {
+        if (!electronShell || typeof path !== 'string' || !path.trim()) {
+          return { ok: false, error: 'Invalid path' };
+        }
+        if (!fs.existsSync(path) || !fs.statSync(path).isDirectory()) {
+          return { ok: false, error: 'Folder not found' };
+        }
+        const failure = await electronShell.openPath(path);
+        return failure ? { ok: false, error: failure } : { ok: true };
+      } catch (err) {
+        return { ok: false, error: String(err?.message || err) };
+      }
+    });
 
     // ---- Window host features (acrylic backplate, boss key, reload) ----
     this.register('window.reload', async () => {
