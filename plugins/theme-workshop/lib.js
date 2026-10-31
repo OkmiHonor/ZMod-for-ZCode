@@ -247,9 +247,18 @@ export function buildCss(s) {
         bgLines.push('  background-repeat: no-repeat;');
       }
     }
-    const filter = `filter: brightness(${fmt(brightness / 100)}) blur(${fmt(blur)}px);`;
+    // 滤镜按需输出：亮度 100% + 模糊 0 时不写 filter（blur(0px) 也会强制整层重栅格化）；
+    // 有滤镜时用 translateZ(0) 把壁纸层提升为独立合成层，滤镜变化不再拖累整窗重绘
+    const filterParts = [];
+    if (brightness !== 100) filterParts.push(`brightness(${fmt(brightness / 100)})`);
+    if (blur > 0) filterParts.push(`blur(${fmt(blur)}px)`);
+    const layerLines = [...bgLines];
+    if (filterParts.length) {
+      layerLines.push(`  filter: ${filterParts.join(' ')};`);
+      layerLines.push('  transform: translateZ(0);');
+    }
     blocks.push(
-      `html::before {\n  content: "";\n  position: fixed;\n  inset: -24px;\n  z-index: -2;\n${bgLines.join('\n')}\n  ${filter}\n}`
+      `html::before {\n  content: "";\n  position: fixed;\n  inset: -24px;\n  z-index: -2;\n${layerLines.join('\n')}\n}`
     );
     if (vignette > 0) {
       blocks.push(
@@ -371,6 +380,11 @@ export function buildCss(s) {
       `[data-workspace-sidebar-panel="true"],\nsection[data-workspace-conversation-frame="true"],\n[data-workspace-side-frame="true"],\n[data-workspace-terminal-frame="true"] {\n  backdrop-filter: blur(${fmt(frost)}px) saturate(115%);\n}`
     );
   }
+
+  // G. 级联防护：预设整体切换的一瞬间禁用全站过渡，避免全站元素同时跑 150ms 颜色过渡动画
+  blocks.push(
+    `html[data-zmod-tw-cascade] *,\nhtml[data-zmod-tw-cascade] *::before,\nhtml[data-zmod-tw-cascade] *::after {\n  transition: none !important;\n}`
+  );
 
   return blocks.join('\n\n') + '\n';
 }

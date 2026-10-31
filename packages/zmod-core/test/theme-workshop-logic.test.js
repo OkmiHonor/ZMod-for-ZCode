@@ -100,8 +100,28 @@ test('buildCss: vignette 0 vs 40', () => {
 test('buildCss: 越界数值按边界处理', () => {
   const css = buildCss({ ...DEFAULTS, opBackground: 999, wallpaperBlur: -5 });
   assert.ok(css.includes('color-mix(in srgb, #161616 100%, transparent)'), 'opBackground 999 → 100');
-  assert.ok(css.includes('blur(0px)'), 'wallpaperBlur -5 → 0');
+  assert.ok(!css.includes('blur('), 'wallpaperBlur -5 → 0，不应输出 blur 滤镜');
   assert.ok(!css.includes('999'), '不得出现未 clamp 的值');
+});
+
+// 11. 滤镜按需输出（性能：无谓的 filter/blur 会强制整层重栅格化）
+test('buildCss: 滤镜按需输出与合成层提升', () => {
+  const none = buildCss({ ...DEFAULTS, wallpaperBrightness: 100, wallpaperBlur: 0 });
+  assert.ok(!none.includes('filter:'), '亮度 100% + 模糊 0 不应输出 filter');
+  const dim = buildCss({ ...DEFAULTS, wallpaperBrightness: 60, wallpaperBlur: 0 });
+  assert.ok(dim.includes('filter: brightness(0.6)'), '仅调亮度时输出 brightness');
+  assert.ok(!dim.includes('blur('), '模糊 0 不输出 blur');
+  assert.ok(dim.includes('transform: translateZ(0);'), '有滤镜时提升合成层');
+  const blurred = buildCss({ ...DEFAULTS, wallpaperBrightness: 100, wallpaperBlur: 8 });
+  assert.ok(blurred.includes('filter: blur(8px)'), '仅模糊时输出 blur');
+  assert.ok(blurred.includes('transform: translateZ(0);'));
+});
+
+// 12. 级联过渡禁用护罩规则恒在（由 index.js 在预设切换瞬间挂 data 属性启用）
+test('buildCss: 级联防护规则存在', () => {
+  const css = buildCss(DEFAULTS);
+  assert.ok(css.includes('html[data-zmod-tw-cascade]'));
+  assert.ok(css.includes('transition: none !important'));
 });
 
 // 10. resolveWallpaperUrl 分支

@@ -257,9 +257,8 @@ export default definePlugin({
         if (!snapshot) {
           return { ok: false, message: '当前是自定义配置，请先选择一个预设' };
         }
-        for (const k of ALL_KEYS) {
-          await ctx.settings.set(k, snapshot[k]);
-        }
+        // 重写 preset 键触发 onChange → start 里的 applyPresetSnapshot 原子套用
+        await ctx.settings.set('preset', key);
         return { ok: true, message: `已应用预设：${PRESET_LABELS[key] || key}` };
       }
     }
@@ -274,17 +273,49 @@ export default definePlugin({
       return out;
     };
 
-    // slider 拖动时每个刻度都会触发 onChange，用 rAF 合并成一帧一次重建
+    // slider 拖动时每个刻度都会触发 onChange，用 rAF 合并成一帧一次重建；
+    // 预设级联写回期间（cascading）暂停重建，结束时加过渡禁用护罩后整体重算一次，
+    // 避免连环全量样式重算 + 全站同时跑颜色过渡导致掉帧与窗口闪烁
     let rafId = 0;
+    let cascading = 0;
+    let guardArmed = false;
+    let lastCss = '';
     const apply = () => {
-      u.injectStyle('theme-workshop', buildCss(current()));
+      const css = buildCss(current());
+      if (css === lastCss) return;
+      lastCss = css;
+      u.injectStyle('theme-workshop', css);
     };
     const schedule = () => {
       if (rafId) return;
       rafId = requestAnimationFrame(() => {
         rafId = 0;
+        if (cascading > 0) return;
         apply();
+        if (guardArmed) {
+          guardArmed = false;
+          document.documentElement.removeAttribute('data-zmod-tw-cascade');
+        }
       });
+    };
+    const applyPresetSnapshot = async (key) => {
+      const snapshot = PRESETS[key];
+      if (!snapshot) return false;
+      cascading += 1;
+      try {
+        for (const k of ALL_KEYS) {
+          if (s.get(k, DEFAULTS[k]) === snapshot[k]) continue;
+          await s.set(k, snapshot[k]);
+        }
+      } finally {
+        cascading -= 1;
+      }
+      if (cascading === 0) {
+        guardArmed = true;
+        document.documentElement.setAttribute('data-zmod-tw-cascade', '1');
+        schedule();
+      }
+      return true;
     };
 
     const applyMaterial = async (v) => {
@@ -316,18 +347,17 @@ export default definePlugin({
     };
 
     apply();
-    ctx.cleanup(() => u.removeStyle('theme-workshop'));
+    ctx.cleanup(() => {
+      u.removeStyle('theme-workshop');
+      document.documentElement.removeAttribute('data-zmod-tw-cascade');
+    });
 
     for (const k of ALL_KEYS) {
       s.onChange(k, () => schedule());
     }
-    // 预设键额外级联：选中快照即逐键写回（触发上面的 onChange，rAF 已合并）
-    s.onChange('preset', async (v) => {
-      const snapshot = PRESETS[v];
-      if (!snapshot) return;
-      for (const k of ALL_KEYS) {
-        await s.set(k, snapshot[k]);
-      }
+    // 预设键额外级联：选中快照即原子套用（级联期间暂停逐帧重建，结束一次重算）
+    s.onChange('preset', (v) => {
+      applyPresetSnapshot(v);
     });
     s.onChange('material', (v) => applyMaterial(v));
     s.onChange('wallpaperMode', () => checkWallpaperFile());
