@@ -124,6 +124,16 @@ test('buildCss: 级联防护规则存在', () => {
   assert.ok(css.includes('transition: none !important'));
 });
 
+// 13. desktop 预设：关壁纸 + 云母材质，专为一键展示窗口底材
+test('PRESETS: desktop 预设面向原生材质', () => {
+  assert.equal(PRESETS.desktop.wallpaperMode, 'none');
+  assert.equal(PRESETS.desktop.material, 'mica');
+  const css = buildCss(PRESETS.desktop);
+  assert.ok(!css.includes('html::before'), 'desktop 不出壁纸层');
+  assert.ok(!css.includes('html::after'), 'desktop 无暗角层');
+  assert.ok(css.includes('color-mix(in srgb, #161616 65%, transparent)'), '主背景 65% 透出');
+});
+
 // 10. resolveWallpaperUrl 分支
 test('resolveWallpaperUrl: builtin/custom/非法输入', () => {
   const builtin = resolveWallpaperUrl('builtin', 'aurora', '');

@@ -5,7 +5,8 @@ const PRESET_LABELS = {
   vanilla: '一键还原原版',
   frost: '极简毛玻璃',
   warm: '护眼暖阳',
-  cyber: '赛博流光'
+  cyber: '赛博流光',
+  desktop: '透出桌面（原生材质）'
 };
 
 const WALLPAPER_PATH_HINT = 'D:\\ZMod\\data\\plugins\\theme-workshop\\wallpapers\\';
@@ -28,6 +29,7 @@ export default definePlugin({
         { label: '极简毛玻璃', value: 'frost' },
         { label: '护眼暖阳', value: 'warm' },
         { label: '赛博流光', value: 'cyber' },
+        { label: '透出桌面（原生材质）', value: 'desktop' },
         { label: '自定义（自由调整）', value: 'custom' }
       ],
       default: 'frost'
@@ -238,11 +240,12 @@ export default definePlugin({
     material: {
       type: 'select',
       title: '窗口材质',
-      description: '不透明窗口材质，与「亚克力背板与老板键」插件的材质功能二选一',
+      description:
+        '切换窗口底材。注意：本机出厂默认就是亚克力，且壁纸层/不透明分区会盖住底材——想看见效果，请选「透出桌面」预设，或把「壁纸来源」设为关闭并调低主背景透明度',
       options: [
-        { label: '不修改（推荐）', value: 'keep' },
-        { label: '亚克力', value: 'acrylic' },
-        { label: '云母', value: 'mica' }
+        { label: '不修改（保持系统默认）', value: 'keep' },
+        { label: '亚克力（模糊透出桌面，= 系统默认）', value: 'acrylic' },
+        { label: '云母（更柔和的桌面渗色）', value: 'mica' }
       ],
       default: 'keep'
     }
@@ -318,15 +321,45 @@ export default definePlugin({
       return true;
     };
 
-    const applyMaterial = async (v) => {
+    // 材质语义：
+    // - 宿主出厂在 win32 就是 acrylic + #00000000，选 acrylic 无可见变化属正常；
+    // - 「不修改」在本会话动过材质后要恢复出厂参数（RPC 的 'none' 会重置成不透明白底，不能用）；
+    // - 壁纸层/全不透明分区会把底材完全盖住——主动提示用户如何让材质可见。
+    let materialTouched = false;
+    const applyMaterial = async (v, { verbose = false } = {}) => {
+      if (v === 'keep') {
+        if (!materialTouched) return;
+        materialTouched = false;
+        try {
+          await invoke('window.setMaterial', { material: 'acrylic', tint: '#00000000' });
+          if (verbose) u.showToast('已恢复系统默认材质（亚克力）', 'info');
+        } catch (err) {
+          console.error('[ZMod:ThemeWorkshop] restore material failed:', err?.message || err);
+        }
+        return;
+      }
       if (v !== 'acrylic' && v !== 'mica') return;
+      materialTouched = true;
       try {
         const res = await invoke('window.setMaterial', { material: v, tint: '#00000000' });
         if (res && res.supported === false) {
           u.showToast('当前系统不支持该窗口材质，已保持不透明', 'warn');
+          return;
+        }
+        if (verbose) {
+          const wpMode = s.get('wallpaperMode', DEFAULTS.wallpaperMode);
+          const opBg = Number(s.get('opBackground', DEFAULTS.opBackground)) || 0;
+          if (wpMode !== 'none') {
+            u.showToast('材质已设置，但当前「壁纸层」盖在窗口底材之上——想看见效果，请把「壁纸来源」改为「关闭壁纸」并调低主背景透明度', 'warn');
+          } else if (opBg >= 95) {
+            u.showToast('材质已设置，但「主背景」接近全不透明——把它的数值调低（如 70）即可透出桌面', 'info');
+          } else {
+            u.showToast(v === 'mica' ? '窗口材质已切换为云母' : '窗口材质已切换为亚克力', 'success');
+          }
         }
       } catch (err) {
         console.error('[ZMod:ThemeWorkshop] setMaterial failed:', err?.message || err);
+        if (verbose) u.showToast('窗口材质设置失败', 'error');
       }
     };
 
@@ -359,7 +392,7 @@ export default definePlugin({
     s.onChange('preset', (v) => {
       applyPresetSnapshot(v);
     });
-    s.onChange('material', (v) => applyMaterial(v));
+    s.onChange('material', (v) => applyMaterial(v, { verbose: true }));
     s.onChange('wallpaperMode', () => checkWallpaperFile());
     s.onChange('wallpaperFile', () => checkWallpaperFile());
 

@@ -36,7 +36,8 @@ const PRESET_LABELS = {
   vanilla: '一键还原原版',
   frost: '极简毛玻璃',
   warm: '护眼暖阳',
-  cyber: '赛博流光'
+  cyber: '赛博流光',
+  desktop: '透出桌面（原生材质）'
 };
 
 /** 四套预设快照，每套覆盖 ALL_KEYS 全部键。 */
@@ -116,6 +117,25 @@ export const PRESETS = {
     opTerminal: 78,
     opCode: 80,
     radius: 12
+  },
+  desktop: {
+    ...DEFAULTS,
+    preset: 'desktop',
+    wallpaperMode: 'none',
+    wallpaperVignette: 0,
+    panelFrost: 0,
+    opBackground: 65,
+    opSidebar: 50,
+    opHeader: 55,
+    opPanel: 58,
+    opCard: 80,
+    opInput: 72,
+    opMenu: 88,
+    opBubble: 45,
+    opTerminal: 75,
+    opCode: 80,
+    radius: 8,
+    material: 'mica'
   }
 };
 
