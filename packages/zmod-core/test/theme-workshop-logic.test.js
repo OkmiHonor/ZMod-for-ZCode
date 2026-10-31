@@ -134,6 +134,15 @@ test('PRESETS: desktop 预设面向原生材质', () => {
   assert.ok(css.includes('color-mix(in srgb, #161616 65%, transparent)'), '主背景 65% 透出');
 });
 
+// 14. 内置壁纸清单完整
+test('BUILTIN_WALLPAPERS: 七张内置壁纸齐全', () => {
+  for (const id of ['aurora', 'sunset', 'cyber', 'forest', 'dusk', 'blossom', 'graphite']) {
+    const wp = BUILTIN_WALLPAPERS[id];
+    assert.ok(wp && typeof wp.css === 'string' && wp.css.includes('gradient'), `壁纸 ${id} 缺失或非法`);
+    assert.ok(typeof wp.label === 'string' && wp.label, `壁纸 ${id} 缺 label`);
+  }
+});
+
 // 10. resolveWallpaperUrl 分支
 test('resolveWallpaperUrl: builtin/custom/非法输入', () => {
   const builtin = resolveWallpaperUrl('builtin', 'aurora', '');

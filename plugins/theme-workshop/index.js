@@ -11,6 +11,17 @@ const PRESET_LABELS = {
 
 const WALLPAPER_PATH_HINT = 'D:\\ZMod\\data\\plugins\\theme-workshop\\wallpapers\\';
 
+/** 探测自定义壁纸是否可被 zmod-local 协议读取到。 */
+async function probeWallpaper(file) {
+  try {
+    const url = `zmod-local://plugins/theme-workshop/wallpapers/${encodeURIComponent(file)}`;
+    const res = await fetch(url, { method: 'GET' });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export default definePlugin({
   id: 'theme-workshop',
   name: '外观与主题工坊',
@@ -23,7 +34,7 @@ export default definePlugin({
     preset: {
       type: 'select',
       title: '预设主题',
-      description: '选择即套用整套快照，之后手动微调不会改变此选项',
+      description: '选择即套用整套快照；之后手动微调任意一项，这里会自动变为「自定义」，点「重新应用当前预设」可一键回到预设原貌',
       options: [
         { label: '一键还原原版', value: 'vanilla' },
         { label: '极简毛玻璃', value: 'frost' },
@@ -46,7 +57,7 @@ export default definePlugin({
       type: 'select',
       title: '壁纸来源',
       description:
-        '自定义图片需先把文件放入插件目录 wallpapers 文件夹（见插件说明），再在下一项填文件名',
+        '壁纸铺在窗口最底层（会盖住系统窗口材质）。自定义图片：点下方「打开壁纸文件夹」放图，再填文件名',
       options: [
         { label: '关闭壁纸', value: 'none' },
         { label: '内置渐变背景', value: 'builtin' },
@@ -57,24 +68,41 @@ export default definePlugin({
     builtinWallpaper: {
       type: 'select',
       title: '内置壁纸',
+      description: '仅「内置渐变背景」模式生效；樱花粉白/暖阳杏橘适配浅色主题，其余适配深色',
       options: [
         { label: '晨雾青灰', value: 'aurora' },
         { label: '暖阳杏橘', value: 'sunset' },
         { label: '深空紫蓝', value: 'cyber' },
-        { label: '松林墨绿', value: 'forest' }
+        { label: '松林墨绿', value: 'forest' },
+        { label: '薄暮紫粉', value: 'dusk' },
+        { label: '樱花粉白', value: 'blossom' },
+        { label: '石墨深灰', value: 'graphite' }
       ],
       default: 'aurora'
+    },
+    openWallpaperFolder: {
+      type: 'action',
+      title: '打开壁纸文件夹',
+      description: '把图片文件复制进去（支持 png/jpg/webp/gif），然后在上下一项填文件名',
+      action: 'openWallpaperFolder'
     },
     wallpaperFile: {
       type: 'text',
       title: '壁纸文件名',
       placeholder: '例如 my-wallpaper.png',
-      description: '仅自定义图片模式生效，填放进的图片文件名（含扩展名）',
+      description: '仅「自定义图片」模式生效；填文件夹里的文件名（含扩展名）',
       default: ''
+    },
+    checkWallpaper: {
+      type: 'action',
+      title: '检查壁纸文件',
+      description: '填完文件名后点这里，立刻确认能不能读到',
+      action: 'checkWallpaper'
     },
     wallpaperFit: {
       type: 'select',
       title: '图片填充方式',
+      description: '仅自定义图片生效：铺满裁切=填满窗口，完整显示=留边看全图，平铺重复=小图重复铺',
       options: [
         { label: '铺满裁切', value: 'cover' },
         { label: '完整显示', value: 'contain' },
@@ -85,7 +113,7 @@ export default definePlugin({
     wallpaperBrightness: {
       type: 'slider',
       title: '壁纸亮度 %',
-      description: '觉得壁纸太抢眼就调低',
+      description: '仅壁纸开启时生效；觉得壁纸太抢眼就调低',
       default: 100,
       min: 20,
       max: 100,
@@ -94,6 +122,7 @@ export default definePlugin({
     wallpaperBlur: {
       type: 'slider',
       title: '壁纸模糊 px',
+      description: '仅壁纸开启时生效；大值会加重显卡负担',
       default: 0,
       min: 0,
       max: 40,
@@ -102,7 +131,7 @@ export default definePlugin({
     wallpaperVignette: {
       type: 'slider',
       title: '四角暗角 %',
-      description: '四周压暗，突出中间内容',
+      description: '仅壁纸开启时生效；四周压暗，突出中间内容',
       default: 30,
       min: 0,
       max: 80,
@@ -120,7 +149,7 @@ export default definePlugin({
 
     opacityGroup: {
       type: 'group',
-      title: '第三步 · 分区透明度（100 = 原版不透明，越小越透）'
+      title: '第三步 · 分区透明度（100 = 原版不透明，越小越透，拖动即时生效）'
     },
     opBackground: {
       type: 'slider',
@@ -264,6 +293,38 @@ export default definePlugin({
         await ctx.settings.set('preset', key);
         return { ok: true, message: `已应用预设：${PRESET_LABELS[key] || key}` };
       }
+    },
+    openWallpaperFolder: {
+      title: '打开壁纸文件夹',
+      run: async (ctx) => {
+        try {
+          const res = await ctx.invoke('system.openFolder', {
+            path: 'D:\\ZMod\\data\\plugins\\theme-workshop\\wallpapers'
+          });
+          if (res && res.ok === false) {
+            return { ok: false, message: res.error || '打开失败' };
+          }
+          return { ok: true, message: '已打开壁纸文件夹，把图片放进去后回来填文件名' };
+        } catch (err) {
+          return {
+            ok: false,
+            message: `打开失败：${err?.message || err}。若是首次使用该功能，请完全退出并重新打开一次客户端`
+          };
+        }
+      }
+    },
+    checkWallpaper: {
+      title: '检查壁纸文件',
+      run: async (ctx) => {
+        const file = String(ctx.settings.get('wallpaperFile', '') || '').trim();
+        if (!file) {
+          return { ok: false, message: '先在上方填写壁纸文件名（含扩展名）' };
+        }
+        const ok = await probeWallpaper(file);
+        return ok
+          ? { ok: true, message: `已找到「${file}」，壁纸可以正常加载` }
+          : { ok: false, message: `未找到「${file}」——请确认文件已放入 ${WALLPAPER_PATH_HINT}` };
+      }
     }
   },
 
@@ -369,9 +430,8 @@ export default definePlugin({
         if (s.get('wallpaperMode', DEFAULTS.wallpaperMode) !== 'custom') return;
         const file = String(s.get('wallpaperFile', '') || '').trim();
         if (!file) return;
-        const url = `zmod-local://plugins/theme-workshop/wallpapers/${encodeURIComponent(file)}`;
-        const res = await fetch(url, { method: 'GET' });
-        if (!res.ok) {
+        const ok = await probeWallpaper(file);
+        if (!ok) {
           u.showToast(`未找到壁纸文件，请确认已放入 ${WALLPAPER_PATH_HINT} 且文件名填写正确`, 'warn');
         }
       } catch (err) {
@@ -386,7 +446,16 @@ export default definePlugin({
     });
 
     for (const k of ALL_KEYS) {
-      s.onChange(k, () => schedule());
+      s.onChange(k, (v) => {
+        schedule();
+        // 预设诚实化：手动微调任意项（偏离当前预设快照）→ 选项自动变为「自定义」；
+        // 预设级联写回期间（cascading）不触发，避免刚选的预设被自己改掉
+        if (cascading > 0 || k === 'preset') return;
+        const cur = s.get('preset', DEFAULTS.preset);
+        if (cur !== 'custom' && PRESETS[cur] && PRESETS[cur][k] !== v) {
+          s.set('preset', 'custom');
+        }
+      });
     }
     // 预设键额外级联：选中快照即原子套用（级联期间暂停逐帧重建，结束一次重算）
     s.onChange('preset', (v) => {

@@ -155,6 +155,18 @@ export const BUILTIN_WALLPAPERS = {
   forest: {
     label: '松林墨绿',
     css: 'radial-gradient(ellipse 80% 60% at 25% 20%, #2e4438 0%, transparent 60%), radial-gradient(ellipse 75% 55% at 80% 35%, #22352b 0%, transparent 55%), radial-gradient(ellipse 95% 70% at 50% 100%, #16241d 0%, transparent 65%), linear-gradient(160deg, #24382e 0%, #1a2a22 55%, #12201a 100%)'
+  },
+  dusk: {
+    label: '薄暮紫粉',
+    css: 'radial-gradient(ellipse 85% 65% at 78% 18%, rgba(233,150,181,0.28) 0%, transparent 58%), radial-gradient(ellipse 75% 55% at 18% 75%, #4a2c52 0%, transparent 60%), radial-gradient(ellipse 95% 70% at 50% 100%, #8f5d7e 0%, transparent 62%), linear-gradient(160deg, #2b1e3e 0%, #3f2a4d 50%, #6b4468 100%)'
+  },
+  blossom: {
+    label: '樱花粉白',
+    css: 'radial-gradient(ellipse 80% 60% at 22% 18%, #ffffff 0%, transparent 55%), radial-gradient(ellipse 75% 55% at 80% 30%, #fbe3ec 0%, transparent 58%), radial-gradient(ellipse 95% 75% at 50% 100%, #f3c4d3 0%, transparent 62%), linear-gradient(165deg, #fdf0f4 0%, #f9dbe6 50%, #f3c4d3 100%)'
+  },
+  graphite: {
+    label: '石墨深灰',
+    css: 'radial-gradient(ellipse 90% 60% at 50% 0%, rgba(255,255,255,0.07) 0%, transparent 55%), radial-gradient(ellipse 70% 50% at 15% 85%, rgba(255,255,255,0.04) 0%, transparent 60%), linear-gradient(165deg, #1a1d22 0%, #22262c 50%, #2b3038 100%)'
   }
 };
 
