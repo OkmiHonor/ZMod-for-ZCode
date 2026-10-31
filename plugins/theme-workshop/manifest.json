@@ -1,0 +1,11 @@
+{
+  "id": "theme-workshop",
+  "name": "外观与主题工坊",
+  "version": "0.1.0",
+  "description": "把设置实时翻译成整套界面皮肤：壁纸层、分区透明度、圆角字号字体、面板毛玻璃与窗口材质，停用即还原",
+  "author": "ZMod Team",
+  "engine": { "zmod": ">=1.0.0-beta" },
+  "permissions": ["dom.patch"],
+  "category": "appearance",
+  "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"
+}
