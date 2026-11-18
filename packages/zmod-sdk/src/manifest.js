@@ -14,7 +14,8 @@ const KNOWN_PERMISSIONS = new Set([
   'net.fetch',
   'vault.write',
   'vault.read',
-  'datasource'
+  'datasource',
+  'system'
 ]);
 
 const KNOWN_CATEGORIES = new Set(['appearance', 'productivity', 'datasource', 'fun']);

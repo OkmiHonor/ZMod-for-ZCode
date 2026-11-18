@@ -75,7 +75,7 @@ export function autodetectDatasources({ homeDir, existingTypes = [] }) {
         secrets: { token: key },
         reason: `检测到 ZCode 供应商「${name}」使用 DeepSeek 官方 API`
       });
-    } else if (host === '127.0.0.1' && /:8045/.test(baseUrl) && key) {
+    } else if ((host === '127.0.0.1' || host === 'localhost') && /:8045\b/.test(baseUrl) && key) {
       const accountId = detectAntigravityAccount(home);
       if (accountId) {
         add({
@@ -87,6 +87,63 @@ export function autodetectDatasources({ homeDir, existingTypes = [] }) {
           reason: `检测到本地 Antigravity 网关供应商「${name}」`
         });
       }
+    } else if ((host === '127.0.0.1' || host === 'localhost') && /:3425\b/.test(baseUrl)) {
+      add({
+        type: 'magpie',
+        name: 'Magpie 本地网关',
+        status: 'ready',
+        settings: { url: 'http://127.0.0.1:3425', modelKeywords: 'magpie, zcode' },
+        secrets: key ? { token: key } : {},
+        reason: `检测到本地 Magpie 网关供应商「${name || 'magpie'}」`
+      });
+    } else if (/openrouter\.ai$/i.test(host) && key) {
+      add({
+        type: 'openrouter',
+        name: 'OpenRouter 官方额度',
+        status: 'ready',
+        settings: { url: 'https://openrouter.ai/api/v1/credits', modelKeywords: 'openrouter' },
+        secrets: { token: key },
+        reason: `检测到 ZCode 供应商「${name}」使用 OpenRouter API`
+      });
+    } else if (/siliconflow\.(cn|com)$/i.test(host) && key) {
+      add({
+        type: 'siliconflow',
+        name: '硅基流动 SiliconFlow',
+        status: 'ready',
+        settings: { url: `https://${host}/v1/user/info`, modelKeywords: '硅基流动, siliconflow' },
+        secrets: { token: key },
+        reason: `检测到 ZCode 供应商「${name}」使用硅基流动 API`
+      });
+    } else if (/moonshot\.(cn|ai)$/i.test(host) && key) {
+      add({
+        type: 'moonshot',
+        name: 'Moonshot / Kimi 开放平台',
+        status: 'ready',
+        settings: { url: `https://${host}/v1/users/me/balance`, modelKeywords: 'moonshot, kimi, 月之暗面' },
+        secrets: { token: key },
+        reason: `检测到 ZCode 供应商「${name}」使用 Moonshot / Kimi API`
+      });
+    } else if ((/bigmodel\.cn$/i.test(host) || /api\.z\.ai$/i.test(host)) && key) {
+      const limitUrl = /z\.ai$/i.test(host)
+        ? 'https://api.z.ai/api/monitor/usage/quota/limit'
+        : 'https://open.bigmodel.cn/api/monitor/usage/quota/limit';
+      add({
+        type: 'zhipu-coding-plan',
+        name: '智谱 GLM / Z.ai Coding Plan',
+        status: 'ready',
+        settings: { url: limitUrl, modelKeywords: '智谱, bigmodel, zhipu, z.ai, glm' },
+        secrets: { token: key },
+        reason: `检测到智谱 / Z.ai 供应商「${name}」`
+      });
+    } else if (/minimax(i)?\.(com|io|cn)$/i.test(host) && key) {
+      add({
+        type: 'minimax',
+        name: 'MiniMax Token Plan 套餐',
+        status: 'ready',
+        settings: { url: `https://${host}/v1/api/openplatform/coding_plan/remains`, modelKeywords: 'minimax, 海螺' },
+        secrets: { token: key },
+        reason: `检测到 MiniMax 供应商「${name}」`
+      });
     } else if (/api\.openai\.com$/.test(host)) {
       add({
         type: 'openai-compatible',
@@ -103,7 +160,36 @@ export function autodetectDatasources({ homeDir, existingTypes = [] }) {
         settings: {},
         reason: 'MiMo 余额需要控制台登录 Cookie，API Key 查不了'
       });
+    } else if (
+      host &&
+      key &&
+      !/^(127\.0\.0\.1|localhost)$/i.test(host) &&
+      !/(aliyuncs\.com|volces\.com|stepfun\.com|anthropic\.com|googleapis\.com|x\.ai|xiaomimimo\.com)$/i.test(host)
+    ) {
+      add({
+        type: 'newapi',
+        name: name ? `${name}（反代网关）` : 'NewAPI 反代网关',
+        status: 'ready',
+        settings: {
+          url: baseUrl,
+          modelKeywords: name ? `${name}, ${host}` : host
+        },
+        secrets: { token: key },
+        reason: `检测到自定义反代网关供应商「${name || host}」，支持自动探测 NewAPI / OneAPI 额度`
+      });
     }
+  }
+
+  /* ---- 1b. Local Magpie config (~/.config/magpie/quota-history.json) ---- */
+  if (fs.existsSync(path.join(home, '.config', 'magpie', 'quota-history.json'))) {
+    add({
+      type: 'magpie',
+      name: 'Magpie 本地网关',
+      status: 'ready',
+      settings: { url: 'http://127.0.0.1:3425', modelKeywords: 'magpie, zcode' },
+      secrets: {},
+      reason: '检测到本机 ~/.config/magpie 配额记录'
+    });
   }
 
   /* ---- 2. bl CLI workspace key: balance needs a RAM key pair, sk-ws cannot ---- */

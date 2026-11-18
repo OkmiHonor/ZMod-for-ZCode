@@ -348,6 +348,9 @@ export function createBubbleHudController(deps) {
       movable: false,
       webPreferences: { contextIsolation: true, devTools: false, nodeIntegration: false, sandbox: true }
     });
+    // 标记为 ZMod 辅助窗口：宿主托盘恢复只处理窗口列表里的主窗口，
+    // 常驻隐藏窗口会顶掉主窗口导致「关闭到托盘后再也打不开」。
+    win.__zmodHelperWindow = true;
     state.win = win;
     win.setIgnoreMouseEvents(true); // 穿透：纯展示不可交互
     win.setContentProtection(true); // 不进录屏/截图
@@ -428,9 +431,12 @@ export function createBubbleHudController(deps) {
   }
 
   function hideOrDestroy(win) {
+    // 必须在退场后立即销毁，而不是 hide() 复用：宿主托盘恢复
+    // （revealExistingWindow / resolveTargetWindow）只认窗口列表里的主窗口，
+    // 常驻的隐藏辅助窗口会顶掉主窗口，导致「关闭到托盘后再也打不开」。
+    // 与宿主 CUA indicator 的「不用即毁」语义对齐。
     try {
       win.hide();
-      return;
     } catch (err) {
       logger.warn('hide failed, destroying window:', err?.message || err);
     }
@@ -438,7 +444,7 @@ export function createBubbleHudController(deps) {
     try {
       if (!win.isDestroyed()) win.destroy();
     } catch (err) {
-      logger.warn('destroy after failed hide failed:', err?.message || err);
+      logger.warn('destroy after hide failed:', err?.message || err);
     }
   }
 

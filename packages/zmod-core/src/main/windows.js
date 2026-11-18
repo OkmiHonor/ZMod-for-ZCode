@@ -145,6 +145,26 @@ export function listWindows(deps = {}) {
   return { ok: true, windows: list };
 }
 
+/**
+ * 销毁所有 ZMod helper 窗口（带 __zmodHelperWindow 标记）。
+ * 主窗口隐藏（关闭到托盘）时调用，避免隐藏的辅助窗口混进宿主
+ * getAllWindows() 顶掉主窗口，导致托盘恢复失效。
+ * 返回被销毁的窗口 id 列表，便于单测断言。
+ */
+export function dismissHelperWindows(deps = {}) {
+  const BW = deps.BrowserWindow ?? electronBrowserWindow;
+  if (!BW?.getAllWindows) return [];
+  const removed = [];
+  for (const win of BW.getAllWindows()) {
+    try {
+      if (win.isDestroyed?.() || !win.__zmodHelperWindow) continue;
+      win.destroy?.();
+      removed.push(win.id);
+    } catch {}
+  }
+  return removed;
+}
+
 export function installWindowLifecycleHook(deps = {}) {
   const app = deps.app ?? electronApp;
   const BW = deps.BrowserWindow ?? electronBrowserWindow;
@@ -153,6 +173,19 @@ export function installWindowLifecycleHook(deps = {}) {
     if (!win || win.isDestroyed?.() || win.__zmodLifecycleHooked) return;
     win.__zmodLifecycleHooked = true;
     const winId = win.id;
+
+    const attachTrayGuard = () => {
+      // browser-window-created 时 URL 常仍是 about:blank，必须等导航完成
+      // 才能准确识别主窗口；用标记保证只挂一次 hide 监听。
+      if (win.__zmodTrayGuardHooked) return;
+      if (classifyWindow(win) !== 'main') return;
+      win.__zmodTrayGuardHooked = true;
+      // 关闭到托盘时主窗口会触发 hide。宿主托盘恢复只处理 getAllWindows()
+      // 里的主窗口，隐藏的 ZMod helper 窗口（气泡 HUD）会顶掉它，导致
+      // 「托盘点开却显示不出来」。主窗口一隐藏就清掉所有 helper 窗口，
+      // 保证恢复时窗口列表干净、必然选中主窗口。
+      win.on?.('hide', () => dismissHelperWindows(deps));
+    };
 
     const onFinishLoad = () => {
       try {
@@ -165,12 +198,15 @@ export function installWindowLifecycleHook(deps = {}) {
           window: describeWindow(win),
           ts: Date.now()
         }, deps);
+        attachTrayGuard();
       } catch {}
     };
 
     if (win.webContents?.on) {
       win.webContents.on('did-finish-load', onFinishLoad);
     }
+    // 已加载完毕的窗口（runtime 后于窗口创建时）：URL 此时已就绪，直接挂
+    attachTrayGuard();
 
     win.once?.('closed', () => {
       broadcastLifecycle({

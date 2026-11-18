@@ -11,7 +11,7 @@
 [![Architecture: Vencord+Spicetify](https://img.shields.io/badge/Architecture-Vencord%2BSpicetify-success.svg)](#-微内核架构与四通道注入)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Node: >=18.17](https://img.shields.io/badge/Node-%3E%3D18.17-brightgreen.svg)](package.json)
-[![Plugins: 9 Available](https://img.shields.io/badge/Official%20Plugins-9%20Available-orange.svg)](#-官方精选插件生态)
+[![Plugins: 10 Available](https://img.shields.io/badge/Official%20Plugins-10%20Available-orange.svg)](#-官方精选插件生态)
 
 <p align="center">
   <a href="#-核心亮点">核心亮点</a> •
@@ -49,9 +49,10 @@ ZMod 提供了开箱即用的丰富插件生态，覆盖生产力、视觉美化
 
 | 插件 ID | 插件名称 | 最新版本 | 核心能力说明 |
 | :--- | :--- | :---: | :--- |
-| `smart-subagent` | **子代理智能模型路由** | `v1.0.0` | 自动感知主会话订阅源，派发子代理时智能分档至同源 Flash / Haiku / Mini / Turbo 轻量模型，大幅降低 Token 消耗并提升并发吞吐。 |
-| `usage-stats` | **Token 用量与费用统计** | `v1.3.1` | 非侵入拦截遥测 + SQLite 权威校准，DOM 会话感知与多会话并发隔离（防双计、跨会话不串数）；内置 DeepSeek 2026 官方阶梯价表。 |
-| `bubble-notifications` | **任务原生气泡 HUD** | `v0.1.0` | 将 ZCode 任务状态（完成 / 报错 / 等待）通过屏幕边缘悬浮气泡原生弹出，支持停留时长与状态强调色定制。 |
+| `smart-subagent` | **子代理智能模型路由** | `v1.0.1` | 自动感知主会话订阅源，派发子代理时智能分档至同源 Flash / Haiku / Mini / Turbo 轻量模型，大幅降低 Token 消耗并提升并发吞吐。 |
+| `usage-stats` | **Token 用量与费用统计** | `v1.5.0` | 非侵入拦截遥测 + SQLite 权威校准，DOM 会话感知与多会话并发隔离（防双计、跨会话不串数）；订阅额度按 Google 桶组滚动窗口估算并优先展示 Antigravity 网关真实余量；内置 DeepSeek 2026 官方阶梯价表。 |
+| `gateway-keeper` | **反代网关守护** | `v1.0.0` | 智能感知会话模型变动，极速探活本地反代网关（Antigravity Tools / Magpie 等）端口，离线时后台按需自动拉起并弹 Toast 提示，告别"忘开网关就报错断连"。 |
+| `bubble-notifications` | **任务原生气泡 HUD** | `v0.2.0` | 将 ZCode 任务状态（完成 / 报错 / 等待）通过屏幕边缘悬浮气泡原生弹出，支持停留时长与状态强调色定制。 |
 | `notification-sounds` | **通知音效管理** | `v0.1.0` | 全面接管客户端提示音：音量调节、内置音色切换、自有音频文件导入、分事件配音绑定与实时试听。 |
 | `prompt-snippets` | **Prompt 片段库** | `v1.1.0-beta` | 常驻快捷悬浮球，支持常用提示词面板、`{{变量}}` 占位符、Tab 键极速跳转填充与 Lexical 编辑器无缝适配。 |
 
@@ -67,7 +68,7 @@ ZMod 提供了开箱即用的丰富插件生态，覆盖生产力、视觉美化
 
 | 插件 ID | 插件名称 | 最新版本 | 核心能力说明 |
 | :--- | :--- | :---: | :--- |
-| `quota-popover` | **余量弹窗与模型页总览** | `v1.4.2` | 输入框「上下文容量」悬浮窗注入今日余额卡（v1 token-monitor 1:1），并在官方「模型设置」页内直观展示各供应商额度。 |
+| `quota-popover` | **余量弹窗与模型页总览** | `v1.6.0` | 输入框「上下文容量」悬浮窗注入今日余额卡（v1 token-monitor 1:1），并在官方「模型设置」页内直观展示各供应商额度。 |
 
 > 💡 **插件安装渠道**：所有插件支持在应用内一键下载更新，也可以在 [Plugins Release](https://github.com/OkmiHonor/ZMod-for-ZCode/releases/tag/plugins) 下载独立 zip 包，直接拖拽进客户端设置页完成安装。
 

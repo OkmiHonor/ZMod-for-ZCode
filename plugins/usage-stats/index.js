@@ -1,9 +1,9 @@
 import { definePlugin } from '@zmod/sdk';
 import {
   buildBucketFromRequests,
-  calculateQuotaPercent,
   formatCost,
   ingestTelemetryPayload,
+  isSubscriptionProvider,
   pickScoped,
   resolveQuotaTable
 } from './lib.js';
@@ -11,14 +11,15 @@ import {
 /**
  * Usage & Token statistics — v2 port of v1 token-monitor (v3.x).
  *
- * Dual-engine session-aware architecture (v1.4.0):
+ * Dual-engine session-aware architecture (v1.5.0):
  * 1. Self-contained per-session telemetry state machine (turnsById / stepsSeen)
  *    + DOM session detection ([data-session-id]) + draft isolation;
- * 2. Optional authoritative SQLite calibration (usage.getSessionStats RPC) when
- *    supported by the host runtime, falling back gracefully on older runtimes;
- * 3. Cost estimation covers DeepSeek (official USD×7, peak/off-peak) + Bailian
- *    (DashScope RMB fixed) model families; subscription quota estimation
- *    (requests/day, e.g. Google AI Pro) with custom JSON override.
+ * 2. Authoritative SQLite calibration (usage.getSessionStats + usage.getWindowStats RPC)
+ *    including child subagent sessions and auxiliary queries;
+ * 3. Full-spectrum cost estimation (DeepSeek, Bailian, GLM, Kimi, Claude, GPT, Gemini,
+ *    MiniMax, Doubao, Grok) with prompt-cache write multiplier and proxy channel multiplier;
+ * 4. Multi-mode quota tracking: real-time Antigravity & Magpie gateway snapshots, plus
+ *    cross-session rolling-window quota by requests, spend (¥/$), or tokens.
  */
 
 const STORAGE_KEY = 'zmod_token_stats_v2_3';
@@ -33,10 +34,10 @@ function esc(s) {
 function freshState() {
   return {
     byTalk: {},
-    lastTurn: { hit: 0, miss: 0, input: 0, output: 0, reasoning: 0, total: 0, ratio: 0, cost: 0, reqCount: 0, model: '' },
+    lastTurn: { hit: 0, miss: 0, input: 0, output: 0, reasoning: 0, total: 0, ratio: 0, cost: 0, equivCost: 0, reqCount: 0, model: '' },
     session: {
       turns: 0, hitTokens: 0, missTokens: 0, totalInput: 0, outputTokens: 0,
-      reasoningTokens: 0, totalTokens: 0, totalCost: 0, reqCount: 0, avgRatio: 0
+      reasoningTokens: 0, totalTokens: 0, totalCost: 0, totalEquivCost: 0, reqCount: 0, avgRatio: 0
     },
     currentModel: '',
     activeTalkId: null,
@@ -76,14 +77,20 @@ function detectDomTalkId(popEl) {
 export default definePlugin({
   id: 'usage-stats',
   name: 'Token 用量统计',
-  version: '1.4.1',
-  description: '非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知，跨会话不串数），费用估算覆盖 DeepSeek 系 + 百炼系模型，订阅源额度估算，余额走数据源系统',
+  version: '1.5.1',
+  description: '非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知 + 子代理消耗追踪），全模型费用估算（含 Cache 写入与反代倍率），订阅与按额度消耗统计（跨会话滚动窗口 + Antigravity/Magpie 网关真实余量 + 按次数/金额/Token 多口径）',
   author: 'ZMod Team',
 
   settings: {
     view: {
       type: 'group',
       title: '展示'
+    },
+    includeSubagents: {
+      type: 'switch',
+      title: '计入子代理与辅助查询消耗',
+      description: '统计并展示当前会话派生子代理 (Subagent) 的 Token、请求次数与费用',
+      default: true
     },
     pricing: {
       type: 'group',
@@ -92,8 +99,20 @@ export default definePlugin({
     enableCost: {
       type: 'switch',
       title: '启用费用估算',
-      description: 'DeepSeek 系按官方定价（USD×7 折算、峰谷时段），百炼系按 RMB 固定价，仅供参考',
+      description: 'DeepSeek 系按官方定价（USD×7 折算、峰谷时段），百炼系按 RMB 固定价，并支持扩展主流模型定价，仅供参考',
       default: true
+    },
+    extendedPricing: {
+      type: 'switch',
+      title: '扩展主流模型定价 (Claude/GPT/GLM/Kimi/Gemini)',
+      description: '对非买断订阅渠道的 Claude、GPT、GLM、Kimi、MiniMax 等模型启用 API 费用估算（含 Cache 写入溢价）',
+      default: true
+    },
+    priceMultiplier: {
+      type: 'number',
+      title: '渠道/反代价格倍率',
+      description: '反代网关或中转站分组倍率（如 1.0 为官方原价，0.5 为半价渠道）',
+      default: 1
     },
     quota: {
       type: 'group',
@@ -102,13 +121,13 @@ export default definePlugin({
     enableQuota: {
       type: 'switch',
       title: '订阅额度估算',
-      description: '按订阅商官方公布档位估算额度消耗（支持 5小时额度与周额度，浮窗明确标注周期）',
+      description: '支持 Antigravity/Magpie 网关真实余量与跨会话滚动窗口额度统计（5小时额度/日额度/周额度）',
       default: true
     },
     quotaWindow: {
       type: 'select',
       title: '额度统计周期',
-      description: '选择订阅额度的统计窗口：Google AI Pro / Antigravity 支持 5小时滚动 或 周额度',
+      description: '选择订阅额度的统计窗口；检测到 Antigravity/Magpie 网关快照时优先显示网关真实余量，否则跨所有会话按此窗口做滚动统计',
       options: [
         { value: '5h', label: '5小时额度 (滚动窗口)' },
         { value: 'weekly', label: '周额度 (每周额度)' },
@@ -116,10 +135,28 @@ export default definePlugin({
       ],
       default: '5h'
     },
+    quotaMode: {
+      type: 'select',
+      title: '本地额度计量口径',
+      description: '选择按请求次数、按周期金额消耗、或按周期 Token 消耗统计',
+      options: [
+        { value: 'auto', label: '自动识别 (订阅按次数 / 自定义单位)' },
+        { value: 'requests', label: '按请求次数 (Requests)' },
+        { value: 'cost', label: '按周期金额 (¥/$ Spend)' },
+        { value: 'tokens', label: '按周期 Token 数' }
+      ],
+      default: 'auto'
+    },
+    periodicQuotaLimit: {
+      type: 'number',
+      title: '通用周期额度上限 (0 为不启用)',
+      description: '对未单独配置 customQuota 的模型生效的周期上限（按金额时单位为元，按 Token 时单位为万，按次数时为次数）',
+      default: 0
+    },
     customQuota: {
       type: 'text',
       title: '自定义额度表 (JSON)',
-      description: 'JSON 字典覆盖内置额度，如 {"gemini-3.8-pro": 50}（模型名 → 周期请求次数上限）',
+      description: 'JSON 字典覆盖内置额度，支持次数/金额/Token/通配符，如 {"gemini-3.8-pro": 50, "claude*": "$5", "*": "500w"}',
       default: '{}'
     }
   },
@@ -183,6 +220,12 @@ export default definePlugin({
     const lastSyncAt = new Map();
     const pendingSyncTimers = new Map();
 
+    const getCalcOpts = () => ({
+      includeSubagents: s.get('includeSubagents', true),
+      extendedPricing: s.get('extendedPricing', true),
+      priceMultiplier: Number(s.get('priceMultiplier', 1)) || 1
+    });
+
     const syncTalkFromDb = (talkId) => {
       const tid = String(talkId || '').trim();
       if (!tid || tid === 'draft' || typeof ctx.invoke !== 'function') {
@@ -194,9 +237,13 @@ export default definePlugin({
       const p = (async () => {
         try {
           lastSyncAt.set(tid, Date.now());
-          const res = await ctx.invoke('usage.getSessionStats', { sessionId: tid }).catch(() => null);
+          const calcOpts = getCalcOpts();
+          const res = await ctx.invoke('usage.getSessionStats', {
+            sessionId: tid,
+            includeSubagents: calcOpts.includeSubagents
+          }).catch(() => null);
           if (!res || !res.ok || !Array.isArray(res.requests)) return false;
-          const bucket = buildBucketFromRequests(tid, res.requests, s.get('enableCost', true));
+          const bucket = buildBucketFromRequests(tid, res.requests, s.get('enableCost', true), calcOpts);
           if (res.requests.length > 0 || !state.byTalk[tid]) {
             state.byTalk[tid] = bucket;
             if (bucket.lastTurn && String(tid) === String(state.activeTalkId ?? '')) {
@@ -238,8 +285,11 @@ export default definePlugin({
           state.activeTalkId = domSid;
           activeChanged = true;
         }
+        const calcOpts = getCalcOpts();
         const ingested = ingestTelemetryPayload(state, payload, {
           enableCost: s.get('enableCost', true),
+          extendedPricing: calcOpts.extendedPricing,
+          priceMultiplier: calcOpts.priceMultiplier,
           updateActiveTalk: !domSid
         });
         if (ingested || activeChanged) {
@@ -286,6 +336,7 @@ export default definePlugin({
 
     /* ---- official usage-popover enhancement ---- */
     const POPOVER_MARK = 'zmod-usage-rows';
+
     const fmtWan = (n) => {
       n = Number(n) || 0;
       if (n >= 1e8) return (n / 1e8).toFixed(2) + '亿';
@@ -313,47 +364,145 @@ export default definePlugin({
       wrap.setAttribute('data-' + POPOVER_MARK, '1');
       const row = (label, value) =>
         `<div class="flex items-baseline justify-between gap-4"><span class="text-ui-sm text-foreground-subtle">${esc(label)}</span><span class="text-ui-sm font-medium tabular-nums text-foreground">${esc(value)}</span></div>`;
+
       const sessionVal = !sess
         ? '—'
         : sess.totalInput != null
           ? `入 ${fmtWan(sess.totalInput)} / 出 ${fmtWan(sess.outputTokens)} / 命中 ${fmtWan(sess.hitTokens)}`
           : `${sess.turns} 轮 / 共 ${fmtWan(sess.totalTokens)} / 命中 ${fmtWan(sess.hitTokens)}`;
+
       const costOn = s.get('enableCost', true);
-      // 额度行：订阅源（如 Google AI Pro）按 5小时 / 周额度档位估算，周期在标签中明确标出
-      let quotaRow = '';
+      const enableQuota = s.get('enableQuota', true);
       const quotaModel = (lt && lt.model) || state.currentModel;
+      const activeProviderId = (lt && lt.providerId) || '';
       const customQuotaRaw = s.get('customQuota', '{}');
       const quotaWindow = s.get('quotaWindow', '5h');
-      const qt = quotaModel ? resolveQuotaTable(quotaModel, customQuotaRaw, quotaWindow) : null;
-      const isQuotaModel = Boolean(qt);
+      const quotaMode = s.get('quotaMode', 'auto');
+      const periodicQuotaLimit = Number(s.get('periodicQuotaLimit', 0)) || 0;
+      const qt = quotaModel
+        ? resolveQuotaTable(quotaModel, customQuotaRaw, quotaWindow, { quotaMode, periodicQuotaLimit })
+        : null;
 
-      if (s.get('enableQuota', true) && qt) {
-        const reqCount = (sess && sess.reqCount) || 0;
-        if (reqCount > 0) {
-          const pct = calculateQuotaPercent(quotaModel, reqCount, customQuotaRaw, quotaWindow);
-          const limit = qt.limit || qt.daily || 1;
-          const quotaLabel = `会话额度 (${qt.windowLabel || '5小时额度'})`;
-          quotaRow = row(
-            quotaLabel,
-            `${reqCount} / ${limit} 次 (${pct >= 100 ? '⚠ ' : ''}${pct.toFixed(1)}%)`
+      // 判定是否属于买断/订阅制模型（如 Google AI Pro / Magpie / coding-plan / 按次数订阅）
+      const isSub = isSubscriptionProvider(activeProviderId, quotaModel);
+      const isBuyoutQuotaModel =
+        isSub ||
+        Boolean(qt && (!qt.unit || qt.unit === 'requests') && quotaMode !== 'cost');
+
+      const isQuotaModel = enableQuota && (isBuyoutQuotaModel || Boolean(qt));
+      const showCost = costOn && !isBuyoutQuotaModel;
+
+      let turnVal = '—';
+      let subagentRow = '';
+      let sessionCostOrQuotaRow = '';
+
+      if (isQuotaModel) {
+        // ---- 订阅 / 额度模式 (Google AI Pro, Magpie 订阅, coding-plan, customQuota 限额) ----
+        // 1. 本轮消耗
+        if (lt && lt.total > 0) {
+          const turnReqs = (lt && lt.reqCount) || 1;
+          let suffix = '';
+          if (qt && qt.unit === 'cost') {
+            const sym = qt.currency === '$' ? '$' : '¥';
+            const turnCost = qt.currency === '$' ? (lt.equivCost || lt.cost || 0) / 7 : (lt.equivCost || lt.cost || 0);
+            const pct = qt.limit > 0 ? (turnCost / qt.limit) * 100 : 0;
+            suffix = ` · ${sym}${formatCost(turnCost)}${qt.limit > 0 ? ` (耗额 ${pct.toFixed(1)}%)` : ''}`;
+          } else if (qt && qt.unit === 'tokens') {
+            const pct = qt.limit > 0 ? (lt.total / qt.limit) * 100 : 0;
+            suffix = qt.limit > 0 ? ` (耗额 ${pct.toFixed(1)}%)` : '';
+          } else if (qt && qt.limit > 0) {
+            const turnPct = (turnReqs / qt.limit) * 100;
+            const eq = lt.equivCost > 0 ? ` · 折合 ¥${formatCost(lt.equivCost)}` : '';
+            suffix = ` · ${turnReqs}次 (耗额 ${turnPct.toFixed(1)}%)${eq}`;
+          } else if (lt.equivCost > 0) {
+            suffix = ` · 折合 ¥${formatCost(lt.equivCost)}`;
+          } else if (turnReqs > 1) {
+            suffix = ` · ${turnReqs}次`;
+          }
+          turnVal = `入 ${fmtWan(lt.input)} / 出 ${fmtWan(lt.output)}${suffix}`;
+        }
+
+        // 2. 子代理消耗
+        if (s.get('includeSubagents', true) && sess && (sess.subagentReqCount || 0) > 0) {
+          const eq = sess.subagentEquivCost > 0 ? ` · 折合 ¥${formatCost(sess.subagentEquivCost)}` : '';
+          if (qt && qt.limit > 0 && (!qt.unit || qt.unit === 'requests')) {
+            const subPct = (sess.subagentReqCount / qt.limit) * 100;
+            subagentRow = row(
+              '子代理消耗',
+              `${sess.subagentReqCount} 次 (耗额 ${subPct.toFixed(1)}%) · 入 ${fmtWan(sess.subagentInput)} / 出 ${fmtWan(sess.subagentOutput)}${eq}`
+            );
+          } else {
+            subagentRow = row(
+              '子代理消耗',
+              `${sess.subagentReqCount} 次 · 入 ${fmtWan(sess.subagentInput)} / 出 ${fmtWan(sess.subagentOutput)}${eq}`
+            );
+          }
+        }
+
+        // 3. 本会话额度消耗
+        if (sess && ((sess.reqCount || 0) > 0 || (sess.totalTokens || 0) > 0)) {
+          if (qt && qt.unit === 'cost') {
+            const sym = qt.currency === '$' ? '$' : '¥';
+            const usedCost = qt.currency === '$' ? (sess.totalEquivCost || sess.totalCost || 0) / 7 : (sess.totalEquivCost || sess.totalCost || 0);
+            const pct = qt.limit > 0 ? (usedCost / qt.limit) * 100 : 0;
+            sessionCostOrQuotaRow = row(
+              '本会话额度消耗',
+              `${sym}${formatCost(usedCost)} / ${sym}${qt.limit} (耗额 ${pct.toFixed(1)}%) · ${sess.reqCount || 0} 次`
+            );
+          } else if (qt && qt.unit === 'tokens') {
+            const pct = qt.limit > 0 ? ((sess.totalTokens || 0) / qt.limit) * 100 : 0;
+            sessionCostOrQuotaRow = row(
+              '本会话额度消耗',
+              `${fmtWan(sess.totalTokens)} / ${fmtWan(qt.limit)} (耗额 ${pct.toFixed(1)}%) · ${sess.reqCount || 0} 次`
+            );
+          } else if (qt && qt.limit > 0) {
+            const pct = ((sess.reqCount || 0) / qt.limit) * 100;
+            const eqCost = sess.totalEquivCost || 0;
+            sessionCostOrQuotaRow = row(
+              '本会话额度消耗',
+              `共 ${sess.reqCount || 0} 次 (耗额 ${pct.toFixed(1)}%)${eqCost > 0 ? ` · 折合 ¥${formatCost(eqCost)}` : ''}`
+            );
+          } else {
+            const eqCost = sess.totalEquivCost || 0;
+            sessionCostOrQuotaRow = row(
+              '本会话额度消耗',
+              `共 ${sess.reqCount || sess.turns || 0} 次请求${eqCost > 0 ? ` · 折合 ¥${formatCost(eqCost)}` : ''}`
+            );
+          }
+        }
+      } else {
+        // ---- 按量付费 / API / 代理模型 ----
+        // 1. 本轮
+        const turnCostSuffix = showCost && lt && (lt.cost || 0) > 0 ? ` · ¥${formatCost(lt.cost)}` : '';
+        turnVal = lt && lt.total > 0 ? `入 ${fmtWan(lt.input)} / 出 ${fmtWan(lt.output)}${turnCostSuffix}` : '—';
+
+        // 2. 子代理消耗
+        if (s.get('includeSubagents', true) && sess && (sess.subagentReqCount || 0) > 0) {
+          subagentRow = row(
+            '子代理消耗',
+            `${sess.subagentReqCount} 次 · 入 ${fmtWan(sess.subagentInput)} / 出 ${fmtWan(sess.subagentOutput)}${
+              showCost && (sess.subagentCost || 0) > 0 ? ` · ¥${formatCost(sess.subagentCost)}` : ''
+            }`
+          );
+        }
+
+        // 3. 本会话花费
+        if (showCost && sess && (sess.totalCost || 0) > 0) {
+          sessionCostOrQuotaRow = row(
+            '本会话花费',
+            `¥${formatCost(sess.totalCost)}${sess.reqCount > 0 ? ` (${sess.reqCount} 次请求)` : ''}`
           );
         }
       }
 
-      // 互斥铁律：命中订阅额度的模型（如 Google AI Pro 买断订阅源），不显示费用（本轮与会话均不量化金钱）
-      const showCost = costOn && !isQuotaModel;
-      const turnCostSuffix =
-        showCost && lt && (lt.cost || 0) > 0 ? ` · ¥${formatCost(lt.cost)}` : '';
-      const sessionCostRow =
-        showCost && sess && (sess.totalCost || 0) > 0
-          ? row('会话费用估算', '¥' + formatCost(sess.totalCost))
-          : '';
+      // 网关真实余量由数据源卡片（quota-popover「模型配额 · Magpie」）统一展示，
+      // 这里不再重复渲染——曾在此处维护的 网关余量 行与卡片信息重复，已移除
 
       wrap.innerHTML =
-        row('本轮', lt && lt.total > 0 ? `入 ${fmtWan(lt.input)} / 出 ${fmtWan(lt.output)}${turnCostSuffix}` : '—') +
+        row('本轮', turnVal) +
         row('本会话', sessionVal) +
-        sessionCostRow +
-        quotaRow;
+        subagentRow +
+        sessionCostOrQuotaRow;
       return wrap;
     }
 
@@ -379,6 +528,8 @@ export default definePlugin({
       for (const old of document.querySelectorAll(`[data-${POPOVER_MARK}]`)) {
         if (!old.isConnected) continue;
         const pop = old.closest(POPOVER_SELECTOR);
+        // 浮窗已关闭时 closest 返回 null，迟到 RPC 不应重建崩溃
+        if (!pop) continue;
         old.replaceWith(buildPopoverRows(pop));
       }
     };
@@ -393,6 +544,6 @@ export default definePlugin({
       for (const t of pendingSyncTimers.values()) clearTimeout(t);
       pendingSyncTimers.clear();
     });
-    console.log('[usage-stats] ready (v1.4.0; telemetry + sqlite calibration)');
+    console.log('[usage-stats] ready (v1.5.1; telemetry + sqlite subagents + multi-mode quota + gateway quota)');
   }
 });

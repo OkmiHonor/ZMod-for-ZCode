@@ -4,14 +4,23 @@ import assert from 'node:assert/strict';
 const {
   PRICING,
   BAILIAN_PRICING,
+  EXTENDED_PRICING,
   isPeakHour,
   isSubscriptionModel,
+  isSubscriptionProvider,
   costTable,
   calculateCost,
   formatCost,
   quotaTable,
+  parseCustomQuotaEntry,
   resolveQuotaTable,
   calculateQuotaPercent,
+  countQuotaRequests,
+  computeWindowQuotaUsage,
+  formatQuotaReset,
+  mapAntigravityQuota,
+  mapMagpieQuota,
+  quotaBucketGroup,
   buildBucketFromRequests,
   ingestTelemetryPayload,
   pickScoped
@@ -690,4 +699,409 @@ test('buildBucketFromRequests: reqCount dedups by logicalRequestId and sums per 
   assert.equal(bucket.lastTurn.turnId, 't2');
   assert.equal(bucket.lastTurn.reqCount, 1);
 });
+
+/* ---- v1.4.2: Google 桶组归属 + 滚动窗口额度估算 + Antigravity 网关真实余量 ---- */
+
+test('quotaBucketGroup: argon split from gemini family, non-gemini null', () => {
+  assert.equal(quotaBucketGroup('gemini-3.8-flash'), 'gemini', 'flash shares the Gemini Models group');
+  assert.equal(quotaBucketGroup('gemini-3.8-pro'), 'gemini');
+  assert.equal(quotaBucketGroup('Gemini-3.8-Flash'), 'gemini', 'case-insensitive');
+  assert.equal(quotaBucketGroup('gemini-4-argon'), 'gemini-argon', 'argon has its own quota group');
+  assert.equal(quotaBucketGroup('gemini-4-argon-low'), 'gemini-argon', 'effort suffix keeps argon group');
+  assert.equal(quotaBucketGroup('gemini-4-argon-high'), 'gemini-argon');
+  assert.equal(quotaBucketGroup('claude-sonnet-5-5'), null, 'claude models hit no google group');
+  assert.equal(quotaBucketGroup('zcode/GLM-5.3-Flash'), null);
+  assert.equal(quotaBucketGroup(''), null);
+  assert.equal(quotaBucketGroup(undefined), null);
+});
+
+test('countQuotaRequests: rolling window + same-group only (fixes session-accumulate & cross-model mixing)', () => {
+  const NOW = Date.UTC(2026, 10, 4, 12, 0); // 固定"当前时刻"
+  const H = 3600000;
+  const events = [
+    { m: 'gemini-3.8-flash', t: NOW - 1 * H },   // 窗口内 gemini 组
+    { m: 'gemini-3.8-pro', t: NOW - 2 * H },     // 窗口内 gemini 组（flash/pro 共享桶组互相挤占）
+    { m: 'gemini-3.8-flash', t: NOW - 4 * H },   // 窗口内
+    { m: 'gemini-3.8-flash', t: NOW - 6 * H },   // 窗口外（>5h）→ 不计
+    { m: 'gemini-4-argon', t: NOW - 1 * H },     // argon 独立桶组 → 不计入 gemini 组
+    { m: 'zcode/GLM-5.3-Flash', t: NOW - 1 * H },// 非 gemini → 永不计入
+    { m: 'claude-sonnet-5-5', t: NOW - 1 * H }   // 非 gemini → 永不计入
+  ];
+  // gemini 组窗口内 = flash ×2 + pro ×1 = 3（旧口径会把全部 7 条都算上）
+  assert.equal(countQuotaRequests(events, 'gemini-3.8-flash', '5h', NOW), 3);
+  // argon 模型只数 argon 组请求
+  assert.equal(countQuotaRequests(events, 'gemini-4-argon', '5h', NOW), 1);
+  assert.equal(countQuotaRequests(events, 'gemini-4-argon-low', '5h', NOW), 1);
+  // 非 gemini 模型没有桶组 → 恒 0
+  assert.equal(countQuotaRequests(events, 'zcode/GLM-5.3-Flash', '5h', NOW), 0);
+  assert.equal(countQuotaRequests(events, 'gemini-3.8-flash', '5h', NOW + 2 * H), 2, '窗口滚动 2h 后：4h 前与 6h 前的请求出窗，剩 1h/2h 前两条');
+
+  // 边界：恰好 5h 前的请求计入（t >= now - 5h 闭区间）
+  const edge = [{ m: 'gemini-3.8-flash', t: NOW - 5 * H }];
+  assert.equal(countQuotaRequests(edge, 'gemini-3.8-flash', '5h', NOW), 1);
+
+  // weekly / daily 窗口时长
+  const weekEvents = [
+    { m: 'gemini-3.8-flash', t: NOW - 6 * 24 * H },  // 6 天前：weekly 计入，daily 不计
+    { m: 'gemini-3.8-flash', t: NOW - 8 * 24 * H }   // 8 天前：weekly 也不计
+  ];
+  assert.equal(countQuotaRequests(weekEvents, 'gemini-3.8-flash', 'weekly', NOW), 1);
+  assert.equal(countQuotaRequests(weekEvents, 'gemini-3.8-flash', 'daily', NOW), 0);
+
+  // 缺失/非法 events 容错
+  assert.equal(countQuotaRequests(null, 'gemini-3.8-flash', '5h', NOW), 0);
+  assert.equal(countQuotaRequests(undefined, 'gemini-3.8-flash', '5h', NOW), 0);
+  assert.equal(countQuotaRequests([null, {}, { m: 'gemini-3.8-flash' }], 'gemini-3.8-flash', '5h', NOW), 0, '无 t 的条目无法定位窗口 → 保守不计');
+});
+
+test('buildBucketFromRequests: reqEvents carry model + startedAt, deduped with reqCount', () => {
+  const peakTs = MON_PEAK.getTime();
+  const rows = [
+    { id: 'r1', logicalRequestId: 'L1', turnId: 't1', modelId: 'gemini-3.8-flash', startedAt: peakTs, input: 1e3, output: 1e2, cached: 0 },
+    { id: 'r2', logicalRequestId: 'L1', turnId: 't1', modelId: 'gemini-3.8-flash', startedAt: peakTs + 100, input: 1e3, output: 1e2, cached: 0 },
+    { id: 'r3', logicalRequestId: 'L2', turnId: 't2', modelId: 'zcode/GLM-5.3-Flash', startedAt: peakTs + 200, input: 1e3, output: 1e2, cached: 0 }
+  ];
+  const bucket = buildBucketFromRequests('SESS_EV', rows, true);
+  assert.deepEqual(bucket.reqEvents, [
+    { m: 'gemini-3.8-flash', t: peakTs },
+    { m: 'zcode/GLM-5.3-Flash', t: peakTs + 200 }
+  ], 'one event per distinct logical request, model + epoch ms preserved');
+  assert.equal(countQuotaRequests(bucket.reqEvents, 'gemini-3.8-flash', '5h', peakTs + 1000), 1,
+    'DB-calibrated bucket feeds the rolling-window counter');
+});
+
+test('ingestTelemetryPayload: reqEvents appended per new request, dedup gate keeps them stable', () => {
+  const st = mkState({ activeTalkId: 'TALK_EV' });
+  assert.equal(
+    ingestTelemetryPayload(st, mkStepPayload({ talkId: 'TALK_EV', messageId: 'M1', eventExtraDetail: { step_id: 's1', model_request_id: 'rq1', model_name: 'gemini-3.8-flash', input_tokens: 100, output_tokens: 10 } }), { now: 5000 }),
+    true
+  );
+  assert.equal(
+    ingestTelemetryPayload(st, mkStepPayload({ talkId: 'TALK_EV', messageId: 'M1', eventExtraDetail: { step_id: 's2', model_request_id: 'rq2', model_name: 'gemini-4-argon', input_tokens: 100, output_tokens: 10 } }), { now: 6000 }),
+    true
+  );
+  // duplicate model_request_id rejected → no new event
+  assert.equal(
+    ingestTelemetryPayload(st, mkStepPayload({ talkId: 'TALK_EV', messageId: 'M1', eventExtraDetail: { step_id: 's3', model_request_id: 'rq2', model_name: 'gemini-4-argon', input_tokens: 100, output_tokens: 10 } }), { now: 7000 }),
+    false
+  );
+  const bk = st.byTalk.TALK_EV;
+  assert.deepEqual(bk.reqEvents, [
+    { m: 'gemini-3.8-flash', t: 5000 },
+    { m: 'gemini-4-argon', t: 6000 }
+  ]);
+  assert.equal(countQuotaRequests(bk.reqEvents, 'gemini-4-argon', '5h', 7000), 1, 'argon group isolated inside live telemetry too');
+
+  // 老存档桶（无 reqEvents 字段）不崩，自动补空数组
+  const legacy = mkState({ activeTalkId: 'TALK_OLD', byTalk: { TALK_OLD: { turns: 1, reqCount: 2, turnsById: {}, stepsSeen: {} } } });
+  assert.equal(
+    ingestTelemetryPayload(legacy, mkStepPayload({ talkId: 'TALK_OLD', messageId: 'M9', eventExtraDetail: { step_id: 's9', model_request_id: 'rq9', model_name: 'gemini-3.8-flash', input_tokens: 100, output_tokens: 10 } }), { now: 9000 }),
+    true
+  );
+  assert.deepEqual(legacy.byTalk.TALK_OLD.reqEvents, [{ m: 'gemini-3.8-flash', t: 9000 }]);
+});
+
+test('mapAntigravityQuota: gateway group matching incl. argon split and effort-suffix models', () => {
+  const snapshot = {
+    ok: true,
+    tier: 'PRO',
+    lastUpdated: 1793803706,
+    groups: [
+      {
+        name: 'Gemini Models',
+        description: 'Models within this group: Gemini Flash, Gemini Pro',
+        buckets: [
+          { window: 'weekly', frac: 0.8678992, reset: '2026-11-10T05:48:34Z' },
+          { window: '5h', frac: 0.98410785, reset: '2026-11-04T19:08:40Z' }
+        ]
+      },
+      {
+        name: 'Gemini 4 Argon',
+        description: 'For paid Pro plans, Argon quota is separate.',
+        buckets: [{ window: 'weekly', frac: 0.7669473, reset: '2026-11-06T09:32:55Z' }]
+      },
+      {
+        name: 'Claude and GPT models',
+        description: 'Claude Opus, Claude Sonnet, GPT-OSS',
+        buckets: [{ window: '5h', frac: 1.0, reset: '2026-11-04T19:48:27Z' }]
+      }
+    ]
+  };
+  // gemini 模型（含 effort 后缀变体）→ Gemini Models 组双桶
+  const gem = mapAntigravityQuota(snapshot, 'gemini-3.8-flash');
+  assert.equal(gem.group, 'gemini');
+  assert.equal(gem.tier, 'PRO');
+  assert.equal(gem.buckets.length, 2);
+  assert.equal(gem.buckets[1].window, '5h');
+  assert.ok(Math.abs(gem.buckets[1].frac - 0.98410785) < 1e-9);
+  assert.equal(mapAntigravityQuota(snapshot, 'gemini-3.8-flash-low').group, 'gemini');
+
+  // argon 模型 → 独立组，仅周桶（Pro 订阅无 5h 桶）
+  const argon = mapAntigravityQuota(snapshot, 'gemini-4-argon');
+  assert.equal(argon.group, 'gemini-argon');
+  assert.equal(argon.buckets.length, 1);
+  assert.equal(argon.buckets[0].window, 'weekly');
+  assert.equal(mapAntigravityQuota(snapshot, 'gemini-4-argon-high').group, 'gemini-argon');
+
+  // 非 gemini → null（不消费网关数据）
+  assert.equal(mapAntigravityQuota(snapshot, 'claude-sonnet-5-5'), null);
+  assert.equal(mapAntigravityQuota(snapshot, ''), null);
+
+  // 非法/缺失容错
+  assert.equal(mapAntigravityQuota(null, 'gemini-3.8-flash'), null);
+  assert.equal(mapAntigravityQuota({}, 'gemini-3.8-flash'), null);
+  assert.equal(mapAntigravityQuota({ groups: 'x' }, 'gemini-3.8-flash'), null);
+  assert.equal(mapAntigravityQuota({ groups: [{ name: 'Unknown', buckets: [{ window: '5h', frac: 'bad' }] }] }, 'gemini-3.8-flash'), null, '非数值 frac 的桶被剔除后无匹配组 → null');
+  assert.equal(mapAntigravityQuota({ groups: [{ name: 'Broken', buckets: [null, { window: '5h', frac: 0.5 }] }] }, 'gemini-3.8-flash'), null, '组名不匹配 → null');
+});
+
+test('formatQuotaReset: countdown buckets and invalid input', () => {
+  const NOW = Date.UTC(2026, 10, 4, 12, 0);
+  assert.equal(formatQuotaReset('2026-11-04T12:30:00Z', NOW), '30分钟后重置');
+  assert.equal(formatQuotaReset('2026-11-04T16:20:00Z', NOW), '4小时20分后重置');
+  assert.equal(formatQuotaReset('2026-11-04T16:00:00Z', NOW), '4小时后重置');
+  assert.equal(formatQuotaReset('2026-11-06T15:00:00Z', NOW), '2天3小时后重置');
+  assert.equal(formatQuotaReset('2026-11-08T12:00:00Z', NOW), '4天后重置');
+  assert.equal(formatQuotaReset('2026-11-04T11:00:00Z', NOW), '已重置');
+  assert.equal(formatQuotaReset('', NOW), '');
+  assert.equal(formatQuotaReset('not-a-date', NOW), '');
+  assert.equal(formatQuotaReset(undefined, NOW), '');
+});
+
+test('resolveQuotaTable: argon tier explicit via customQuota (configurable chain)', () => {
+  // 内置：argon 名字无 flash → pro 档 50/5h（估算基线）
+  assert.equal(quotaTable('gemini-4-argon').limit, 50);
+  // 自定义按模型覆盖整条链路可用（weekly 窗口同样生效）
+  assert.equal(resolveQuotaTable('gemini-4-argon', { 'gemini-4-argon': 200 }, 'weekly').limit, 200);
+  assert.equal(resolveQuotaTable('gemini-4-argon', '{"gemini-4-argon": 200}', 'weekly').custom, true);
+  assert.equal(resolveQuotaTable('gemini-4-argon', '{}', 'weekly').limit, 500, 'weekly builtin pro tier');
+});
+
+test('extendedPricing: GLM-5.3-Flash mispricing fixed, subscription providers zeroed, cacheWrite & multiplier applied', () => {
+  // Bare 1-arg costTable never misclassifies GLM-5.3-Flash as deepseek flash
+  assert.equal(costTable('GLM-5.3-Flash'), null);
+  assert.equal(costTable('zcode/GLM-5.3-Flash', { extended: true }), null, 'zcode/* is free/subscription');
+  assert.equal(isSubscriptionProvider('magpie', 'GLM-5.3-Flash'), true);
+  assert.equal(costTable('GLM-5.3-Flash', { extended: true, providerId: 'magpie' }), null);
+  assert.equal(costTable('GLM-5.3-Flash', { extended: true }), EXTENDED_PRICING.glm53flash);
+
+  // Claude Sonnet with cache read (hit) + cache write (cw) + multiplier
+  const claudeCost = calculateCost('claude-sonnet-4-5', 1_000_000, 1_000_000, 100_000, MON_PEAK, {
+    extended: true,
+    cacheWriteTokens: 400_000,
+    priceMultiplier: 0.5
+  });
+  // hit: 1M * 2.1 = 2.1; cw: 0.4M * 26.25 = 10.5; pureMiss: 0.6M * 21 = 12.6; out: 0.1M * 105 = 10.5 => sum = 35.7 * 0.5 = 17.85
+  assert.ok(Math.abs(claudeCost - 17.85) < 1e-6);
+
+  // USD currency conversion (/ 7)
+  const usdCost = calculateCost('claude-sonnet-4-5', 0, 1_000_000, 0, MON_PEAK, {
+    extended: true,
+    currency: '$'
+  });
+  assert.ok(Math.abs(usdCost - 3.0) < 1e-6);
+});
+
+test('buildBucketFromRequests: aggregates subagent & auxiliary queries while preserving main_turn count and model', () => {
+  const ts = MON_PEAK.getTime();
+  const rows = [
+    {
+      id: 'm1',
+      logicalRequestId: 'L_main_1',
+      turnId: 'turn_1',
+      modelId: 'deepseek-v4',
+      querySource: 'main_turn',
+      startedAt: ts,
+      input: 10000,
+      output: 2000,
+      cached: 5000
+    },
+    {
+      id: 's1',
+      logicalRequestId: 'L_sub_1',
+      turnId: 'sub_turn_1',
+      modelId: 'zcode/GLM-5.3-Flash',
+      querySource: 'subagent',
+      startedAt: ts + 500,
+      input: 40000,
+      output: 5000,
+      cached: 20000
+    },
+    {
+      id: 'a1',
+      logicalRequestId: 'L_aux_1',
+      turnId: 'aux_turn_1',
+      modelId: 'qwen-turbo',
+      querySource: 'session_title',
+      startedAt: ts + 800,
+      input: 1000,
+      output: 50,
+      cached: 0
+    }
+  ];
+
+  const bk = buildBucketFromRequests('SESS_MAIN', rows, true, { includeSubagents: true, extendedPricing: true });
+  assert.equal(bk.turns, 1, 'subagent and session_title attach to latest main turn instead of inflating turn count');
+  assert.equal(bk.reqCount, 3, 'all 3 distinct model requests counted');
+  assert.equal(bk.subagentReqCount, 1);
+  assert.equal(bk.subagentTokens, 45000);
+  assert.equal(bk.totalTokens, 12000 + 45000 + 1050);
+  assert.equal(bk.lastTurn.model, 'deepseek-v4', 'auxiliary/subagent model does not overwrite main turn model');
+  assert.equal(bk.lastTurn.input, 10000, 'main turn input strictly isolated from subagent tokens');
+  assert.equal(bk.lastTurn.output, 2000);
+  assert.equal(bk.lastTurn.total, 12000);
+  assert.equal(bk.lastTurn.reqCount, 1, 'main turn reqCount isolated from subagent');
+  assert.ok(bk.totalEquivCost > 0, 'totalEquivCost computed for session');
+  assert.ok(bk.subagentEquivCost > 0, 'subagentEquivCost tracked');
+
+  const bkNoSub = buildBucketFromRequests('SESS_MAIN', rows, true, { includeSubagents: false });
+  assert.equal(bkNoSub.reqCount, 1);
+  assert.equal(bkNoSub.totalTokens, 12000);
+});
+
+test('parseCustomQuotaEntry, resolveQuotaTable & computeWindowQuotaUsage: multi-mode quota ($/¥/tokens/wildcards)', () => {
+  assert.deepEqual(parseCustomQuotaEntry('$5'), { limit: 5, unit: 'cost', currency: '$' });
+  assert.deepEqual(parseCustomQuotaEntry('¥50'), { limit: 50, unit: 'cost', currency: '¥' });
+  assert.deepEqual(parseCustomQuotaEntry('500w'), { limit: 5_000_000, unit: 'tokens' });
+
+  const cq = '{"claude*": "$10", "*": "200w"}';
+  const rClaude = resolveQuotaTable('claude-sonnet-4-5', cq, '5h');
+  assert.equal(rClaude.limit, 10);
+  assert.equal(rClaude.unit, 'cost');
+  assert.equal(rClaude.currency, '$');
+
+  const rFallback = resolveQuotaTable('deepseek-v4', cq, '5h');
+  assert.equal(rFallback.limit, 2_000_000);
+  assert.equal(rFallback.unit, 'tokens');
+
+  const now = Date.now();
+  const events = [
+    { m: 'claude-sonnet-4-5', t: now - 1000, in: 1_000_000, out: 0, hit: 0, cw: 0 }
+  ];
+  const usage = computeWindowQuotaUsage(events, 'claude-sonnet-4-5', rClaude, '5h', now);
+  assert.equal(usage.unit, 'cost');
+  assert.equal(usage.currency, '$');
+  assert.ok(Math.abs(usage.used - 3.0) < 1e-6); // 1M input on claude-sonnet = $3.0
+  assert.ok(Math.abs(usage.pct - 30.0) < 1e-6);
+});
+
+test('mapAntigravityQuota with allowAllGroups & mapMagpieQuota', () => {
+  const agSnap = {
+    ok: true,
+    tier: 'PRO',
+    groups: [
+      {
+        name: 'Claude and GPT models',
+        buckets: [{ window: '5h', frac: 0.75, reset: '2026-11-04T19:48:27Z' }]
+      }
+    ]
+  };
+  assert.equal(mapAntigravityQuota(agSnap, 'claude-sonnet-4-5'), null, '2-arg default keeps non-gemini null');
+  const mappedAg = mapAntigravityQuota(agSnap, 'claude-sonnet-4-5', { allowAllGroups: true });
+  assert.equal(mappedAg.group, 'claude-gpt');
+  assert.equal(mappedAg.buckets[0].frac, 0.75);
+
+  const mpSnap = {
+    ok: true,
+    source: 'local-file',
+    plan: 'FREE',
+    groups: [
+      {
+        provider: 'zcode',
+        plan: 'FREE',
+        buckets: [{ window: 'zcode/GLM-5.3-Flash', frac: 0.88, reset: '2026-11-05T15:00:00Z', at: '2026-11-05T14:00:00Z', accountAgent: 'zcode' }]
+      }
+    ]
+  };
+  const mappedMp = mapMagpieQuota(mpSnap, 'GLM-5.3-Flash');
+  assert.equal(mappedMp.plan, 'FREE');
+  assert.equal(mappedMp.buckets.length, 1);
+  assert.equal(mappedMp.buckets[0].frac, 0.88);
+});
+
+test('mapMagpieQuota: multi-account freshness (at newest wins), no-at fallback frac-min, prefix match, invalid snapshots', () => {
+  // 模拟 4 个 zcode 账户的 GLM-5.3-Flash：同一 5h 窗口 → reset 相同，但快照时间 at 不同
+  const snap = {
+    ok: true,
+    source: 'local-file',
+    plan: 'ZCODE WEEKEND BUILD',
+    groups: [
+      {
+        name: 'zcode|user1',
+        plan: 'ZCODE WEEKEND BUILD',
+        buckets: [
+          { window: 'GLM-5.3-Flash', frac: 0.519, reset: '2026-11-09T20:00:00Z', at: '2026-11-09T15:22:47Z', accountAgent: 'zcode', display: '51.9%' },
+          { window: 'GLM-5.3-Flash', frac: 0.0745, reset: '2026-11-09T20:00:00Z', at: '2026-11-09T00:59:00Z', accountAgent: 'zcode', display: '7.45%' },
+          { window: 'GLM-5.3-Flash', frac: 0.098, reset: '2026-11-09T20:00:00Z', at: '2026-11-09T00:59:30Z', accountAgent: 'zcode', display: '9.8%' },
+          { window: 'GLM-5.3-Flash', frac: 0.9767, reset: '2026-11-09T20:00:00Z', at: '2026-11-05T10:00:00Z', accountAgent: 'zcode', display: '97.67%' }
+        ]
+      },
+      {
+        name: 'antigravity|user1',
+        plan: 'ANTIGRAVITY PRO',
+        buckets: [
+          { window: 'Claude & GPT · 5 hours', frac: 0.3, reset: '2026-11-09T20:00:00Z', at: '2026-11-09T14:00:00Z', accountAgent: 'antigravity' }
+        ]
+      }
+    ]
+  };
+  const mapped = mapMagpieQuota(snap, 'zcode/GLM-5.3-Flash');
+  assert.equal(mapped.plan, 'ZCODE WEEKEND BUILD');
+  assert.equal(mapped.buckets.length, 1, '同 reset 不同 at 的 4 桶收敛为 1 桶');
+  assert.equal(mapped.buckets[0].frac, 0.519, '取 at 最新（51.9%），不是 frac 最大/最小');
+  assert.equal(mapped.buckets[0].reset, '2026-11-09T20:00:00Z', 'reset 原样透传');
+  assert.equal(mapped.buckets[0].display, '51.9%', 'display 透传');
+
+  // 基础名（无 zcode/ 前缀）同样命中
+  const mappedBare = mapMagpieQuota(snap, 'GLM-5.3-Flash');
+  assert.equal(mappedBare.buckets[0].frac, 0.519);
+
+  // at 并列取 frac 最小（保守）
+  const tieSnap = {
+    ok: true,
+    groups: [{ plan: 'P', buckets: [
+      { window: 'GLM-5.3-Flash', frac: 0.7, reset: 'R', at: '2026-11-09T15:22:47Z' },
+      { window: 'GLM-5.3-Flash', frac: 0.2, reset: 'R', at: '2026-11-09T15:22:47Z' }
+    ] }]
+  };
+  assert.equal(mapMagpieQuota(tieSnap, 'GLM-5.3-Flash').buckets[0].frac, 0.2);
+
+  // 桶无 at 字段（旧契约）→ 降级取 frac 最小，宁可少报不虚报
+  const noAtSnap = {
+    ok: true,
+    groups: [{ plan: 'FREE', buckets: [
+      { window: 'GLM-5.3-Flash', frac: 0.519, reset: 'R' },
+      { window: 'GLM-5.3-Flash', frac: 0.098, reset: 'R' },
+      { window: 'GLM-5.3-Flash', frac: 0.9767, reset: 'R' }
+    ] }]
+  };
+  assert.equal(mapMagpieQuota(noAtSnap, 'GLM-5.3-Flash').buckets[0].frac, 0.098);
+
+  // 词边界回归：GLM-5.3 与 GLM-5.3-Flash 互为前缀，不得互相吸桶
+  const famSnap = {
+    ok: true,
+    groups: [{ plan: 'P', buckets: [
+      { window: 'GLM-5.3', frac: 0.9, reset: 'R1', at: '2026-11-09T15:00:00Z' },
+      { window: 'GLM-5.3-Flash', frac: 0.1, reset: 'R2', at: '2026-11-09T15:00:00Z' }
+    ] }]
+  };
+  const m53 = mapMagpieQuota(famSnap, 'GLM-5.3');
+  assert.equal(m53.buckets.length, 1, 'GLM-5.3 只命中自己的桶');
+  assert.equal(m53.buckets[0].frac, 0.9);
+  const m53f = mapMagpieQuota(famSnap, 'zcode/GLM-5.3-Flash');
+  assert.equal(m53f.buckets.length, 1, 'GLM-5.3-Flash 只命中自己的桶');
+  assert.equal(m53f.buckets[0].frac, 0.1);
+
+  // 非法/不匹配快照一律 null，不抛
+  assert.equal(mapMagpieQuota(null, 'GLM-5.3-Flash'), null);
+  assert.equal(mapMagpieQuota({ ok: false }, 'GLM-5.3-Flash'), null);
+  assert.equal(mapMagpieQuota({ ok: true, groups: 'x' }, 'GLM-5.3-Flash'), null, 'groups 非数组 → null');
+  assert.equal(mapMagpieQuota({ ok: true, groups: [{ plan: 'P', buckets: [] }] }, 'GLM-5.3-Flash'), null, 'buckets 空 → null');
+  assert.equal(
+    mapMagpieQuota({ ok: true, groups: [{ buckets: [{ window: 'other-model', frac: 0.5 }] }] }, 'GLM-5.3-Flash'),
+    null,
+    '模型不匹配 → null'
+  );
+});
+
 

@@ -356,16 +356,35 @@ test('bubble hud suite', async (t) => {
     assert.equal(win.hidden, false);
   });
 
-  await t.test('leaving: duration elapses → leaving state → 120ms → hide', async () => {
+  await t.test('leaving: duration elapses → leaving state → 120ms → hide and destroy', async () => {
     const { gw, scheduler } = await setup();
     await gw.dispatch('bubble.show', { kind: 'info', title: 'T', durationMs: 500 });
     const win = FakeBrowserWindow.instances[0];
+    assert.equal(win.__zmodHelperWindow, true, 'helper window must be flagged');
     scheduler.runMs(500);
     assert.ok(win.jsCalls.some((c) => c.includes('leaving')), 'must enter leaving state');
     assert.equal(scheduler.count(120), 1);
     scheduler.runMs(120);
     assert.equal(win.hidden, true);
-    assert.equal(win.destroyed, false);
+    // 退场后必须销毁：常驻的隐藏辅助窗口会混进宿主 getAllWindows()，
+    // 顶掉主窗口导致「关闭到托盘后托盘无法恢复」。
+    assert.equal(win.destroyed, true);
+    assert.deepEqual(await gw.dispatch('bubble.status', {}), {
+      platform: 'win32',
+      windowAlive: false
+    });
+  });
+
+  await t.test('after auto-hide, next bubble.show rebuilds a fresh window', async () => {
+    const { gw, scheduler } = await setup();
+    await gw.dispatch('bubble.show', { kind: 'info', title: 'first', durationMs: 500 });
+    scheduler.runMs(500);
+    scheduler.runMs(120);
+    assert.equal(FakeBrowserWindow.instances[0].destroyed, true);
+    await gw.dispatch('bubble.show', { kind: 'success', title: 'second' });
+    assert.equal(FakeBrowserWindow.instances.length, 2, 'must create a new window after destroy');
+    assert.equal(FakeBrowserWindow.instances[1].destroyed, false);
+    assert.equal(FakeBrowserWindow.instances[1].hidden, false);
   });
 
   await t.test('hide failure during leave falls back to destroy', async () => {
@@ -392,6 +411,7 @@ test('bubble hud suite', async (t) => {
     const win = FakeBrowserWindow.instances[0];
     scheduler.runMs(120);
     assert.equal(win.hidden, true);
+    assert.equal(win.destroyed, true, 'explicit hide must also destroy the helper window');
   });
 
   await t.test('load failure (injected rejection): discard + retry rebuilds', async () => {

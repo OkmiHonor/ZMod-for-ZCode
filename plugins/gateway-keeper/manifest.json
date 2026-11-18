@@ -1,0 +1,10 @@
+{
+  "id": "gateway-keeper",
+  "name": "反代网关守护",
+  "version": "1.0.0",
+  "description": "智能感知当前会话模型，按需自动探活并拉起本地反代网关（Antigravity Tools、Magpie 等），告别手动点开",
+  "entry": "index.js",
+  "category": "productivity",
+  "permissions": ["system"],
+  "author": "ZMod Team"
+}

@@ -241,6 +241,7 @@ export class DataSourceRegistry {
 
   _providerCtx() {
     return {
+      invoke: (method, params) => this._invoke(method, params),
       net: {
         fetch: (params) => this._invoke('net.fetch', params)
       },

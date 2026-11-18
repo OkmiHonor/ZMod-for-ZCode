@@ -110,25 +110,13 @@ function fmtTokensCn(n) {
   return String(Math.round(n));
 }
 
-/* Antigravity Tools 网关配额（v1 quota 桥的 antigravity 源等价）：GET
+/* Antigravity Tools 网关配额（v1 quota 桥的 antigravity 源等价）：优先 GET
    {网关}/api/accounts/{id}/quota → quota_groups[].buckets[]（window=weekly/5h，
-   remaining_fraction 剩余比例）。文件快照回退通道不再保留——渲染层无文件权限，
-   网关未启动时直接报错提示。 */
-async function antigravityQuotaStatus(settings, ctx) {
-  const base = String(settings.url || 'http://127.0.0.1:8045').replace(/\/+$/, '');
-  const id = String(settings.accountId || '').trim();
-  if (!id) return { ok: false, message: '未配置账号 ID' };
-  const res = await ctx.net.fetch({
-    url: `${base}/api/accounts/${encodeURIComponent(id)}/quota`,
-    method: 'GET',
-    headers: settings.token ? { Authorization: `Bearer ${settings.token}` } : {}
-  });
-  if (!res.ok && res.status === 0) return { ok: false, message: (res.error || '网络请求失败') + '（网关未启动？）' };
-  let json = null;
-  try { json = JSON.parse(res.text); } catch { return { ok: false, message: `响应不是 JSON（HTTP ${res.status}）` }; }
-  if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
-  const groups = Array.isArray(json.quota_groups) ? json.quota_groups : [];
-  if (groups.length === 0) return { ok: false, message: '响应无 quota_groups（账号 ID 是否正确）' };
+   remaining_fraction 剩余比例）；当本地网关未启动或未填 accountId 时，自动通过
+   主进程 usage.getAntigravityQuota RPC 读取 ~/.antigravity_tools/accounts/*.json
+   本地文件快照兜底，确保网关关闭时配额依然准确。 */
+function formatAgSnapshotToStatus(snap) {
+  const groups = Array.isArray(snap.groups) ? snap.groups : [];
   const fmtReset = (t) => {
     try {
       const d = new Date(t);
@@ -139,10 +127,10 @@ async function antigravityQuotaStatus(settings, ctx) {
   const rows = [];
   for (const g of groups) {
     for (const b of Array.isArray(g.buckets) ? g.buckets : []) {
-      const frac = Number(b.remaining_fraction);
+      const frac = Number(b.frac ?? b.remaining_fraction);
       if (!isFinite(frac)) continue;
       const win = b.window === 'weekly' ? '每周' : b.window === '5h' ? '5 小时' : b.window || '';
-      const reset = fmtReset(b.reset_time);
+      const reset = fmtReset(b.reset || b.reset_time);
       rows.push({
         label: `${g.display_name || g.name || '配额'} · ${win}`,
         value: `${(frac * 100).toFixed(1)}% 剩余${reset ? ` · ${reset}重置` : ''}`
@@ -150,38 +138,135 @@ async function antigravityQuotaStatus(settings, ctx) {
     }
   }
   if (rows.length === 0) return { ok: false, message: '配额组里没有可用桶' };
+  const tier = snap.tier || snap.subscription_tier || '';
   return {
     ok: true,
-    rows: json.subscription_tier
-      ? [{ label: '订阅档位', value: String(json.subscription_tier) }, ...rows]
-      : rows,
-    // structured raw data for model-level matching (quota-popover)
-    models: (Array.isArray(json.models) ? json.models : [])
+    rows: tier ? [{ label: '订阅档位', value: String(tier) }, ...rows] : rows,
+    models: (Array.isArray(snap.models) ? snap.models : [])
       .filter((m) => m && m.name && isFinite(Number(m.percentage)))
-      .map((m) => ({ name: String(m.name).toLowerCase(), percentage: Number(m.percentage), reset: m.reset_time || '' })),
+      .map((m) => ({ name: String(m.name).toLowerCase(), percentage: Number(m.percentage), reset: m.reset || m.reset_time || '' })),
     groups: groups.map((g) => ({
       name: String(g.display_name || g.name || ''),
       buckets: (Array.isArray(g.buckets) ? g.buckets : [])
-        .filter((b) => isFinite(Number(b.remaining_fraction)))
-        .map((b) => ({ window: b.window, frac: Number(b.remaining_fraction), reset: b.reset_time || '' }))
+        .filter((b) => isFinite(Number(b.frac ?? b.remaining_fraction)))
+        .map((b) => ({ window: b.window, frac: Number(b.frac ?? b.remaining_fraction), reset: b.reset || b.reset_time || '' }))
     }))
   };
 }
 
-/* Magpie 本地网关（magpie.exe）专属遥测通道：GET {网关}/v1/magpie/quotas →
-   data[].windows[]（每模型一窗：used/remaining 为百分比，amount/limit 为 token
-   数，resetsAt 为重置点）+ GET /v1/magpie/usage?period=30d（调用/费用汇总）。
-   本机端点免鉴权；usage 拉取失败不致命，仅丢弃用量行。 */
+async function antigravityQuotaStatus(settings, ctx) {
+  const base = String(settings.url || 'http://127.0.0.1:8045').replace(/\/+$/, '');
+  const id = String(settings.accountId || '').trim();
+  let httpErr = '';
+  if (id) {
+    const res = await ctx.net.fetch({
+      url: `${base}/api/accounts/${encodeURIComponent(id)}/quota`,
+      method: 'GET',
+      headers: settings.token ? { Authorization: `Bearer ${settings.token}` } : {}
+    });
+    if (res.ok) {
+      let json = null;
+      try { json = JSON.parse(res.text); } catch { json = null; }
+      if (json && Array.isArray(json.quota_groups) && json.quota_groups.length > 0) {
+        return formatAgSnapshotToStatus({
+          tier: json.subscription_tier,
+          groups: json.quota_groups,
+          models: json.models
+        });
+      }
+      httpErr = '响应无 quota_groups（账号 ID 是否正确）';
+    } else if (res.status === 0) {
+      httpErr = (res.error || '网络请求失败') + '（网关未启动？）';
+    } else {
+      httpErr = `HTTP ${res.status}`;
+    }
+  } else {
+    httpErr = '未配置账号 ID';
+  }
+
+  // 离线兜底：当网关未启动或未填 accountId 时，尝试主进程本地账号文件快照
+  if (typeof ctx?.invoke === 'function') {
+    try {
+      const snap = await ctx.invoke('usage.getAntigravityQuota', { accountId: id });
+      if (snap && snap.ok) {
+        const formatted = formatAgSnapshotToStatus(snap);
+        if (formatted.ok) return { ...formatted, source: 'local-file' };
+      }
+    } catch {}
+  }
+  return { ok: false, message: httpErr || '未配置账号 ID' };
+}
+
+/* Magpie 本地网关（magpie.exe）专属遥测通道：优先 GET {网关}/v1/magpie/quotas →
+   data[].windows[] + GET /v1/magpie/usage?period=30d；当 magpie.exe 未启动时，
+   自动通过主进程 usage.getMagpieQuota RPC 读取 ~/.config/magpie/quota-history.json
+   本地文件快照兜底。 */
+function formatMagpieLocalToStatus(snap) {
+  const groups = Array.isArray(snap.groups) ? snap.groups : [];
+  const models = Array.isArray(snap.models) ? snap.models : [];
+  const usage = snap.usage || null;
+  const fmtReset = (t) => {
+    try {
+      const d = new Date(t);
+      if (isNaN(d.getTime())) return '';
+      return `${d.getMonth() + 1}月${d.getDate()}日`;
+    } catch { return ''; }
+  };
+  const rows = [];
+  for (const g of groups) {
+    for (const b of Array.isArray(g.buckets) ? g.buckets : []) {
+      const frac = Number(b.frac);
+      if (!isFinite(frac)) continue;
+      const reset = fmtReset(b.reset);
+      rows.push({
+        label: `${g.name || '配额'} · ${b.window || '窗口'}`,
+        value: `${(frac * 100).toFixed(1)}% 剩余${reset ? ` · ${reset}重置` : ''}`
+      });
+    }
+  }
+  if (rows.length === 0) return { ok: false, message: '配额窗口里没有可用数据' };
+  if (usage && isFinite(Number(usage.calls)) && usage.calls > 0) {
+    rows.push({ label: '30天调用', value: `${usage.calls} 次${usage.errors ? ` · 失败 ${usage.errors}` : ''}` });
+    rows.push({ label: '30天 Tokens', value: `入 ${fmtTokensCn(usage.input)} · 出 ${fmtTokensCn(usage.output)} · 缓存 ${fmtTokensCn(usage.cacheRead)}` });
+    if (usage.cost != null) rows.push({ label: '30天费用', value: `$${Number(usage.cost).toFixed(2)}` });
+  }
+  const plan = snap.plan || groups.map((g) => g.plan).find(Boolean) || '';
+  return {
+    ok: true,
+    rows: plan ? [{ label: '订阅档位', value: plan }, ...rows] : rows,
+    models,
+    groups,
+    usage,
+    source: 'local-file'
+  };
+}
+
 export async function magpieStatus(settings, ctx) {
   const base = String(settings.url || 'http://127.0.0.1:3425').replace(/\/+$/, '');
   const headers = settings.token ? { Authorization: `Bearer ${settings.token}` } : {};
   const res = await ctx.net.fetch({ url: `${base}/v1/magpie/quotas`, method: 'GET', headers });
-  if (!res.ok && res.status === 0) return { ok: false, message: (res.error || '网络请求失败') + '（magpie 网关未启动？）' };
+  const tryLocalFallback = async (fallbackMsg) => {
+    if (typeof ctx?.invoke === 'function') {
+      try {
+        const snap = await ctx.invoke('usage.getMagpieQuota', {});
+        if (snap && snap.ok) {
+          const formatted = formatMagpieLocalToStatus(snap);
+          if (formatted.ok) return formatted;
+        }
+      } catch {}
+    }
+    return { ok: false, message: fallbackMsg };
+  };
+  if (!res.ok && res.status === 0) {
+    return tryLocalFallback((res.error || '网络请求失败') + '（magpie 网关未启动？）');
+  }
   let json = null;
-  try { json = JSON.parse(res.text); } catch { return { ok: false, message: `响应不是 JSON（HTTP ${res.status}）` }; }
+  try { json = JSON.parse(res.text); } catch {
+    return tryLocalFallback(`响应不是 JSON（HTTP ${res.status}）`);
+  }
   if (!res.ok) {
     const apiErr = dot(json, 'error.message');
-    return { ok: false, message: `HTTP ${res.status}${apiErr ? `：${apiErr}` : ''}` };
+    return tryLocalFallback(`HTTP ${res.status}${apiErr ? `：${apiErr}` : ''}`);
   }
   const accounts = Array.isArray(json.data) ? json.data : [];
   const fmtReset = (t) => {
@@ -217,7 +302,9 @@ export async function magpieStatus(settings, ctx) {
     }
     groups.push({ name: accName, plan: String(acc.plan || ''), buckets });
   }
-  if (rows.length === 0) return { ok: false, message: '响应无配额窗口（网关未登录上游账号？）' };
+  if (rows.length === 0) {
+    return tryLocalFallback('响应无配额窗口（网关未登录上游账号？）');
+  }
   let usage = null;
   try {
     const u = await ctx.net.fetch({ url: `${base}/v1/magpie/usage?period=30d`, method: 'GET', headers });
@@ -373,6 +460,576 @@ async function bailianBssStatus(settings, ctx) {
     }
   } catch { /* optional */ }
   return { ok: true, balance: String(parseFloat(bj.Data.AvailableAmount)), currency: '¥', rows };
+}
+
+/* ------------------------------------------------------------------ *
+ * NewAPI / OneAPI / Veloera / VoAPI / Sub2API 反代网关与常见订阅源适配器
+ * ------------------------------------------------------------------ */
+
+function normalizeGatewayBaseUrl(rawUrl) {
+  let u = String(rawUrl || '').trim().replace(/\/+$/, '');
+  u = u.replace(
+    /\/(v1\/dashboard\/billing\/(subscription|usage|credit_grants)|dashboard\/billing\/(subscription|usage|credit_grants)|api\/usage\/token|api\/user\/self|api\/v1\/subscriptions\/summary|api\/v1\/auth\/me|v1\/chat\/completions|v1\/messages|v1)$/i,
+    ''
+  );
+  return u.replace(/\/+$/, '');
+}
+
+/**
+ * NewAPI / OneAPI 内部额度单位换算：
+ * 标准 OneAPI / NewAPI 内部 QuotaPerUnit = 500,000（即 500,000 内部单位 = $1.00）。
+ * 若用户显式配置了 quotaPerUnit 则按配置折算；默认 500000 下，当返回值为整数且绝对值 >= 1000
+ * （或 >= quotaPerUnit / 100）时按内部单位除以 quotaPerUnit，若网关已直接返回小数美元则保持原值。
+ */
+function convertGatewayQuota(rawVal, quotaPerUnit = 500000, forceUnit = false) {
+  const n = Number(rawVal);
+  if (!Number.isFinite(n)) return 0;
+  const unit = Number(quotaPerUnit);
+  if (Number.isFinite(unit) && unit > 1) {
+    if (forceUnit || (Number.isInteger(n) && Math.abs(n) >= 1000) || Math.abs(n) >= unit / 10) {
+      return n / unit;
+    }
+  }
+  return n;
+}
+
+function fmtDateShort(tsOrIso) {
+  if (!tsOrIso) return '';
+  try {
+    const n = Number(tsOrIso);
+    if (Number.isFinite(n) && n <= 0) return '';
+    const d = Number.isFinite(n) ? new Date(n < 1e11 ? n * 1000 : n) : new Date(String(tsOrIso));
+    if (isNaN(d.getTime()) || d.getFullYear() < 2020) return '';
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 通用反代网关查询引擎（NewAPI / OneAPI / Veloera / VoAPI / DoneHub / Sub2API）：
+ * 自动按优先级探测：
+ * 1. GET {base}/api/usage/token（NewAPI 令牌级额度：total_granted / total_used / total_available / unlimited_quota）
+ * 2. GET {base}/v1/dashboard/billing/subscription + /v1/dashboard/billing/usage（OneAPI/OpenAI 兼容账单：hard_limit_usd - total_usage/100）
+ * 3. GET {base}/api/user/self（NewAPI/Veloera 账户级额度，支持 New-Api-User / Veloera-User 请求头，quota / used_quota）
+ * 4. GET {base}/api/v1/subscriptions/summary（Sub2API 订阅池：daily/weekly/monthly 窗口）
+ */
+export async function newapiStatus(settings, ctx) {
+  const rawUrl = String(settings.url || settings.baseUrl || '').trim();
+  if (!rawUrl) return { ok: false, message: '未配置反代网关地址（url）' };
+
+  // 若用户在 openai-compatible 下显式配置了 pathsJson，优先尝试用户自定义路径提取
+  const hasCustomPaths = Boolean(settings.pathsJson && String(settings.pathsJson).trim() && String(settings.pathsJson).trim() !== '{}');
+  if (hasCustomPaths && !/\/(v1|api)$/i.test(rawUrl.replace(/\/+$/, ''))) {
+    const customRes = await jsonEngineStatus(settings, ctx);
+    if (customRes.ok) return customRes;
+  }
+
+  let extraHeaders = {};
+  if (settings.headersJson) {
+    try {
+      extraHeaders = JSON.parse(settings.headersJson);
+    } catch {
+      return { ok: false, message: '附加请求头 JSON 格式错误' };
+    }
+  }
+  const token = String(settings.token || '').trim();
+  const userId = String(settings.userId || '').trim();
+  const cur = String(settings.currency || '$').trim() || '$';
+  const rawUnit = Number(settings.quotaPerUnit);
+  const quotaPerUnit = Number.isFinite(rawUnit) && rawUnit > 0 ? rawUnit : 500000;
+
+  const headers = { ...extraHeaders };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (userId) {
+    headers['New-Api-User'] = userId;
+    headers['Veloera-User'] = userId;
+    headers['User-id'] = userId;
+  }
+
+  const base = normalizeGatewayBaseUrl(rawUrl);
+  if (!base) return { ok: false, message: '网关地址格式无效' };
+
+  let lastErr = '';
+
+  // 通道 1: GET /api/usage/token (NewAPI / OneAPI 令牌级额度接口)
+  try {
+    const r1 = await ctx.net.fetch({ url: `${base}/api/usage/token`, method: 'GET', headers });
+    if (r1.ok) {
+      const j1 = JSON.parse(r1.text);
+      const d = (j1 && typeof j1.data === 'object' && j1.data) ? j1.data : j1;
+      if (d && (d.object === 'token_usage' || d.total_available !== undefined || d.total_granted !== undefined || d.unlimited_quota !== undefined)) {
+        const unlimited = Boolean(d.unlimited_quota) || Number(d.total_granted) >= 1e13 || Number(d.total_available) < 0;
+        const used = convertGatewayQuota(d.total_used ?? 0, quotaPerUnit);
+        const avail = unlimited ? 0 : Math.max(0, convertGatewayQuota(d.total_available ?? 0, quotaPerUnit));
+        const grantedRaw = convertGatewayQuota(d.total_granted ?? 0, quotaPerUnit);
+        const granted = grantedRaw > 0 ? grantedRaw : avail + used;
+        const frac = !unlimited && granted > 0 ? Math.max(0, Math.min(1, avail / granted)) : null;
+        const exp = fmtDateShort(d.expires_at);
+        const rows = [];
+        if (d.name) rows.push({ label: '令牌名称', value: String(d.name) });
+        rows.push({ label: '剩余额度', value: unlimited ? '无限额度' : `${cur}${avail.toFixed(2)}` });
+        rows.push({ label: '已用额度', value: `${cur}${used.toFixed(2)}` });
+        if (!unlimited && granted > 0) {
+          rows.push({ label: '总额度', value: `${cur}${granted.toFixed(2)}` });
+        }
+        if (exp) rows.push({ label: '到期时间', value: exp });
+        const groups = frac !== null
+          ? [{
+              name: d.name ? `令牌 · ${d.name}` : '令牌额度',
+              buckets: [{ window: '剩余额度', frac, reset: exp ? new Date(Number(d.expires_at) < 1e11 ? Number(d.expires_at) * 1000 : Number(d.expires_at)).toISOString() : '' }]
+            }]
+          : [];
+        return {
+          ok: true,
+          balance: unlimited ? '∞' : avail.toFixed(2),
+          currency: cur,
+          unlimited,
+          totalGranted: granted,
+          totalUsed: used,
+          totalAvailable: avail,
+          remainingFrac: frac,
+          expiresAt: exp,
+          rows,
+          groups
+        };
+      }
+    } else if (r1.status === 0) {
+      lastErr = r1.error || '网络请求失败';
+    } else {
+      lastErr = `HTTP ${r1.status}`;
+    }
+  } catch {}
+
+  // 通道 2: GET /v1/dashboard/billing/subscription + /v1/dashboard/billing/usage
+  try {
+    const rSub = await ctx.net.fetch({ url: `${base}/v1/dashboard/billing/subscription`, method: 'GET', headers });
+    if (rSub.ok) {
+      const sub = JSON.parse(rSub.text);
+      if (sub && (sub.hard_limit_usd !== undefined || sub.system_hard_limit_usd !== undefined || sub.object === 'billing_subscription')) {
+        const hardLimit = Number(sub.hard_limit_usd ?? sub.system_hard_limit_usd ?? 0);
+        // OneAPI/NewAPI 若余额本身放大了 500000 倍则还原，>= 1e8 代表无限额度
+        const unlimited = hardLimit >= 1e8 || sub.unlimited_quota === true;
+        let usedUsd = 0;
+        try {
+          const now = new Date();
+          const start = new Date(now.getTime() - 99 * 86400_000);
+          const fmtD = (dt) => dt.toISOString().slice(0, 10);
+          const rUse = await ctx.net.fetch({
+            url: `${base}/v1/dashboard/billing/usage?start_date=${fmtD(start)}&end_date=${fmtD(now)}`,
+            method: 'GET',
+            headers
+          });
+          if (rUse.ok) {
+            const uj = JSON.parse(rUse.text);
+            if (uj && Number.isFinite(Number(uj.total_usage))) {
+              // OpenAI / OneAPI / NewAPI billing/usage 的 total_usage 单位为美分 (cents)
+              usedUsd = Number(uj.total_usage) / 100;
+            }
+          }
+        } catch {}
+        const granted = unlimited ? 0 : hardLimit;
+        const avail = unlimited ? 0 : Math.max(0, granted - usedUsd);
+        const frac = !unlimited && granted > 0 ? Math.max(0, Math.min(1, avail / granted)) : null;
+        const exp = fmtDateShort(sub.access_until);
+        const rows = [
+          { label: '剩余额度', value: unlimited ? '无限额度' : `${cur}${avail.toFixed(2)}` },
+          { label: '已用额度', value: `${cur}${usedUsd.toFixed(2)}` }
+        ];
+        if (!unlimited && granted > 0) {
+          rows.push({ label: '总额度', value: `${cur}${granted.toFixed(2)}` });
+        }
+        if (exp) rows.push({ label: '到期时间', value: exp });
+        const groups = frac !== null
+          ? [{
+              name: sub.plan?.title || '网关订阅额度',
+              buckets: [{ window: '剩余额度', frac, reset: '' }]
+            }]
+          : [];
+        return {
+          ok: true,
+          balance: unlimited ? '∞' : avail.toFixed(2),
+          currency: cur,
+          unlimited,
+          totalGranted: granted,
+          totalUsed: usedUsd,
+          totalAvailable: avail,
+          remainingFrac: frac,
+          expiresAt: exp,
+          rows,
+          groups
+        };
+      }
+    } else if (rSub.status === 0) {
+      lastErr = rSub.error || '网络请求失败';
+    } else {
+      lastErr = `HTTP ${rSub.status}`;
+    }
+  } catch {}
+
+  // 通道 3: GET /api/user/self (NewAPI / OneAPI / Veloera 账户级详情，需系统访问令牌 + New-Api-User)
+  try {
+    const rSelf = await ctx.net.fetch({ url: `${base}/api/user/self`, method: 'GET', headers });
+    if (rSelf.ok) {
+      const js = JSON.parse(rSelf.text);
+      const u = js?.data && typeof js.data === 'object' ? js.data : null;
+      if (u && (u.quota !== undefined || u.used_quota !== undefined)) {
+        const avail = Math.max(0, convertGatewayQuota(u.quota ?? 0, quotaPerUnit, true));
+        const used = Math.max(0, convertGatewayQuota(u.used_quota ?? 0, quotaPerUnit, true));
+        const granted = avail + used;
+        const frac = granted > 0 ? Math.max(0, Math.min(1, avail / granted)) : null;
+        const rows = [];
+        if (u.display_name || u.username) rows.push({ label: '账户', value: String(u.display_name || u.username) });
+        if (u.group) rows.push({ label: '分组', value: String(u.group) });
+        rows.push({ label: '剩余额度', value: `${cur}${avail.toFixed(2)}` });
+        rows.push({ label: '历史已用', value: `${cur}${used.toFixed(2)}` });
+        if (Number.isFinite(Number(u.request_count))) {
+          rows.push({ label: '请求次数', value: `${u.request_count} 次` });
+        }
+        const groups = frac !== null
+          ? [{
+              name: u.group ? `账户 (${u.group})` : '账户额度',
+              buckets: [{ window: '剩余比例', frac, reset: '' }]
+            }]
+          : [];
+        return {
+          ok: true,
+          balance: avail.toFixed(2),
+          currency: cur,
+          totalGranted: granted,
+          totalUsed: used,
+          totalAvailable: avail,
+          remainingFrac: frac,
+          rows,
+          groups
+        };
+      }
+    }
+  } catch {}
+
+  // 通道 4: Sub2API 订阅汇总 (/api/v1/subscriptions/summary 或 /api/v1/auth/me)
+  try {
+    const rSub2 = await ctx.net.fetch({ url: `${base}/api/v1/subscriptions/summary`, method: 'GET', headers });
+    if (rSub2.ok) {
+      const j2 = JSON.parse(rSub2.text);
+      const d2 = j2?.data && typeof j2.data === 'object' ? j2.data : j2;
+      const subs = Array.isArray(d2?.subscriptions) ? d2.subscriptions : Array.isArray(d2?.active_subscriptions) ? d2.active_subscriptions : [];
+      if (subs.length > 0 || d2?.balance !== undefined) {
+        const rows = [];
+        const groups = [];
+        for (const s of subs) {
+          const gName = String(s.group_name || s.name || '订阅套餐');
+          const buckets = [];
+          for (const [wKey, uField, lField] of [
+            ['日额度', 'daily_usage_usd', 'daily_limit_usd'],
+            ['周额度', 'weekly_usage_usd', 'weekly_limit_usd'],
+            ['月额度', 'monthly_usage_usd', 'monthly_limit_usd']
+          ]) {
+            const lim = Number(s[lField]);
+            const use = Number(s[uField]) || 0;
+            if (Number.isFinite(lim) && lim > 0) {
+              const rem = Math.max(0, lim - use);
+              const frac = Math.max(0, Math.min(1, rem / lim));
+              buckets.push({ window: wKey, frac, reset: s.expires_at || '' });
+              rows.push({ label: `${gName} · ${wKey}`, value: `剩余 ${cur}${rem.toFixed(2)} / ${cur}${lim.toFixed(2)}` });
+            }
+          }
+          if (buckets.length > 0) groups.push({ name: gName, buckets });
+        }
+        const bal = d2?.balance !== undefined ? Number(d2.balance) : null;
+        return {
+          ok: true,
+          balance: Number.isFinite(bal) ? bal.toFixed(2) : undefined,
+          currency: cur,
+          rows,
+          groups
+        };
+      }
+    }
+  } catch {}
+
+  if (hasCustomPaths) {
+    return jsonEngineStatus(settings, ctx);
+  }
+  return {
+    ok: false,
+    message: lastErr
+      ? `网关额度探测未命中（${lastErr}）— 请确认令牌有效，或在下方填写自定义取值路径`
+      : '网关未开启 /api/usage/token 或 /v1/dashboard/billing/subscription 接口'
+  };
+}
+
+/** OpenRouter 官方余额与 Key 限额（GET /api/v1/credits + /api/v1/key） */
+export async function openrouterStatus(settings, ctx) {
+  const token = String(settings.token || '').trim();
+  if (!token) return { ok: false, message: '未配置 OpenRouter API Key' };
+  const base = String(settings.url || 'https://openrouter.ai').replace(/\/(api\/v1\/(credits|key|auth\/key)|api\/v1|v1)\/?$/i, '').replace(/\/+$/, '');
+  const headers = { Authorization: `Bearer ${token}` };
+
+  let totalCredits = null, totalUsage = null;
+  try {
+    const rc = await ctx.net.fetch({ url: `${base}/api/v1/credits`, method: 'GET', headers });
+    if (rc.ok) {
+      const jc = JSON.parse(rc.text);
+      if (jc?.data && Number.isFinite(Number(jc.data.total_credits))) {
+        totalCredits = Number(jc.data.total_credits);
+        totalUsage = Number(jc.data.total_usage) || 0;
+      }
+    }
+  } catch {}
+
+  let keyData = null;
+  try {
+    const rk = await ctx.net.fetch({ url: `${base}/api/v1/key`, method: 'GET', headers });
+    if (rk.ok) {
+      const jk = JSON.parse(rk.text);
+      if (jk?.data) keyData = jk.data;
+    } else if (totalCredits === null) {
+      if (rk.status === 0) return { ok: false, message: rk.error || '网络请求失败' };
+      return { ok: false, message: `HTTP ${rk.status}` };
+    }
+  } catch {}
+
+  if (totalCredits === null && !keyData) {
+    return { ok: false, message: '无法获取 OpenRouter 账户或 Key 额度信息' };
+  }
+
+  const rows = [];
+  const groups = [];
+  let balance = null;
+  let remainingFrac = null;
+
+  if (totalCredits !== null) {
+    const avail = Math.max(0, totalCredits - (totalUsage || 0));
+    balance = avail.toFixed(2);
+    remainingFrac = totalCredits > 0 ? Math.max(0, Math.min(1, avail / totalCredits)) : null;
+    rows.push({ label: '账户总充值', value: `$${totalCredits.toFixed(2)}` });
+    rows.push({ label: '账户总消耗', value: `$${(totalUsage || 0).toFixed(2)}` });
+  }
+
+  if (keyData) {
+    const kLimit = keyData.limit != null ? Number(keyData.limit) : null;
+    const kRem = keyData.limit_remaining != null ? Number(keyData.limit_remaining) : null;
+    const kUsage = Number(keyData.usage) || 0;
+    if (balance === null && Number.isFinite(kRem)) {
+      balance = Math.max(0, kRem).toFixed(2);
+    }
+    if (Number.isFinite(kLimit) && kLimit > 0 && Number.isFinite(kRem)) {
+      const f = Math.max(0, Math.min(1, kRem / kLimit));
+      if (remainingFrac === null) remainingFrac = f;
+      groups.push({
+        name: keyData.label ? `Key · ${keyData.label}` : 'Key 限额',
+        buckets: [{ window: keyData.limit_reset || '剩余限额', frac: f, reset: '' }]
+      });
+      rows.push({ label: 'Key 剩余限额', value: `$${Math.max(0, kRem).toFixed(2)} / $${kLimit.toFixed(2)}` });
+    }
+    rows.push({ label: 'Key 累计消耗', value: `$${kUsage.toFixed(2)}` });
+    if (Number.isFinite(Number(keyData.usage_daily)) && Number(keyData.usage_daily) > 0) {
+      rows.push({ label: '今日消耗', value: `$${Number(keyData.usage_daily).toFixed(2)}` });
+    }
+    if (Number.isFinite(Number(keyData.usage_weekly)) && Number(keyData.usage_weekly) > 0) {
+      rows.push({ label: '本周消耗', value: `$${Number(keyData.usage_weekly).toFixed(2)}` });
+    }
+  }
+
+  return {
+    ok: true,
+    balance: balance ?? '0.00',
+    currency: '$',
+    totalGranted: totalCredits,
+    totalUsed: totalUsage ?? (keyData ? Number(keyData.usage) || 0 : 0),
+    remainingFrac,
+    rows,
+    groups
+  };
+}
+
+/** 硅基流动 SiliconFlow 账户余额（GET /v1/user/info → totalBalance / chargeBalance / balance） */
+export async function siliconflowStatus(settings, ctx) {
+  const token = String(settings.token || '').trim();
+  if (!token) return { ok: false, message: '未配置硅基流动 API Key' };
+  const rawUrl = String(settings.url || 'https://api.siliconflow.cn/v1/user/info').trim();
+  const url = /\/v1\/user\/info$/i.test(rawUrl)
+    ? rawUrl
+    : rawUrl.replace(/\/(v1\/chat\/completions|v1)\/?$/i, '').replace(/\/+$/, '') + '/v1/user/info';
+  const res = await ctx.net.fetch({
+    url,
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok && res.status === 0) return { ok: false, message: res.error || '网络请求失败' };
+  let json = null;
+  try { json = JSON.parse(res.text); } catch { return { ok: false, message: `响应不是 JSON（HTTP ${res.status}）` }; }
+  if (!res.ok || !json?.data) {
+    return { ok: false, message: json?.message || `HTTP ${res.status}` };
+  }
+  const d = json.data;
+  const total = parseFloat(d.totalBalance ?? d.balance ?? 0) || 0;
+  const charge = parseFloat(d.chargeBalance ?? 0) || 0;
+  const gift = parseFloat(d.balance ?? 0) || 0;
+  const rows = [
+    { label: '充值余额', value: `${charge.toFixed(2)}` },
+    { label: '赠送余额', value: `${gift.toFixed(2)}` }
+  ];
+  if (d.name || d.email) rows.push({ label: '账户', value: String(d.name || d.email) });
+  return {
+    ok: true,
+    balance: String(total),
+    currency: '¥',
+    rows
+  };
+}
+
+/** Moonshot / Kimi 开放平台余额（GET /v1/users/me/balance → available_balance / cash_balance / voucher_balance） */
+export async function moonshotStatus(settings, ctx) {
+  const token = String(settings.token || '').trim();
+  if (!token) return { ok: false, message: '未配置 Moonshot API Key' };
+  const rawUrl = String(settings.url || 'https://api.moonshot.cn/v1/users/me/balance').trim();
+  const url = /\/users\/me\/balance$/i.test(rawUrl)
+    ? rawUrl
+    : rawUrl.replace(/\/(v1\/chat\/completions|v1)\/?$/i, '').replace(/\/+$/, '') + '/v1/users/me/balance';
+  const res = await ctx.net.fetch({
+    url,
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok && res.status === 0) return { ok: false, message: res.error || '网络请求失败' };
+  let json = null;
+  try { json = JSON.parse(res.text); } catch { return { ok: false, message: `响应不是 JSON（HTTP ${res.status}）` }; }
+  if (!res.ok || !json?.data) {
+    return { ok: false, message: json?.error?.message || `HTTP ${res.status}` };
+  }
+  const d = json.data;
+  // 官方规范：必须以 available_balance 为准，cash_balance 为负时不可与 voucher 相加
+  const avail = parseFloat(d.available_balance ?? 0) || 0;
+  const cash = parseFloat(d.cash_balance ?? 0) || 0;
+  const voucher = parseFloat(d.voucher_balance ?? 0) || 0;
+  const rows = [
+    { label: '现金余额', value: `¥${cash.toFixed(2)}` },
+    { label: '代金券余额', value: `¥${voucher.toFixed(2)}` }
+  ];
+  return {
+    ok: true,
+    balance: String(avail),
+    currency: '¥',
+    rows
+  };
+}
+
+/** 智谱 GLM / Z.ai Coding Plan 套餐配额（GET /api/monitor/usage/quota/limit） */
+export async function zhipuCodingPlanStatus(settings, ctx) {
+  const token = String(settings.token || '').trim();
+  if (!token) return { ok: false, message: '未配置智谱 / Z.ai API Key' };
+  const rawUrl = String(settings.url || 'https://open.bigmodel.cn/api/monitor/usage/quota/limit').trim();
+  let url = rawUrl;
+  if (!/\/monitor\/usage\/quota\/limit/i.test(url)) {
+    const host = /z\.ai/i.test(url) ? 'https://api.z.ai' : 'https://open.bigmodel.cn';
+    url = `${host}/api/monitor/usage/quota/limit`;
+  }
+  const res = await ctx.net.fetch({
+    url,
+    method: 'GET',
+    headers: {
+      Authorization: /^Bearer\s+/i.test(token) ? token : `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    }
+  });
+  if (!res.ok && res.status === 0) return { ok: false, message: res.error || '网络请求失败' };
+  let json = null;
+  try { json = JSON.parse(res.text); } catch { return { ok: false, message: `响应不是 JSON（HTTP ${res.status}）` }; }
+  if (!res.ok || (json.code && json.code !== 200 && json.success !== true)) {
+    return { ok: false, message: json?.msg || json?.message || `HTTP ${res.status}` };
+  }
+  const limits = Array.isArray(json?.data?.limits) ? json.data.limits : [];
+  if (limits.length === 0) {
+    return { ok: false, message: '未查询到 Coding Plan 套餐配额（确认账号已开通 GLM Coding 套餐）' };
+  }
+  const rows = [];
+  const buckets = [];
+  const planName = String(json?.data?.planName || json?.data?.level || 'GLM Coding Plan');
+  for (const item of limits) {
+    if (!item || typeof item !== 'object') continue;
+    const type = String(item.type || '');
+    const usedPct = Number(item.percentage);
+    if (!Number.isFinite(usedPct)) continue;
+    const remPct = Math.max(0, Math.min(100, 100 - usedPct));
+    const resetIso = item.nextResetTime ? new Date(Number(item.nextResetTime)).toISOString() : '';
+    const winLabel = type === 'TOKENS_LIMIT' ? '5小时 Token 额度' : type === 'TIME_LIMIT' ? 'MCP 工具额度' : (item.name || type || '套餐额度');
+    buckets.push({
+      window: winLabel,
+      frac: remPct / 100,
+      reset: resetIso
+    });
+    const resetStr = fmtDateShort(item.nextResetTime);
+    rows.push({
+      label: winLabel,
+      value: `${remPct.toFixed(1)}% 剩余${resetStr ? ` · ${resetStr}` : ''}`
+    });
+  }
+  if (buckets.length === 0) return { ok: false, message: '套餐配额列表为空' };
+  return {
+    ok: true,
+    rows: [{ label: '订阅档位', value: planName }, ...rows],
+    groups: [{ name: planName, plan: planName, buckets }]
+  };
+}
+
+/** MiniMax Token Plan / Coding Plan 套餐余量（GET /v1/api/openplatform/coding_plan/remains 或 /v1/token_plan/remains） */
+export async function minimaxStatus(settings, ctx) {
+  const token = String(settings.token || '').trim();
+  if (!token) return { ok: false, message: '未配置 MiniMax API Key' };
+  const rawUrl = String(settings.url || 'https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains').trim();
+  const base = rawUrl.replace(/\/(v1\/api\/openplatform\/coding_plan\/remains|v1\/token_plan\/remains|anthropic|v1).*$/i, '').replace(/\/+$/, '') || 'https://api.minimaxi.com';
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+  let json = null;
+  let lastStatus = 0;
+  for (const ep of ['/v1/api/openplatform/coding_plan/remains', '/v1/token_plan/remains']) {
+    const r = await ctx.net.fetch({ url: `${base}${ep}`, method: 'GET', headers });
+    lastStatus = r.status;
+    if (r.ok) {
+      try {
+        const parsed = JSON.parse(r.text);
+        if (Array.isArray(parsed?.model_remains) || Array.isArray(parsed?.data?.model_remains)) {
+          json = parsed;
+          break;
+        }
+      } catch {}
+    }
+  }
+  if (!json) {
+    return { ok: false, message: lastStatus === 0 ? '网络请求失败' : `未查询到 MiniMax 套餐余量（HTTP ${lastStatus}）` };
+  }
+  const list = Array.isArray(json.model_remains) ? json.model_remains : (json.data?.model_remains || []);
+  const rows = [];
+  const buckets = [];
+  const models = [];
+  for (const m of list) {
+    if (!m || typeof m !== 'object') continue;
+    const name = String(m.model_name || 'MiniMax');
+    const total = Number(m.current_interval_total_count) || 0;
+    const usedOrRem = Number(m.current_interval_usage_count) || 0;
+    if (total <= 0) continue;
+    // MiniMax 接口 current_interval_usage_count 在部分版本中表示剩余次数或已用次数，支持布尔或比例归一
+    const remCount = m.current_interval_remaining_count != null
+      ? Number(m.current_interval_remaining_count)
+      : Math.max(0, total - usedOrRem);
+    const frac = Math.max(0, Math.min(1, remCount / total));
+    const resetIso = m.end_time ? new Date(Number(m.end_time) < 1e11 ? Number(m.end_time) * 1000 : Number(m.end_time)).toISOString() : '';
+    buckets.push({ window: name, frac, reset: resetIso });
+    models.push({ name: name.toLowerCase(), percentage: Math.round((1 - frac) * 100), reset: resetIso });
+    rows.push({
+      label: `${name} · 5小时窗口`,
+      value: `剩余 ${(frac * 100).toFixed(1)}% (${remCount}/${total})`
+    });
+  }
+  if (buckets.length === 0) return { ok: false, message: 'MiniMax 套餐无可用模型配额记录' };
+  return {
+    ok: true,
+    rows: [{ label: '订阅档位', value: 'MiniMax Token Plan' }, ...rows],
+    models,
+    groups: [{ name: 'MiniMax Token Plan', plan: 'Token Plan', buckets }]
+  };
 }
 
 const COMMON_ENGINE_SETTINGS = {
@@ -623,15 +1280,67 @@ export function registerBuiltinProviders(datasourceRegistry) {
   );
   ds.registerProvider(
     preset({
+      type: 'newapi',
+      label: 'NewAPI / OneAPI 反代网关',
+      description: '自动探测 /api/usage/token、/v1/dashboard/billing/subscription 与 /api/user/self（自动折算 500,000 内部单位 = $1，适配 NewAPI / OneAPI / Veloera / VoAPI / Sub2API 等主流中转站）',
+      settings: {
+        url: {
+          title: '网关地址',
+          description: '填写中转站根地址或 /v1 地址即可（如 https://api.example.com），会自动探测额度接口',
+          placeholder: 'https://api.example.com'
+        },
+        token: {
+          type: 'secret',
+          title: 'API Key / 系统令牌',
+          description: '中转站分发的 sk-... 令牌或系统访问令牌，以 Bearer 头发送，加密保存'
+        },
+        userId: {
+          type: 'text',
+          title: '用户 ID（可选）',
+          description: '仅当使用系统访问令牌查询 /api/user/self 时需填写 New-Api-User ID；普通 sk- 令牌留空即可',
+          placeholder: '留空即可'
+        },
+        currency: {
+          type: 'select',
+          title: '显示币种符号',
+          default: '$',
+          options: [
+            { value: '$', label: '$ (USD / 刀)' },
+            { value: '¥', label: '¥ (CNY / 元)' }
+          ]
+        },
+        quotaPerUnit: {
+          type: 'number',
+          title: '内部额度换算比',
+          description: 'NewAPI / OneAPI 默认 500000 内部单位 = 1 美元/元；如网关已直接返回真实金额可填 1',
+          default: 500000
+        },
+        pathsJson: { default: '' }
+      },
+      fetchStatus: newapiStatus,
+      test: async (settings, ctx) => {
+        const r = await newapiStatus(settings, ctx);
+        return r.ok ? { ok: true, message: `连接成功，剩余额度 ${r.currency || '$'}${r.balance}` } : r;
+      }
+    })
+  );
+  ds.registerProvider(
+    preset({
       type: 'openai-compatible',
       label: 'OpenAI 兼容网关',
-      description: '兼容 /v1/dashboard 或 /v1/usage 类查询接口的反代网关；地址与令牌自行填写',
+      description: '兼容 /v1/dashboard/billing、/api/usage/token 或自定义 JSON 路径的反代网关；留空提取路径时自动按 NewAPI / OneAPI 规范探测',
       settings: {
         method: { default: 'GET' },
         pathsJson: {
+          default: '',
           placeholder: '{"总额度": "total_available", "已用": "total_usage"}',
-          description: '按你网关的响应字段填写取值路径'
+          description: '留空则自动探测 /api/usage/token 与 /v1/dashboard/billing；也可手动填写 JSON 取值路径'
         }
+      },
+      fetchStatus: newapiStatus,
+      test: async (settings, ctx) => {
+        const r = await newapiStatus(settings, ctx);
+        return r.ok ? { ok: true, message: '连接成功，网关额度接口可访问' } : r;
       }
     })
   );
@@ -706,9 +1415,149 @@ export function registerBuiltinProviders(datasourceRegistry) {
   );
   ds.registerProvider(
     preset({
+      type: 'openrouter',
+      label: 'OpenRouter 官方额度',
+      description: 'OpenRouter 账户余额与 API Key 周期限额（/api/v1/credits + /api/v1/key），密钥加密保存',
+      settings: {
+        url: {
+          title: '请求地址',
+          default: 'https://openrouter.ai/api/v1/credits',
+          placeholder: 'https://openrouter.ai/api/v1/credits'
+        },
+        modelKeywords: {
+          placeholder: 'openrouter, claude, gpt, gemini'
+        },
+        token: {
+          type: 'secret',
+          title: 'API Key',
+          description: 'OpenRouter 的 sk-or-v1-... 密钥，加密保存'
+        },
+        pathsJson: { default: '' }
+      },
+      fetchStatus: openrouterStatus,
+      test: async (settings, ctx) => {
+        const r = await openrouterStatus(settings, ctx);
+        return r.ok ? { ok: true, message: `连接成功，可用余额 $${r.balance}` } : r;
+      }
+    })
+  );
+  ds.registerProvider(
+    preset({
+      type: 'siliconflow',
+      label: '硅基流动 SiliconFlow',
+      description: '硅基流动账户总余额、充值余额与赠送余额（api.siliconflow.cn/v1/user/info），密钥加密保存',
+      settings: {
+        url: {
+          title: '请求地址',
+          default: 'https://api.siliconflow.cn/v1/user/info',
+          placeholder: 'https://api.siliconflow.cn/v1/user/info'
+        },
+        modelKeywords: {
+          placeholder: '硅基流动, siliconflow'
+        },
+        token: {
+          type: 'secret',
+          title: 'API Key',
+          description: '硅基流动 sk-... 密钥，加密保存'
+        },
+        pathsJson: { default: '' }
+      },
+      fetchStatus: siliconflowStatus,
+      test: async (settings, ctx) => {
+        const r = await siliconflowStatus(settings, ctx);
+        return r.ok ? { ok: true, message: `连接成功，总余额 ¥${r.balance}` } : r;
+      }
+    })
+  );
+  ds.registerProvider(
+    preset({
+      type: 'moonshot',
+      label: 'Moonshot / Kimi 开放平台',
+      description: '月之暗面 Kimi 开放平台可用余额、现金与代金券（api.moonshot.cn/v1/users/me/balance），密钥加密保存',
+      settings: {
+        url: {
+          title: '请求地址',
+          default: 'https://api.moonshot.cn/v1/users/me/balance',
+          placeholder: 'https://api.moonshot.cn/v1/users/me/balance'
+        },
+        modelKeywords: {
+          placeholder: 'moonshot, kimi, 月之暗面'
+        },
+        token: {
+          type: 'secret',
+          title: 'API Key',
+          description: 'Moonshot 开放平台 sk-... 密钥，加密保存'
+        },
+        pathsJson: { default: '' }
+      },
+      fetchStatus: moonshotStatus,
+      test: async (settings, ctx) => {
+        const r = await moonshotStatus(settings, ctx);
+        return r.ok ? { ok: true, message: `连接成功，可用余额 ¥${r.balance}` } : r;
+      }
+    })
+  );
+  ds.registerProvider(
+    preset({
+      type: 'zhipu-coding-plan',
+      label: '智谱 GLM / Z.ai Coding Plan',
+      description: '智谱 BigModel / Z.ai Coding 套餐配额监控（5小时 Token 限额与 MCP 工具限额百分比），密钥加密保存',
+      settings: {
+        url: {
+          title: '配额接口地址',
+          default: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
+          placeholder: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit'
+        },
+        modelKeywords: {
+          placeholder: '智谱, bigmodel, zhipu, z.ai, glm'
+        },
+        token: {
+          type: 'secret',
+          title: 'API Key',
+          description: '智谱开放平台或 Z.ai 的 API Key，加密保存'
+        },
+        pathsJson: { default: '' }
+      },
+      fetchStatus: zhipuCodingPlanStatus,
+      test: async (settings, ctx) => {
+        const r = await zhipuCodingPlanStatus(settings, ctx);
+        return r.ok ? { ok: true, message: `连接成功，已获取 ${(r.rows || []).length} 项套餐指标` } : r;
+      }
+    })
+  );
+  ds.registerProvider(
+    preset({
+      type: 'minimax',
+      label: 'MiniMax Token Plan 套餐',
+      description: 'MiniMax Coding Plan / Token Plan 5小时模型调用余量（api.minimaxi.com），密钥加密保存',
+      settings: {
+        url: {
+          title: '配额接口地址',
+          default: 'https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains',
+          placeholder: 'https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains'
+        },
+        modelKeywords: {
+          placeholder: 'minimax, 海螺'
+        },
+        token: {
+          type: 'secret',
+          title: 'API Key',
+          description: 'MiniMax 开放平台或 Token Plan 密钥，加密保存'
+        },
+        pathsJson: { default: '' }
+      },
+      fetchStatus: minimaxStatus,
+      test: async (settings, ctx) => {
+        const r = await minimaxStatus(settings, ctx);
+        return r.ok ? { ok: true, message: `连接成功，${(r.rows || []).length} 条套餐记录` } : r;
+      }
+    })
+  );
+  ds.registerProvider(
+    preset({
       type: 'antigravity',
       label: 'Antigravity 配额（反代网关）',
-      description: 'Antigravity Tools 本地网关的账号分组配额（Gemini/Claude/GPT 周额与 5h 额），密钥加密保存',
+      description: 'Antigravity Tools 本地网关的账号分组配额（Gemini/Claude/GPT 周额与 5h 额，网关未启动时自动读本地快照），密钥加密保存',
       settings: {
         url: {
           title: '网关地址',
@@ -718,7 +1567,7 @@ export function registerBuiltinProviders(datasourceRegistry) {
         accountId: {
           type: 'text',
           title: '账号 ID',
-          description: '网关账号的 id，见 ~/.antigravity_tools/accounts.json 的 current_account_id（或列表首项）',
+          description: '网关账号的 id，见 ~/.antigravity_tools/accounts.json 的 current_account_id（留空可自动读取本地当前账号）',
           placeholder: '9af6d73c-…'
         },
         token: {
@@ -738,7 +1587,7 @@ export function registerBuiltinProviders(datasourceRegistry) {
     preset({
       type: 'magpie',
       label: 'Magpie 本地网关',
-      description: 'Magpie 网关的模型配额与 30 天用量（/v1/magpie/quotas + /usage，本机免鉴权），网关未启动时直接报错提示',
+      description: 'Magpie 网关的模型配额与 30 天用量（/v1/magpie/quotas + /usage，网关未启动时自动回退本地历史快照）',
       settings: {
         url: {
           title: '网关地址',
@@ -838,6 +1687,6 @@ export function registerBuiltinProviders(datasourceRegistry) {
     }
   });
 
-  console.log('[ZMod:DataSources] registered 9 builtin data source providers');
-  return 9;
+  console.log('[ZMod:DataSources] registered 15 builtin data source providers');
+  return 15;
 }

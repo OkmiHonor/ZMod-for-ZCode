@@ -12,7 +12,8 @@ import {
   removeSharedWindowStyle,
   sharedStyles,
   listWindows,
-  installWindowLifecycleHook
+  installWindowLifecycleHook,
+  dismissHelperWindows
 } from '../src/main/windows.js';
 
 import {
@@ -174,6 +175,111 @@ test('Anchor #2: setSharedWindowStyle, removeSharedWindowStyle, and window lifec
   const closedEv = sentEvents.find((e) => e.payload?.event === 'closed');
   assert.ok(closedEv);
   assert.equal(closedEv.payload.windowId, 20);
+});
+
+test('Anchor #2 regression: main window hide dismisses ZMod helper windows (close-to-tray fix)', () => {
+  let hideCb = null;
+  const mainWin = {
+    id: 1,
+    isDestroyed: () => false,
+    webContents: {
+      getURL: () => 'file:///app/out/renderer/index.html',
+      on: () => {},
+      send: () => {}
+    },
+    on: (ev, cb) => {
+      if (ev === 'hide') hideCb = cb;
+    },
+    once: () => {},
+    getTitle: () => 'Main'
+  };
+  const helperWin = {
+    id: 2,
+    __zmodHelperWindow: true,
+    isDestroyed: () => false,
+    destroyed: false,
+    destroy() {
+      this.destroyed = true;
+    },
+    webContents: { getURL: () => 'data:text/html,x', on: () => {}, send: () => {} },
+    on: () => {},
+    once: () => {},
+    getTitle: () => 'Bubble HUD'
+  };
+  const windows = [mainWin, helperWin];
+  const mockBW = { getAllWindows: () => windows };
+  const mockApp = { on: () => {} };
+
+  installWindowLifecycleHook({ app: mockApp, BrowserWindow: mockBW });
+  assert.ok(hideCb, 'main window must register a hide handler');
+
+  // 关闭到托盘：主窗口 hide → helper 窗口必须被清掉，避免顶掉主窗口
+  hideCb();
+  assert.equal(helperWin.destroyed, true, 'helper window must be destroyed on main hide');
+  assert.equal(mainWin.isDestroyed(), false, 'main window must survive');
+
+  // 纯函数也可直接调用，且只销毁带标记的窗口
+  const anotherHelper = {
+    id: 3,
+    __zmodHelperWindow: true,
+    isDestroyed: () => false,
+    destroyed: false,
+    destroy() {
+      this.destroyed = true;
+    }
+  };
+  const plainWin = { id: 4, isDestroyed: () => false, destroyed: false, destroy() { this.destroyed = true; } };
+  const removed = dismissHelperWindows({ BrowserWindow: { getAllWindows: () => [plainWin, anotherHelper] } });
+  assert.deepEqual(removed, [3]);
+  assert.equal(anotherHelper.destroyed, true);
+  assert.equal(plainWin.destroyed, false, 'unmarked windows must be left untouched');
+
+  // 真实时序：browser-window-created 时 URL 仍是 about:blank，
+  // did-finish-load 后才变成主窗口 URL；guard 必须在此刻补挂。
+  let lateHideCb = null;
+  let lateFinishCb = null;
+  const lateWin = {
+    id: 5,
+    isDestroyed: () => false,
+    url: 'about:blank',
+    webContents: {
+      getURL() {
+        return this.__win.url;
+      },
+      __win: null,
+      on: (ev, cb) => {
+        if (ev === 'did-finish-load') lateFinishCb = cb;
+      },
+      send: () => {}
+    },
+    on: (ev, cb) => {
+      if (ev === 'hide') lateHideCb = cb;
+    },
+    once: () => {},
+    getTitle: () => 'Late Main'
+  };
+  lateWin.webContents.__win = lateWin;
+  const lateHelper = {
+    id: 6,
+    __zmodHelperWindow: true,
+    isDestroyed: () => false,
+    destroyed: false,
+    destroy() {
+      this.destroyed = true;
+    }
+  };
+  const lateWindows = [lateWin, lateHelper];
+  installWindowLifecycleHook({
+    app: { on: () => {} },
+    BrowserWindow: { getAllWindows: () => lateWindows }
+  });
+  assert.equal(lateHideCb, null, 'about:blank must not be treated as main yet');
+  lateWin.url = 'file:///app/out/renderer/index.html';
+  assert.ok(lateFinishCb);
+  lateFinishCb();
+  assert.ok(lateHideCb, 'guard must attach once the URL becomes the main window');
+  lateHideCb();
+  assert.equal(lateHelper.destroyed, true);
 });
 
 test('Anchor #4: context-menu registration, unregistration, and matching', () => {

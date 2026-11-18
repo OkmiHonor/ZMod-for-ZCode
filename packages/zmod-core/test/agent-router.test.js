@@ -13,7 +13,25 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const routerPath = path.resolve(__dirname, '../src/main/agent-router.cjs');
 const router = require(routerPath);
 
-test('ZMod Agent Router: known providers tier mapping', () => {
+// 映射类测试需与宿主环境隔离：显式指向 enabled:true 的临时配置目录。
+// 否则外部泄漏的 ZMOD_USER_DATA_DIR 会命中生产配置（如 enabled:false），
+// 使整个路由器被关闭、所有映射断言空转过。
+function useIsolatedRouterConfig(t, cfg = { enabled: true }) {
+  const prevEnv = process.env.ZMOD_USER_DATA_DIR;
+  const tempDataDir = path.join(os.tmpdir(), 'zcode-scratch', `agent-router-iso-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const cfgDir = path.join(tempDataDir, 'plugin-data', 'smart-subagent');
+  fs.mkdirSync(cfgDir, { recursive: true });
+  fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify(cfg));
+  process.env.ZMOD_USER_DATA_DIR = tempDataDir;
+  t.after(() => {
+    if (prevEnv === undefined) delete process.env.ZMOD_USER_DATA_DIR;
+    else process.env.ZMOD_USER_DATA_DIR = prevEnv;
+    fs.rmSync(tempDataDir, { recursive: true, force: true });
+  });
+}
+
+test('ZMod Agent Router: known providers tier mapping', (t) => {
+  useIsolatedRouterConfig(t);
   const { resolveSubagentTierSelection } = router;
 
   // 1. Google Gemini
@@ -73,7 +91,8 @@ test('ZMod Agent Router: known providers tier mapping', () => {
   }
 });
 
-test('ZMod Agent Router: deepseek & qwen updated lightweight mapping table', () => {
+test('ZMod Agent Router: deepseek & qwen updated lightweight mapping table', (t) => {
+  useIsolatedRouterConfig(t);
   const { resolveSubagentTierSelection } = router;
 
   const cases = [
@@ -159,7 +178,8 @@ test('ZMod Agent Router: plugin config chain via ZMOD_USER_DATA_DIR', (t) => {
   }
 });
 
-test('ZMod Agent Router: unknown provider heuristic & safe fallback', () => {
+test('ZMod Agent Router: unknown provider heuristic & safe fallback', (t) => {
+  useIsolatedRouterConfig(t);
   const { resolveSubagentTierSelection } = router;
 
   // 启发式：第三方网关的 pro 模型 -> flash
@@ -206,7 +226,9 @@ test('ZMod Agent Router: in-memory patch zero disk tampering', () => {
   // 验证内存 patcher 函数是否能在内存中打补丁
   const patchedInMemory = router.patchZCodeInMemory(originalContent);
 
-  assert.equal(patchedInMemory.includes('tier:V.enum(["fast","standard","reasoning"])'), true);
+  // tier 枚举注入成功。schema 标识符随 zcode.cjs 压缩批次漂移（V→W…），
+  // 断言注入行为本身而非具体标识符。
+  assert.match(patchedInMemory, /tier:[A-Za-z0-9_$]+\.enum\(\["fast","standard","reasoning"\]\)/);
   assert.equal(patchedInMemory.includes('globalThis.__ZMOD_AGENT_ROUTER__'), true);
 
   // 物理磁盘文件哈希不变

@@ -235,13 +235,11 @@ function patchZCodeInMemory(code) {
   let patched = code;
 
   // 1. wit schema: 注入 tier 可选枚举
-  const witTarget = 'run_in_background:V.boolean().optional().describe("Set to true to run this agent in the background. You will be notified when it completes.")})';
-  if (patched.includes(witTarget)) {
-    patched = patched.replace(
-      witTarget,
-      'run_in_background:V.boolean().optional().describe("Set to true to run this agent in the background. You will be notified when it completes."),tier:V.enum(["fast","standard","reasoning"]).optional().describe("Task tier: fast=lightweight exploration/reading/summary using provider flash/haiku/mini model; standard=normal development; reasoning=complex architecture")})'
-    );
-  }
+  //    schema 标识符随 zcode.cjs 压缩批次漂移（V/W/...），用正则捕获而非硬编码
+  patched = patched.replace(
+    /run_in_background:([A-Za-z0-9_$]+)\.boolean\(\)\.optional\(\)\.describe\("Set to true to run this agent in the background\. You will be notified when it completes\."\)\}\)/,
+    'run_in_background:$1.boolean().optional().describe("Set to true to run this agent in the background. You will be notified when it completes."),tier:$1.enum(["fast","standard","reasoning"]).optional().describe("Task tier: fast=lightweight exploration/reading/summary using provider flash/haiku/mini model; standard=normal development; reasoning=complex architecture")})'
+  );
 
   // 2. aIa handler: 透传 tier
   const aIaTarget = 'let i={sessionId:t.sessionId,turnId:t.turnId,parentToolCallId:t.toolCallId,agentType:o,description:n.description,prompt:n.prompt,';

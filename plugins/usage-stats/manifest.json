@@ -1,14 +1,15 @@
 {
   "id": "usage-stats",
   "name": "Token 用量统计",
-  "version": "1.4.1",
-  "description": "非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知，跨会话不串数），费用估算覆盖 DeepSeek 系 + 百炼系模型，订阅源额度估算，余额走数据源系统",
+  "version": "1.5.1",
+  "description": "非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知 + 子代理消耗追踪），全模型费用估算（含 Cache 写入与反代倍率），订阅与按额度消耗统计（跨会话滚动窗口 + Antigravity/Magpie 网关真实余量 + 按次数/金额/Token 多口径）",
   "author": "ZMod Team",
   "engine": {
     "zmod": ">=1.0.0-beta"
   },
   "permissions": [
-    "dom.patch"
+    "dom.patch",
+    "datasource"
   ],
   "category": "productivity",
   "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"

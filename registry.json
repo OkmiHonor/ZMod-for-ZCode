@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-29T13:00:39.602Z",
+  "updated": "2026-11-18T13:59:57.691Z",
   "plugins": [
     {
       "id": "acrylic-window",
@@ -37,6 +37,24 @@
         "engine": {
           "zmod": ">=1.1.0-beta"
         }
+      }
+    },
+    {
+      "id": "gateway-keeper",
+      "version": "1.0.0",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/gateway-keeper-1.0.0.zip",
+      "shasum": "3a63ee7c664117b4d30b480f771c83a1f68a52aaa20e4ad246c0ab72da7b32c3",
+      "manifest": {
+        "id": "gateway-keeper",
+        "name": "反代网关守护",
+        "version": "1.0.0",
+        "description": "智能感知当前会话模型，按需自动探活并拉起本地反代网关（Antigravity Tools、Magpie 等），告别手动点开",
+        "entry": "index.js",
+        "category": "productivity",
+        "permissions": [
+          "system"
+        ],
+        "author": "ZMod Team"
       }
     },
     {
@@ -100,14 +118,14 @@
     },
     {
       "id": "quota-popover",
-      "version": "1.4.2",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/quota-popover-1.4.2.zip",
-      "shasum": "41009ef46ff6bcb2e73f3389551696474557f1ab9bf9ba887e0a1854dc0b6b03",
+      "version": "1.7.0",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/quota-popover-1.7.0.zip",
+      "shasum": "68068ec9a1e0f3b374c10d233f11e7a61b739887e1558e436b750896a4658db4",
       "manifest": {
         "id": "quota-popover",
         "name": "余量弹窗与模型页余量",
-        "version": "1.4.2",
-        "description": "把数据源实例的余额/配额注入官方界面：输入框「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1）+ 官方设置「模型设置」页注入余量总览（运行时注入，不改官方文件）",
+        "version": "1.7.0",
+        "description": "把数据源实例的余额/配额注入官方界面：输入框「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1）+ 官方设置「模型设置」页注入余量总览（运行时注入，不改官方文件），新增卡片滚动/样式/排序/文本自定义设置",
         "author": "ZMod Team",
         "engine": {
           "zmod": ">=1.0.0-beta"
@@ -123,7 +141,7 @@
       "id": "smart-subagent",
       "version": "1.0.1",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/smart-subagent-1.0.1.zip",
-      "shasum": "0acecbd532587df3671f4f93ca04ce8079e266113c434454cbd96d775a00237f",
+      "shasum": "847cc24f4975d403dfafaf3988ddab97cae4518a7092a391f604bb3d8838b859",
       "manifest": {
         "id": "smart-subagent",
         "name": "子代理智能模型路由",
@@ -139,20 +157,21 @@
     },
     {
       "id": "usage-stats",
-      "version": "1.4.0",
-      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/usage-stats-1.4.0.zip",
-      "shasum": "728df5940595e65d56407ef4ab75f06e96f0d6a5c2485082c409121918bcaec1",
+      "version": "1.5.1",
+      "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/usage-stats-1.5.1.zip",
+      "shasum": "8b93dc0d1364dac5fe620581b539762dcdc4da3c0b067b79b6b54f4c57915f41",
       "manifest": {
         "id": "usage-stats",
         "name": "Token 用量统计",
-        "version": "1.4.0",
-        "description": "非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知，跨会话不串数），费用估算覆盖 DeepSeek 系 + 百炼系模型，订阅源额度估算，余额走数据源系统",
+        "version": "1.5.1",
+        "description": "非侵入拦截客户端遥测统计 Token 消耗/缓存命中（会话感知 + 子代理消耗追踪），全模型费用估算（含 Cache 写入与反代倍率），订阅与按额度消耗统计（跨会话滚动窗口 + Antigravity/Magpie 网关真实余量 + 按次数/金额/Token 多口径）",
         "author": "ZMod Team",
         "engine": {
           "zmod": ">=1.0.0-beta"
         },
         "permissions": [
-          "dom.patch"
+          "dom.patch",
+          "datasource"
         ],
         "category": "productivity",
         "repo": "https://github.com/OkmiHonor/ZMod-for-ZCode"

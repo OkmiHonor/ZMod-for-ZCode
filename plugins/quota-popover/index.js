@@ -1,5 +1,8 @@
 import { definePlugin } from '@zmod/sdk';
-import { matchInstance, matchSelection, parseModelButtonLabel } from './lib.js';
+import {
+  matchInstance, matchSelection, parseModelButtonLabel, selectMagpieBuckets,
+  scrollWrap, applyCardPrefs, parseCardPrefs
+} from './lib.js';
 
 /**
  * Quota popover + provider-detail quota card — runtime-injected parity of v1's
@@ -21,6 +24,220 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   })[c]);
+}
+
+/* ================= 卡片自定义（滚动 / 外观 / 排序 / 文本） =================
+   排序采用「字符串层」而非 DOM 后处理：每张子卡由 makeHtml(label) 生成，
+   文本自定义直接重生成该卡即可精确定位文案，且 prefs 缺省时输出逐字节不变。
+   外观走「注入一次性 <style> + scope class + CSS 变量覆盖」链：
+     applyQpStyle() 注入 #zmod-qp-style，其中 :root 声明 --zmod-qp-* 变量，
+     容器挂 .zmod-qp-scope；覆盖规则仅在取值非默认时生成，默认零覆盖、
+     视觉 1:1 不变（balCard 等 v1 字节级复刻不改动，硬替换风险大）。
+   覆盖链：非默认 → 生成 .zmod-qp-scope 后代规则（!important 压过 Tailwind
+   原子类与 inline style）→ 紧凑模式另以 .zmod-qp-compact 收窄到详情卡。 */
+
+const QP_DEFAULTS = {
+  scrollScope: 'both',
+  maxCardHeight: 320,
+  cardRadius: 10,
+  accentColor: '#10b981',
+  cardGap: 8,
+  fontScale: 100,
+  compactMode: false,
+  sortMode: 'default',
+  cardOrder: '',
+  hiddenCards: '',
+  customLabels: '{}',
+  advancedPrefs: '{}'
+};
+const QP_KEYS = Object.keys(QP_DEFAULTS);
+const QP_SCOPES = ['both', 'popover', 'detail', 'none'];
+const QP_SORTS = ['default', 'custom', 'labelAsc', 'labelDesc'];
+
+function clampInt(v, lo, hi, dflt) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return dflt;
+  return Math.min(hi, Math.max(lo, Math.round(n)));
+}
+
+// 颜色白名单：#hex(3~8) 或纯字母关键字，杜绝 CSS 注入
+function normAccent(v) {
+  const s = String(v ?? '').trim();
+  return /^#[0-9a-fA-F]{3,8}$/.test(s) || /^[a-zA-Z]+$/.test(s) ? s : QP_DEFAULTS.accentColor;
+}
+
+function splitKeys(v) {
+  return String(v ?? '').split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+}
+
+// 组装传给 render 的 prefs；cardPrefs 一律过 parseCardPrefs 校验（含高级入口覆盖）
+function buildQPPrefs(s) {
+  const p = {};
+  for (const k of QP_KEYS) p[k] = s.get(k, QP_DEFAULTS[k]);
+  p.cardRadius = clampInt(p.cardRadius, 0, 24, 10);
+  p.cardGap = clampInt(p.cardGap, 0, 24, 8);
+  p.fontScale = clampInt(p.fontScale, 80, 140, 100);
+  p.maxCardHeight = clampInt(p.maxCardHeight, 120, 800, 320);
+  p.accentColor = normAccent(p.accentColor);
+  p.compactMode = Boolean(p.compactMode);
+  p.scrollScope = QP_SCOPES.includes(p.scrollScope) ? p.scrollScope : 'both';
+  let customLabels = {};
+  try {
+    const raw = typeof p.customLabels === 'string' ? JSON.parse(p.customLabels) : p.customLabels;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) customLabels = raw;
+  } catch { /* 非法 JSON 视作空字典 */ }
+  const base = parseCardPrefs({
+    hiddenKeys: splitKeys(p.hiddenCards),
+    order: splitKeys(p.cardOrder),
+    customLabels,
+    sortMode: QP_SORTS.includes(p.sortMode) ? p.sortMode : 'default'
+  });
+  try {
+    const adv = JSON.parse(p.advancedPrefs);
+    // 高级入口只在用户真的填了内容时按字段覆盖基础三项
+    p.cardPrefs = adv && typeof adv === 'object' && !Array.isArray(adv) && Object.keys(adv).length
+      ? parseCardPrefs({ ...base, ...adv })
+      : base;
+  } catch { p.cardPrefs = base; }
+  return p;
+}
+
+// CSS 变量声明：始终注入（方便调试/外部主题联动），实际覆盖由 qpCustomCss 决定
+function qpVars(p) {
+  return `:root{` +
+    `--zmod-qp-radius:${p.cardRadius}px;` +
+    `--zmod-qp-accent:${p.accentColor};` +
+    `--zmod-qp-gap:${p.cardGap}px;` +
+    `--zmod-qp-font:${p.fontScale}%;` +
+    `--zmod-qp-maxh:${p.maxCardHeight}px}`;
+}
+
+// 外观覆盖链：只对非默认取值生成规则（默认零视觉变化）；amber/rose 阈值告警色保留
+function qpCustomCss(p) {
+  const sel = '.zmod-qp-scope';
+  let css = '';
+  if (p.cardRadius !== 10) {
+    const r = p.cardRadius;
+    css += `${sel} .rounded-lg,${sel} .rounded-xl,${sel} .rounded-full{border-radius:${r}px !important}` +
+           `${sel} [style*="border-radius"]{border-radius:${r}px !important}`;
+  }
+  if (p.cardGap !== 8) {
+    css += `${sel} .grid,${sel} .flex.flex-wrap,${sel} [style*="display:grid"]{gap:${p.cardGap}px !important}`;
+  }
+  if (p.accentColor !== QP_DEFAULTS.accentColor) {
+    const a = p.accentColor;
+    css += `${sel} .bg-success{background-color:${a} !important}` +
+           `${sel} [class~="bg-emerald-500"]{background-color:${a} !important}` +
+           `${sel} [class*="text-emerald-"]{color:${a} !important}` +
+           `${sel} [class*="border-emerald-"]{border-color:${a} !important}`;
+  }
+  if (p.fontScale !== 100) {
+    // Electron/Chromium 下 zoom 能等比缩放 px/rem 混排的卡片文字；
+    // 容器 font-size:% 对 rem 无效，故用 zoom 并在数字节点上做溢出兜底
+    css += `${sel}{zoom:${(p.fontScale / 100).toFixed(2)};min-width:0}` +
+           `${sel} [style*="font-size"]{overflow:hidden;text-overflow:ellipsis}`;
+  }
+  return css;
+}
+
+function qpStyleText(p) {
+  // 滚动容器保持 flex 列 + 与浮窗 wrap 相同的 gap：balWrap 会产出「平台链接行 +
+  // 卡片网格」两个兄弟 div，原来是 wrap 的 flex 子项（gap-2.5 = 0.625rem），
+  // 包一层后若不还原 flex/gap，两行间距会从 16px 掉到 6px（.zmod-bal-pl 自身
+  // margin-bottom），破坏 v1 1:1。detail 主体是单个根 div，flex 化无副作用。
+  let css =
+    '.zmod-qp-scroll{scrollbar-width:thin;scrollbar-color:rgba(148,163,184,.45) transparent;' +
+    'display:flex;flex-direction:column;gap:0.625rem}' +
+    '.zmod-qp-scroll::-webkit-scrollbar{width:6px;height:6px}' +
+    '.zmod-qp-scroll::-webkit-scrollbar-track{background:transparent}' +
+    '.zmod-qp-scroll::-webkit-scrollbar-thumb{background:rgba(148,163,184,.45);border-radius:3px}' +
+    '.zmod-qp-scope{min-width:0}';
+  if (p.compactMode) {
+    // 紧凑模式只作用于带 .zmod-qp-compact 的设置页详情卡
+    css += '.zmod-qp-scope.zmod-qp-compact{padding:8px !important}' +
+           '.zmod-qp-scope.zmod-qp-compact .qp-footer{display:none}' +
+           '.zmod-qp-scope.zmod-qp-compact .grid{gap:6px !important}' +
+           '.zmod-qp-scope.zmod-qp-compact [class~="p-3"]{padding:6px !important}' +
+           '.zmod-qp-scope.zmod-qp-compact [class~="gap-2.5"]{gap:5px !important}';
+  }
+  return qpVars(p) + css + qpCustomCss(p);
+}
+
+function applyQpStyle(p) {
+  try {
+    let st = document.getElementById('zmod-qp-style');
+    if (!st) {
+      st = document.createElement('style');
+      st.id = 'zmod-qp-style';
+      document.head.appendChild(st);
+    }
+    st.textContent = qpStyleText(p);
+  } catch { /* head 不可用则退化为默认外观 */ }
+}
+
+function scrollOpts(p, surface) {
+  return {
+    enabled: p.scrollScope === 'both' || p.scrollScope === surface,
+    maxHeight: p.maxCardHeight,
+    scope: p.scrollScope
+  };
+}
+
+/* 卡片条目工具：prefs 既可传完整 prefs（取 .cardPrefs）也可直接传 cardPrefs，
+   两种都过 applyCardPrefs；缺省 {} 时其返回顺序不变、html 不变。 */
+function cardPrefsOf(prefs) {
+  if (!prefs || typeof prefs !== 'object') return {};
+  return prefs.cardPrefs && typeof prefs.cardPrefs === 'object' ? prefs.cardPrefs : prefs;
+}
+
+function mkCard(key, label, makeHtml, slot = 'grid') {
+  return { key, label, makeHtml, slot };
+}
+
+// 仅当用户真的开了自定义（排序/隐藏/改名）时，才在卡片根节点打 data-qp-key /
+// data-qp-label 便于在 DOM 里定位；默认态不打，保证输出逐字节不变。
+function isCustomizing(prefs) {
+  const p = cardPrefsOf(prefs);
+  return p.sortMode != null && p.sortMode !== 'default' ||
+    (Array.isArray(p.hiddenKeys) && p.hiddenKeys.length > 0) ||
+    (Array.isArray(p.order) && p.order.length > 0) ||
+    (p.customLabels && typeof p.customLabels === 'object' && Object.keys(p.customLabels).length > 0);
+}
+
+function tagCardRoot(html, key, label) {
+  return String(html ?? '').replace(/<([a-zA-Z][\w-]*)([^>]*)>/, (full, tag, rest) => {
+    if (/\bdata-qp-key=/.test(rest)) return full;
+    return `<${tag} data-qp-key="${esc(key)}" data-qp-label="${esc(label)}"${rest}>`;
+  });
+}
+
+function orderedCards(cards, prefs) {
+  const ordered = applyCardPrefs(cards, cardPrefsOf(prefs));
+  const tagging = isCustomizing(prefs);
+  return ordered.map((c) => {
+    const key = c && c.key;
+    const label = String((c && c.label) ?? '');
+    const slot = (c && c.slot) || 'grid';
+    const html = c && typeof c.makeHtml === 'function'
+      ? c.makeHtml(String(c.label ?? ''))
+      : String((c && c.html) ?? '');
+    return { key, label, slot, html: tagging ? tagCardRoot(html, key, label) : html };
+  });
+}
+
+function cardHtmlList(cards, prefs) {
+  return orderedCards(cards, prefs).map((c) => c.html);
+}
+
+// 浮窗 kit 的薄封装：把 {key,label,makeHtml} 过偏好后交给 v1 原函数拼装，
+// 缺省 prefs 时输出与改造前逐字节一致（balWrap / v1CardWrap 本身不改动）
+function balWrapPref(cards, plat, prefs) {
+  return balWrap(cardHtmlList(cards, prefs), plat);
+}
+
+function v1CardWrapPref(title, cards, prefs) {
+  const list = cardHtmlList(cards, prefs);
+  return v1CardWrap(title, list, list.length > 1 ? 2 : 1);
 }
 
 /* ---- v1 detail-card kit (Bento provider quota card, 1:1 of v1
@@ -79,55 +296,71 @@ function bentoSubCard(title, value, opts = {}) {
 
 /** v1 Bento body per datasource type (user ruling 2026-10-25: the settings
     detail card follows v1's Bento form; small v1 flaws smoothed over) */
-function renderV1DetailBody(type, status) {
+function renderV1DetailBody(type, status, prefs) {
   if (!status) return `<div class="text-ui-sm text-foreground-subtle">状态查询中…</div>`;
   if (!status.ok) return `<div class="text-ui-sm text-foreground-subtle">${esc(status.message || '查询失败')}</div>`;
   const rows = status.rows || [];
+  const grid = (cards) => `<div class="grid grid-cols-2 gap-3 max-sm:grid-cols-1">${cardHtmlList(cards, prefs).join('')}</div>`;
+  const flexWrap = (cards) => `<div class="flex flex-wrap gap-2.5">${cardHtmlList(cards, prefs).join('')}</div>`;
+  // 默认字节级不变：容器结构（grid / flex-wrap / 分组双容器）保持原样，
+  // 只在拼装处把卡片数组过 applyCardPrefs
   if (type === 'antigravity') {
-    const groupCards = (status.groups || []).map((g) => {
-      const b5 = (g.buckets || []).find((b) => b.window === '5h');
-      const bw = (g.buckets || []).find((b) => b.window === 'weekly');
-      const p5 = b5 ? Math.max(0, Math.min(100, Math.round(b5.frac * 100))) : null;
-      const pw = bw ? Math.max(0, Math.min(100, Math.round(bw.frac * 100))) : null;
-      const resetStr = b5 && b5.reset ? fmtDateCN(b5.reset) : bw && bw.reset ? fmtDateCN(bw.reset) : '';
-      return (
-        `<div class="flex-1 min-w-[210px] rounded-lg border border-border/60 bg-surface-hover/20 p-3 flex flex-col justify-between gap-2.5 hover:border-border transition-colors">` +
-        `<div class="flex items-center justify-between">` +
-        `<span class="text-ui-xs font-semibold text-foreground tracking-tight">${esc(g.name || '配额组')}</span>` +
-        (resetStr ? `<span class="text-[11px] font-mono text-foreground-subtle">${esc(resetStr)}</span>` : '') +
-        `</div>` +
-        `<div class="space-y-2">${p5 !== null ? barRow('5小时滚动限额', p5) : ''}${pw !== null ? barRow('每周可用总额', pw) : ''}</div>` +
-        `</div>`
-      );
-    }).join('');
-    if (groupCards) return `<div class="flex flex-wrap gap-2.5">${groupCards}</div>`;
+    const cards = (status.groups || []).map((g) => {
+      const label = g.name || '配额组';
+      return mkCard(`group.${label}`, label, (name) => {
+        const b5 = (g.buckets || []).find((b) => b.window === '5h');
+        const bw = (g.buckets || []).find((b) => b.window === 'weekly');
+        const p5 = b5 ? Math.max(0, Math.min(100, Math.round(b5.frac * 100))) : null;
+        const pw = bw ? Math.max(0, Math.min(100, Math.round(bw.frac * 100))) : null;
+        const resetStr = b5 && b5.reset ? fmtDateCN(b5.reset) : bw && bw.reset ? fmtDateCN(bw.reset) : '';
+        return (
+          `<div class="flex-1 min-w-[210px] rounded-lg border border-border/60 bg-surface-hover/20 p-3 flex flex-col justify-between gap-2.5 hover:border-border transition-colors">` +
+          `<div class="flex items-center justify-between">` +
+          `<span class="text-ui-xs font-semibold text-foreground tracking-tight">${esc(name)}</span>` +
+          (resetStr ? `<span class="text-[11px] font-mono text-foreground-subtle">${esc(resetStr)}</span>` : '') +
+          `</div>` +
+          `<div class="space-y-2">${p5 !== null ? barRow('5小时滚动限额', p5) : ''}${pw !== null ? barRow('每周可用总额', pw) : ''}</div>` +
+          `</div>`
+        );
+      });
+    });
+    if (cards.length) return flexWrap(cards);
     return `<div class="text-ui-sm text-foreground-subtle">配额组里没有可用桶</div>`;
   }
   if (type === 'magpie') {
     // 每账号一卡：桶即模型配额窗口（window=模型名，frac=剩余比例），下方 30 天用量
-    const groupCards = (status.groups || []).map((g) => {
-      const bars = (g.buckets || [])
-        .map((b) => barRow(b.window || '窗口', Math.max(0, Math.min(100, Math.round(b.frac * 100)))))
-        .join('');
-      return (
-        `<div class="flex-1 min-w-[210px] rounded-lg border border-border/60 bg-surface-hover/20 p-3 flex flex-col justify-between gap-2.5 hover:border-border transition-colors">` +
-        `<div class="flex items-center justify-between gap-2">` +
-        `<span class="text-ui-xs font-semibold text-foreground tracking-tight">${esc(g.name || '配额')}</span>` +
-        (g.plan ? `<span class="text-[10px] font-mono text-foreground-subtle truncate">${esc(g.plan)}</span>` : '') +
-        `</div>` +
-        `<div class="space-y-2">${bars}</div>` +
-        `</div>`
-      );
-    }).join('');
+    const cards = (status.groups || []).map((g) => {
+      const label = g.name || '配额';
+      return mkCard(`group.${label}`, label, (name) => {
+        const bars = (g.buckets || [])
+          .map((b) => barRow(b.window || '窗口', Math.max(0, Math.min(100, Math.round(b.frac * 100)))))
+          .join('');
+        return (
+          `<div class="flex-1 min-w-[210px] rounded-lg border border-border/60 bg-surface-hover/20 p-3 flex flex-col justify-between gap-2.5 hover:border-border transition-colors">` +
+          `<div class="flex items-center justify-between gap-2">` +
+          `<span class="text-ui-xs font-semibold text-foreground tracking-tight">${esc(name)}</span>` +
+          (g.plan ? `<span class="text-[10px] font-mono text-foreground-subtle truncate">${esc(g.plan)}</span>` : '') +
+          `</div>` +
+          `<div class="space-y-2">${bars}</div>` +
+          `</div>`
+        );
+      });
+    });
     const usage = status.usage;
-    const usageRow = usage && isFinite(usage.calls) && usage.calls > 0
-      ? `<div class="flex flex-wrap gap-2.5">` +
-        bentoSubCard('30 天调用', `${usage.calls} 次`, { foot: usage.errors ? `失败 ${usage.errors} 次` : null }) +
-        bentoSubCard('30 天费用（网关估算）', usage.cost != null ? '$' + usage.cost.toFixed(2) : '—', {
-          foot: `入 ${fmtTokCn(usage.input)} · 出 ${fmtTokCn(usage.output)} · 缓存 ${fmtTokCn(usage.cacheRead)}`
-        }) +
-        `</div>`
-      : '';
+    const orderedGroup = orderedCards(cards, prefs);
+    const groupCards = orderedGroup.map((c) => c.html).join('');
+    let usageRow = '';
+    if (usage && isFinite(usage.calls) && usage.calls > 0) {
+      const usageCards = [
+        mkCard('usage.calls', '30 天调用', (l) =>
+          bentoSubCard(l, `${usage.calls} 次`, { foot: usage.errors ? `失败 ${usage.errors} 次` : null })),
+        mkCard('usage.cost', '30 天费用（网关估算）', (l) =>
+          bentoSubCard(l, usage.cost != null ? '$' + usage.cost.toFixed(2) : '—', {
+            foot: `入 ${fmtTokCn(usage.input)} · 出 ${fmtTokCn(usage.output)} · 缓存 ${fmtTokCn(usage.cacheRead)}`
+          }))
+      ];
+      usageRow = `<div class="flex flex-wrap gap-2.5">${cardHtmlList(usageCards, prefs).join('')}</div>`;
+    }
     if (!groupCards && !usageRow) return `<div class="text-ui-sm text-foreground-subtle">配额窗口里没有可用数据</div>`;
     return `<div class="space-y-2.5">` +
       (groupCards ? `<div class="flex flex-wrap gap-2.5">${groupCards}</div>` : '') +
@@ -140,38 +373,120 @@ function renderV1DetailBody(type, status) {
     const top = numFrom(rowValue(rows, '充值余额'));
     const cur = status.currency || '¥';
     if (grant > 0) {
-      return `<div class="grid grid-cols-2 gap-3 max-sm:grid-cols-1">` +
-        bentoSubCard('充值余额 (永久有效)', `${cur} ${top.toFixed(2)}`) +
-        bentoSubCard('赠送余额', `${cur} ${grant.toFixed(2)}`, { accent: true }) +
-        `</div>`;
+      return grid([
+        mkCard('balance.topup', '充值余额 (永久有效)', (l) => bentoSubCard(l, `${cur} ${top.toFixed(2)}`)),
+        mkCard('balance.gift', '赠送余额', (l) => bentoSubCard(l, `${cur} ${grant.toFixed(2)}`, { accent: true }))
+      ]);
     }
-    return (
-      `<div class="rounded-lg border border-border/60 bg-surface-hover/20 p-3 flex items-baseline justify-between">` +
-      `<div class="space-y-0.5">` +
-      `<div class="text-[11px] text-foreground-subtle font-medium">当前可用余额 (按量扣减)</div>` +
-      `<div class="text-ui-2xl font-bold font-mono tracking-tight text-foreground">${esc(cur)} ${total.toFixed(2)} <span class="text-ui-sm font-normal text-foreground-subtle">${esc(codeOf(status))}</span></div>` +
-      `</div>` +
-      `<span class="text-ui-xs text-foreground-subtle font-mono">API 直连</span></div>`
-    );
+    return [
+      mkCard('balance.total', '当前可用余额 (按量扣减)', (l) =>
+        `<div class="rounded-lg border border-border/60 bg-surface-hover/20 p-3 flex items-baseline justify-between">` +
+        `<div class="space-y-0.5">` +
+        `<div class="text-[11px] text-foreground-subtle font-medium">${esc(l)}</div>` +
+        `<div class="text-ui-2xl font-bold font-mono tracking-tight text-foreground">${esc(cur)} ${total.toFixed(2)} <span class="text-ui-sm font-normal text-foreground-subtle">${esc(codeOf(status))}</span></div>` +
+        `</div>` +
+        `<span class="text-ui-xs text-foreground-subtle font-mono">API 直连</span></div>`)
+    ].map((c) => cardHtmlList([c], prefs)[0]).join('');
   }
   if (type === 'bailian-bss') {
     const avail = parseFloat(status.balance) || 0;
     const voucher = numFrom(rowValue(rows, '可用代金券'));
     const detail = rowValue(rows, '代金券明细');
-    return `<div class="grid grid-cols-2 gap-3 max-sm:grid-cols-1">` +
-      bentoSubCard('现金可用余额 (实时)', `${status.currency || '¥'} ${avail.toFixed(2)}`, { foot: '按量付费账单抵扣' }) +
-      (isFinite(voucher) && voucher > 0
-        ? bentoSubCard('有效代金券 (优先抵扣)', `${status.currency || '¥'} ${voucher.toFixed(2)}`, { accent: true, foot: voucherSub(detail) })
-        : '') +
+    const cards = [mkCard('balance.cash', '现金可用余额 (实时)', (l) =>
+      bentoSubCard(l, `${status.currency || '¥'} ${avail.toFixed(2)}`, { foot: '按量付费账单抵扣' }))];
+    if (isFinite(voucher) && voucher > 0) {
+      cards.push(mkCard('balance.voucher', '有效代金券 (优先抵扣)', (l) =>
+        bentoSubCard(l, `${status.currency || '¥'} ${voucher.toFixed(2)}`, { accent: true, foot: voucherSub(detail) })));
+    }
+    return grid(cards);
+  }
+  if (type === 'siliconflow') {
+    const total = parseFloat(status.balance) || 0;
+    const charge = numFrom(rowValue(rows, '充值余额')) || 0;
+    const gift = numFrom(rowValue(rows, '赠送余额')) || 0;
+    const cur = status.currency || '¥';
+    if (gift > 0) {
+      return grid([
+        mkCard('balance.topup', '充值余额', (l) => bentoSubCard(l, `${cur} ${charge.toFixed(2)}`, { foot: `账户总额 ${cur}${total.toFixed(2)}` })),
+        mkCard('balance.gift', '赠送余额', (l) => bentoSubCard(l, `${cur} ${gift.toFixed(2)}`, { accent: true }))
+      ]);
+    }
+    return cardHtmlList([mkCard('balance.total', '当前可用余额 (硅基流动)', (l) =>
+      bentoSubCard(l, `${cur} ${total.toFixed(2)}`))], prefs)[0];
+  }
+  if (type === 'moonshot') {
+    const avail = parseFloat(status.balance) || 0;
+    const cash = numFrom(rowValue(rows, '现金余额'));
+    const voucher = numFrom(rowValue(rows, '代金券余额')) || 0;
+    const cur = status.currency || '¥';
+    if (voucher > 0) {
+      return grid([
+        mkCard('balance.total', '可用总额 (Moonshot)', (l) => bentoSubCard(l, `${cur} ${avail.toFixed(2)}`, { foot: isFinite(cash) ? `现金余额 ${cur}${cash.toFixed(2)}` : null })),
+        mkCard('balance.voucher', '有效代金券', (l) => bentoSubCard(l, `${cur} ${voucher.toFixed(2)}`, { accent: true }))
+      ]);
+    }
+    return cardHtmlList([mkCard('balance.total', '当前可用余额 (Moonshot)', (l) =>
+      bentoSubCard(l, `${cur} ${avail.toFixed(2)}`))], prefs)[0];
+  }
+  if (type === 'zhipu-coding-plan' || type === 'minimax') {
+    const cards = (status.groups || []).map((g) => {
+      const label = g.name || '套餐配额';
+      return mkCard(`group.${label}`, label, (name) => {
+        const bars = (g.buckets || [])
+          .map((b) => barRow(b.window || '配额窗口', Math.max(0, Math.min(100, Math.round(b.frac * 100)))))
+          .join('');
+        return (
+          `<div class="flex-1 min-w-[210px] rounded-lg border border-border/60 bg-surface-hover/20 p-3 flex flex-col justify-between gap-2.5 hover:border-border transition-colors">` +
+          `<div class="flex items-center justify-between gap-2">` +
+          `<span class="text-ui-xs font-semibold text-foreground tracking-tight">${esc(name)}</span>` +
+          (g.plan ? `<span class="text-[10px] font-mono text-foreground-subtle truncate">${esc(g.plan)}</span>` : '') +
+          `</div>` +
+          `<div class="space-y-2">${bars}</div>` +
+          `</div>`
+        );
+      });
+    });
+    if (cards.length) return flexWrap(cards);
+  }
+  if (type === 'newapi' || type === 'openrouter' || (type === 'openai-compatible' && (status.totalUsed !== undefined || status.unlimited))) {
+    const cur = status.currency || '$';
+    const unlimited = Boolean(status.unlimited);
+    const avail = parseFloat(status.balance) || 0;
+    const used = Number(status.totalUsed) || 0;
+    const granted = Number(status.totalGranted) || 0;
+    const frac = status.remainingFrac != null ? Number(status.remainingFrac) : null;
+    const cards = [
+      mkCard('quota.remaining', '剩余可用额度', (l) => bentoSubCard(l, unlimited ? '无限额度 (∞)' : `${cur} ${avail.toFixed(2)}`, {
+        accent: true,
+        foot: status.expiresAt ? `到期时间: ${status.expiresAt}` : '反代网关 / 令牌实时额度'
+      }), 'grid'),
+      mkCard('quota.used', '累计已消耗额度', (l) => bentoSubCard(l, `${cur} ${used.toFixed(2)}`, {
+        foot: !unlimited && granted > 0 ? `授信总额: ${cur}${granted.toFixed(2)}` : null
+      }), 'grid')
+    ];
+    if (isFinite(frac)) {
+      cards.push(mkCard('quota.frac', '剩余额度比例', (l) =>
+        `<div class="rounded-lg border border-border/60 bg-surface-hover/20 p-3">${barRow(l, Math.max(0, Math.min(100, Math.round(frac * 100))))}</div>`, 'bar'));
+    }
+    const ordered = orderedCards(cards, prefs);
+    const gridHtml = ordered.filter((c) => c.slot === 'grid').map((c) => c.html).join('');
+    const barHtml = ordered.filter((c) => c.slot === 'bar').map((c) => c.html).join('');
+    return `<div class="space-y-2.5">` +
+      `<div class="grid grid-cols-2 gap-3 max-sm:grid-cols-1">${gridHtml}</div>` +
+      barHtml +
       `</div>`;
   }
   // generic engines: label/value lines in a Bento sub-card
-  const lines = (status.balance != null
-    ? [{ label: '余额', value: `${status.currency || ''}${money(status.balance)}` }, ...rows]
+  const rowsForCards = (status.balance != null
+    ? [{ label: '余额', value: `${status.currency || ''}${money(status.balance) ?? status.balance}` }, ...rows]
     : rows
-  ).slice(0, 8)
-    .map((r) => `<div class="flex items-baseline justify-between gap-3"><span class="text-ui-sm text-foreground-subtle">${esc(r.label)}</span><span class="text-ui-sm font-medium tabular-nums text-foreground">${esc(r.value)}</span></div>`)
-    .join('');
+  ).slice(0, 8);
+  const cards = rowsForCards.map((r) => {
+    const label = String(r.label ?? '');
+    return mkCard(`rows.${label}`, label, (name) =>
+      `<div class="flex items-baseline justify-between gap-3"><span class="text-ui-sm text-foreground-subtle">${esc(name)}</span><span class="text-ui-sm font-medium tabular-nums text-foreground">${esc(r.value)}</span></div>`);
+  });
+  const lines = cardHtmlList(cards, prefs).join('');
   return `<div class="rounded-lg border border-border/60 bg-surface-hover/20 p-3 space-y-1.5">${lines || '<div class="text-ui-sm text-foreground-subtle">无数据行</div>'}</div>`;
 }
 
@@ -184,7 +499,12 @@ function renderV1DetailBody(type, status) {
 const PLAT_LINKS = {
   deepseek: { name: 'DeepSeek 开放平台', url: 'https://platform.deepseek.com/usage' },
   mimo: { name: '小米 MiMo 开放平台', url: 'https://platform.xiaomimimo.com/console/usage' },
-  bailian: { name: '阿里云百炼', url: 'https://billing-cost.console.aliyun.com/' }
+  bailian: { name: '阿里云百炼', url: 'https://billing-cost.console.aliyun.com/' },
+  siliconflow: { name: '硅基流动控制台', url: 'https://cloud.siliconflow.cn/expensebill' },
+  moonshot: { name: 'Moonshot 开放平台', url: 'https://platform.moonshot.cn/console/pay' },
+  openrouter: { name: 'OpenRouter Activity', url: 'https://openrouter.ai/activity' },
+  zhipu: { name: '智谱开放平台', url: 'https://open.bigmodel.cn/usercenter/proj-mgmt/rate-limits' },
+  minimax: { name: 'MiniMax 开放平台', url: 'https://platform.minimaxi.com/' }
 };
 
 function pf(x) {
@@ -299,7 +619,10 @@ function numFrom(v) {
 }
 
 function codeOf(status) {
-  return String(status.currency || '¥') === '¥' ? 'CNY' : String(status.currency || '').toUpperCase();
+  const c = String(status.currency || '¥').trim();
+  if (c === '¥') return 'CNY';
+  if (c === '$') return 'USD';
+  return c.toUpperCase();
 }
 
 function signOf(status) {
@@ -319,6 +642,12 @@ const ERROR_TITLES = {
   deepseek: '账户余额 · DeepSeek',
   mimo: '今日余额 · MiMo',
   'bailian-bss': '账户余额 · 阿里云百炼',
+  siliconflow: '账户余额 · 硅基流动',
+  moonshot: '账户余额 · Moonshot',
+  openrouter: '账户额度 · OpenRouter',
+  newapi: '网关额度 · NewAPI',
+  'zhipu-coding-plan': '套餐配额 · 智谱 GLM',
+  minimax: '套餐余量 · MiniMax',
   antigravity: '模型配额 · Antigravity',
   magpie: '模型配额 · Magpie'
 };
@@ -326,7 +655,7 @@ const ERROR_TITLES = {
 /** Render one datasource instance's popover section in v1 card semantics:
     branded types get the v1 balance/quota cards, error/unconfigured states get
     the v1 infoCard text rows, unknown types fall back to v1 cardWrap layout. */
-function renderV1Section(type, status, sel, instName) {
+function renderV1Section(type, status, sel, instName, prefs) {
   if (!status) {
     return v1CardWrap('今日余额', [v1InfoCard('状态', '查询中…（首次刷新未完成）')], 1);
   }
@@ -343,12 +672,49 @@ function renderV1Section(type, status, sel, instName) {
     const grant = parseFloat(rowValue(rows, '赠送余额')) || 0;
     const top = parseFloat(rowValue(rows, '充值余额')) || 0;
     if (grant > 0) {
-      return balWrap([
-        balCard('充值余额', sign + (top > 0 ? top : Math.max(0, parseFloat(total) - grant)).toFixed(2), code),
-        balCard('赠送余额', sign + grant.toFixed(2), code)
-      ], PLAT_LINKS.deepseek);
+      return balWrapPref([
+        mkCard('balance.topup', '充值余额', (l) =>
+          balCard(l, sign + (top > 0 ? top : Math.max(0, parseFloat(total) - grant)).toFixed(2), code)),
+        mkCard('balance.gift', '赠送余额', (l) =>
+          balCard(l, sign + grant.toFixed(2), code))
+      ], PLAT_LINKS.deepseek, prefs);
     }
-    return balWrap([balCard('余额', sign + parseFloat(total).toFixed(2), code)], PLAT_LINKS.deepseek);
+    return balWrapPref([
+      mkCard('balance.total', '余额', (l) => balCard(l, sign + parseFloat(total).toFixed(2), code))
+    ], PLAT_LINKS.deepseek, prefs);
+  }
+  if (type === 'siliconflow') {
+    const total = money(status.balance);
+    if (total == null) {
+      return v1CardWrap(ERROR_TITLES.siliconflow, [v1InfoCard('状态', '余额数据为空')], 1);
+    }
+    const sign = signOf(status), code = codeOf(status);
+    const gift = numFrom(rowValue(rows, '赠送余额')) || 0;
+    const charge = numFrom(rowValue(rows, '充值余额')) || 0;
+    if (gift > 0) {
+      return balWrapPref([
+        mkCard('balance.topup', '充值余额', (l) => balCard(l, sign + charge.toFixed(2), code)),
+        mkCard('balance.gift', '赠送余额', (l) => balCard(l, sign + gift.toFixed(2), code))
+      ], PLAT_LINKS.siliconflow, prefs);
+    }
+    return balWrapPref([
+      mkCard('balance.total', '可用余额', (l) => balCard(l, sign + parseFloat(total).toFixed(2), code))
+    ], PLAT_LINKS.siliconflow, prefs);
+  }
+  if (type === 'moonshot') {
+    const total = money(status.balance);
+    if (total == null) {
+      return v1CardWrap(ERROR_TITLES.moonshot, [v1InfoCard('状态', '余额数据为空')], 1);
+    }
+    const sign = signOf(status), code = codeOf(status);
+    const voucher = numFrom(rowValue(rows, '代金券余额')) || 0;
+    const cards = [mkCard('balance.total', '可用余额', (l) =>
+      balCard(l, sign + parseFloat(total).toFixed(2), code))];
+    if (voucher > 0) {
+      cards.push(mkCard('balance.voucher', '代金券', (l) =>
+        balCard(l, sign + voucher.toFixed(2), code)));
+    }
+    return balWrapPref(cards, PLAT_LINKS.moonshot, prefs);
   }
   if (type === 'mimo') {
     const total = money(status.balance);
@@ -356,13 +722,15 @@ function renderV1Section(type, status, sel, instName) {
       return v1CardWrap(ERROR_TITLES.mimo, [v1InfoCard('状态', '余额数据为空')], 1);
     }
     const sign = signOf(status), code = codeOf(status);
-    const cards = [balCard('账户余额', sign + parseFloat(total).toFixed(2), code)];
+    const cards = [mkCard('balance.total', '账户余额', (l) =>
+      balCard(l, sign + parseFloat(total).toFixed(2), code))];
     const cost = rowValue(rows, '本月消费');
     if (cost != null) {
       const tok = rowValue(rows, '本月 Token');
-      cards.push(balCard('本月消费', String(cost), code, tok ? tok + ' tok' : null));
+      cards.push(mkCard('usage.month', '本月消费', (l) =>
+        balCard(l, String(cost), code, tok ? tok + ' tok' : null)));
     }
-    return balWrap(cards, PLAT_LINKS.mimo);
+    return balWrapPref(cards, PLAT_LINKS.mimo, prefs);
   }
   if (type === 'bailian-bss') {
     const total = money(status.balance);
@@ -370,14 +738,58 @@ function renderV1Section(type, status, sel, instName) {
       return v1CardWrap(ERROR_TITLES['bailian-bss'], [v1InfoCard('状态', '余额数据为空')], 1);
     }
     const sign = signOf(status);
-    const cards = [balCard('现金余额', sign + parseFloat(total).toFixed(2), 'CNY')];
+    const cards = [mkCard('balance.cash', '现金余额', (l) =>
+      balCard(l, sign + parseFloat(total).toFixed(2), 'CNY'))];
     const voucher = numFrom(rowValue(rows, '可用代金券'));
     const detail = rowValue(rows, '代金券明细');
     // v1 rule: an empty voucher card carries no information — single card then
     if (isFinite(voucher) && (voucher > 0 || detail)) {
-      cards.push(balCard('可用代金券', sign + voucher.toFixed(2), 'CNY', detail || null));
+      cards.push(mkCard('balance.voucher', '可用代金券', (l) =>
+        balCard(l, sign + voucher.toFixed(2), 'CNY', detail || null)));
     }
-    return balWrap(cards, PLAT_LINKS.bailian);
+    return balWrapPref(cards, PLAT_LINKS.bailian, prefs);
+  }
+  if (type === 'newapi' || type === 'openrouter' || (type === 'openai-compatible' && (status.totalUsed !== undefined || status.unlimited))) {
+    const sign = signOf(status), code = codeOf(status);
+    const unlimited = Boolean(status.unlimited);
+    const avail = money(status.balance);
+    const used = Number(status.totalUsed);
+    const granted = Number(status.totalGranted);
+    const cards = [
+      mkCard('quota.remaining', '剩余额度', (l) => balCard(
+        l, unlimited ? '无限额度' : sign + (avail ?? '0.00'),
+        unlimited ? '' : code, status.expiresAt ? `到期 ${status.expiresAt}` : null
+      ), 'bal')
+    ];
+    if (isFinite(used)) {
+      cards.push(mkCard('quota.used', '已用额度', (l) => balCard(
+        l, sign + used.toFixed(2), code,
+        !unlimited && isFinite(granted) && granted > 0 ? `总额 ${sign}${granted.toFixed(2)}` : null
+      ), 'bal'));
+    }
+    if (status.remainingFrac != null && isFinite(Number(status.remainingFrac))) {
+      cards.push(mkCard('quota.frac', '额度剩余比例', (l) =>
+        `<div class="mt-2">${v1QuotaCard(l, Number(status.remainingFrac), null)}</div>`, 'bar'));
+    }
+    const ordered = orderedCards(cards, prefs);
+    const plat = type === 'openrouter' ? PLAT_LINKS.openrouter : null;
+    let html = balWrap(ordered.filter((c) => c.slot === 'bal').map((c) => c.html), plat);
+    html += ordered.filter((c) => c.slot === 'bar').map((c) => c.html).join('');
+    return html;
+  }
+  if (type === 'zhipu-coding-plan' || type === 'minimax') {
+    const groups = status.groups || [];
+    const cards = [];
+    for (const g of groups) {
+      for (const b of g.buckets || []) {
+        const label = b.window || g.name || '套餐额度';
+        cards.push(mkCard(`quota.${g.name || 'g'}.${b.window || 'w'}`, label, (l) =>
+          v1QuotaCard(l, b.frac, b.reset)));
+      }
+    }
+    const title = type === 'zhipu-coding-plan' ? '套餐配额 · 智谱 Coding Plan' : '套餐余量 · MiniMax';
+    if (cards.length) return v1CardWrapPref(title, cards, prefs);
+    return v1CardWrap(ERROR_TITLES[type] || title, [v1InfoCard('状态', '套餐配额为空')], 1);
   }
   if (type === 'antigravity') {
     const groups = status.groups || [];
@@ -386,64 +798,74 @@ function renderV1Section(type, status, sel, instName) {
     const wantC = /claude|gpt|opus|sonnet/i.test(model);
     const wantG = /gemini|google/i.test(model);
     let selGroup = null;
-    if (wantArgon) {
-      selGroup = groups.find((g) => /argon/i.test(g.name));
-    }
-    if (!selGroup && wantC) {
-      selGroup = groups.find((g) => /claude|gpt/i.test(g.name));
-    }
-    if (!selGroup && wantG) {
-      selGroup = groups.find((g) => /gemini|google/i.test(g.name) && !/argon/i.test(g.name));
-    }
+    if (wantArgon) selGroup = groups.find((g) => /argon/i.test(g.name));
+    if (!selGroup && wantC) selGroup = groups.find((g) => /claude|gpt/i.test(g.name));
+    if (!selGroup && wantG) selGroup = groups.find((g) => /gemini|google/i.test(g.name) && !/argon/i.test(g.name));
     const cards = [];
+    const addQuota = (g, b, label) => cards.push(
+      mkCard(`quota.${g.name || 'g'}.${b.window || 'w'}`, label, (l) => v1QuotaCard(l, b.frac, b.reset)));
     if (selGroup) {
-      for (const b of selGroup.buckets || []) cards.push(v1QuotaCard(agWinLabel(b), b.frac, b.reset));
+      for (const b of selGroup.buckets || []) addQuota(selGroup, b, agWinLabel(b));
     } else {
       // model unknown → one weekly bar per group (v1 degraded layout)
       for (const g of groups) {
         for (const b of g.buckets || []) {
           if (String(b.window || '').toLowerCase() === 'weekly') {
-            cards.push(v1QuotaCard((g.name || '配额组') + ' · 每周', b.frac, b.reset));
+            addQuota(g, b, (g.name || '配额组') + ' · 每周');
           }
         }
       }
     }
     if (cards.length) {
-      return v1CardWrap('模型配额 · ' + (selGroup ? selGroup.name || 'Antigravity' : 'Antigravity'), cards, cards.length > 1 ? 2 : 1);
+      return v1CardWrapPref('模型配额 · ' + (selGroup ? selGroup.name || 'Antigravity' : 'Antigravity'), cards, prefs);
     }
     return v1CardWrap(ERROR_TITLES.antigravity, [v1InfoCard('状态', '配额组里没有可用桶')], 1);
   }
   if (type === 'magpie') {
-    // 桶即模型配额窗口（window=模型名，frac=剩余比例）：每桶一条 v1 配额条，
-    // 末尾补一条 30 天调用 infoCard；费用不在浮窗展示（订阅制，避免误导）
+    // 桶即模型配额窗口（window=模型名/池名，frac=剩余比例）：与 antigravity 卡同策略，
+    // 只显示当前模型对应的订阅源窗口（selectMagpieBuckets 词边界匹配+模型族兜底），
+    // 都没命中才退回全量；30 天调用仅在退回全量时补一张（过滤视图下属噪音）；
+    // 费用不在浮窗展示（订阅制，避免误导）——此语义不随 prefs 改变
     const groups = status.groups || [];
     const multi = groups.length > 1;
+    const model = String((sel && sel.model) || '').toLowerCase();
+    const picked = selectMagpieBuckets(model, groups);
+    const pairs = picked || [];
     const cards = [];
-    for (const g of groups) {
-      for (const b of g.buckets || []) {
-        cards.push(v1QuotaCard(multi ? `${g.name} · ${b.window}` : b.window, b.frac, b.reset));
+    const addQuota = (g, b) => {
+      const label = multi ? `${g.name} · ${b.window}` : b.window;
+      cards.push(mkCard(`quota.${g.name || 'g'}.${b.window || 'w'}`, label, (l) =>
+        v1QuotaCard(l, b.frac, b.reset)));
+    };
+    for (const { group: g, bucket: b } of pairs) addQuota(g, b);
+    if (!picked) {
+      for (const g of groups) {
+        for (const b of g.buckets || []) addQuota(g, b);
+      }
+      const usage = status.usage;
+      if (usage && isFinite(usage.calls) && usage.calls > 0) {
+        cards.push(mkCard('usage.calls', '30天调用', (l) =>
+          v1InfoCard(l, `${usage.calls} 次`)));
       }
     }
-    const usage = status.usage;
-    if (usage && isFinite(usage.calls) && usage.calls > 0) {
-      cards.push(v1InfoCard('30天调用', `${usage.calls} 次`));
-    }
-    if (cards.length) {
-      return v1CardWrap('模型配额 · Magpie', cards, cards.length > 1 ? 2 : 1);
-    }
+    if (cards.length) return v1CardWrapPref('模型配额 · Magpie', cards, prefs);
     return v1CardWrap(ERROR_TITLES.magpie, [v1InfoCard('状态', '配额窗口里没有可用数据')], 1);
   }
   // generic engines (custom-http / openai-compatible / console-web): v1 never
   // had a family for these — keep its typography (balCard + infoCard rows)
   const cards = [];
   if (status.balance != null) {
-    cards.push(balCard('余额', String(status.currency || '¥') + money(status.balance), codeOf(status)));
+    cards.push(mkCard('balance.main', '余额', (l) =>
+      balCard(l, String(status.currency || '¥') + (money(status.balance) ?? status.balance), codeOf(status))));
   }
   for (const r of rows.slice(0, 6)) {
-    if (r && r.label) cards.push(v1InfoCard(r.label, String(r.value)));
+    if (r && r.label) {
+      const label = String(r.label);
+      cards.push(mkCard(`rows.${label}`, label, (l) => v1InfoCard(l, String(r.value))));
+    }
   }
   if (cards.length) {
-    return v1CardWrap('今日余额 · ' + (instName || type), cards, cards.length > 1 ? 2 : 1);
+    return v1CardWrapPref('今日余额 · ' + (instName || type), cards, prefs);
   }
   return v1CardWrap('今日余额 · ' + (instName || type), [v1InfoCard('状态', '无数据行')], 1);
 }
@@ -453,8 +875,8 @@ const REFRESH_MARK = 'zmod-quota-refresh';
 export default definePlugin({
   id: 'quota-popover',
   name: '余量弹窗与模型页余量',
-  version: '1.5.0',
-  description: '官方「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1）+ 官方设置模型页供应商详情注入 v1 Bento 账户额度卡（数据源驱动，不改官方文件）',
+  version: '1.7.0',
+  description: '官方「上下文容量」浮窗追加今日余额卡（v1 token-monitor 卡片语义 1:1）+ 官方设置模型页供应商详情注入 v1 Bento 账户额度卡（数据源驱动，不改官方文件），新增卡片滚动/样式/排序/文本自定义设置',
   author: 'ZMod Team',
 
   settings: {
@@ -473,6 +895,123 @@ export default definePlugin({
       title: '实时刷新冷却（秒）',
       description: '两次弹出刷新之间的最小间隔，默认 8 秒',
       default: 8
+    },
+    groupScroll: {
+      type: 'group',
+      title: '滚动'
+    },
+    scrollScope: {
+      type: 'select',
+      title: '哪里的卡片可以滚动',
+      description: '卡片内容太多时，选择哪一处能上下滚动。两个地方都用（默认）／只浮窗／只设置页／都不滚动',
+      options: [
+        { label: '浮窗和设置页', value: 'both' },
+        { label: '只浮窗', value: 'popover' },
+        { label: '只设置页', value: 'detail' },
+        { label: '都不滚动', value: 'none' }
+      ],
+      default: 'both'
+    },
+    maxCardHeight: {
+      type: 'slider',
+      title: '卡片最高显示多高',
+      description: '余额卡内容太多时，最多显示多高，超出就能上下滚动（默认 320，范围 120–800）',
+      min: 120,
+      max: 800,
+      step: 10,
+      default: 320
+    },
+    groupAppearance: {
+      type: 'group',
+      title: '卡片外观'
+    },
+    cardRadius: {
+      type: 'slider',
+      title: '卡片圆角',
+      description: '卡片四个角的圆润程度，0 是方角，24 是最圆（默认 10，跟现在一样）',
+      min: 0,
+      max: 24,
+      step: 1,
+      default: 10
+    },
+    accentColor: {
+      type: 'text',
+      title: '强调色',
+      description: '进度条、百分比数字等用的颜色，填 # 开头的色号（如 #10b981）或颜色英文名，留空/填错自动恢复默认绿色',
+      placeholder: '#10b981',
+      default: '#10b981'
+    },
+    cardGap: {
+      type: 'slider',
+      title: '卡片之间的间距',
+      description: '卡片和卡片之间留多少空隙，0 是紧贴，24 是最松（默认 8，跟现在一样）',
+      min: 0,
+      max: 24,
+      step: 1,
+      default: 8
+    },
+    fontScale: {
+      type: 'slider',
+      title: '卡片文字大小',
+      description: '整体放大或缩小卡片里的文字，100 是原始大小（默认），80 更小，140 更大',
+      min: 80,
+      max: 140,
+      step: 5,
+      default: 100
+    },
+    compactMode: {
+      type: 'switch',
+      title: '设置页紧凑模式',
+      description: '只影响设置页的供应商详情卡：收紧留白、隐藏底部「ZMod 数据源 · 更新于…」那行。浮窗保持原样不变',
+      default: false
+    },
+    groupSort: {
+      type: 'group',
+      title: '内容排序'
+    },
+    sortMode: {
+      type: 'select',
+      title: '卡片排序方式',
+      description: '卡片按什么顺序排。原来的顺序（默认）／我指定的顺序／按名称拼音正序／按名称拼音倒序',
+      options: [
+        { label: '原来的顺序', value: 'default' },
+        { label: '我指定的顺序', value: 'custom' },
+        { label: '按名称正序', value: 'labelAsc' },
+        { label: '按名称倒序', value: 'labelDesc' }
+      ],
+      default: 'default'
+    },
+    cardOrder: {
+      type: 'text',
+      title: '卡片顺序（自定义排序时用）',
+      description: '填卡片 key 的顺序，用逗号隔开；没填的卡片按原顺序排后面。留空就是原来的顺序',
+      placeholder: '例如：balance.gift,balance.topup',
+      default: ''
+    },
+    hiddenCards: {
+      type: 'text',
+      title: '隐藏哪些卡片',
+      description: '填不想显示的卡片 key，用逗号隔开；留空就全部显示。全填满了会自动恢复全部显示，避免卡里一片空白',
+      placeholder: '例如：usage.calls,quota.frac',
+      default: ''
+    },
+    groupText: {
+      type: 'group',
+      title: '文本自定义'
+    },
+    customLabels: {
+      type: 'text',
+      title: '改卡片上的文字',
+      description: '把卡片标题换成你想要的叫法，填一段 JSON 字典，左边是卡片 key、右边是新文字。留 {} 就是用原文案',
+      placeholder: '{"balance.gift":"赠款"}',
+      default: '{}'
+    },
+    advancedPrefs: {
+      type: 'text',
+      title: '高级设置（可覆盖上面几项）',
+      description: '给会写 JSON 的人用：填 {"sortMode":"custom","order":["balance.gift"],"hiddenKeys":[],"customLabels":{}} 之类，会覆盖上面的排序/隐藏/改名。留 {} 不生效',
+      placeholder: '{}',
+      default: '{}'
     }
   },
 
@@ -498,13 +1037,51 @@ export default definePlugin({
       }
     } catch { /* head unavailable — links degrade to plain text */ }
 
+    /* 卡片自定义：默认取值下视觉/内容 100% 不变；用户改设置即时重注入样式并重渲染两面。
+       prefsRev 每次变更自增，供设置页详情卡在「快照没变但设置变了」时也强制重建。 */
+    let prefs = buildQPPrefs(s);
+    let prefsRev = 0;
+    applyQpStyle(prefs);
+    function onPrefsChanged() {
+      prefs = buildQPPrefs(s);
+      prefsRev += 1;
+      applyQpStyle(prefs);
+      rerenderPopover();
+      rerenderDetail();
+    }
+    const prefOffs = [];
+    // 当前运行时的 settings.onChange 只接单个 key（内部拼 setting:<id>:<key>），
+    // 因此按 key 逐个注册；theme-workshop 的「数组批量监听」实际也是循环注册
+    for (const k of QP_KEYS) prefOffs.push(s.onChange(k, onPrefsChanged));
+    cleanup(() => {
+      for (const off of prefOffs) { try { off?.(); } catch {} }
+      try { document.getElementById('zmod-qp-style')?.remove(); } catch {}
+    });
 
     let snapshot = []; // { inst, status? }
     let snapshotAt = 0;
     let refreshPromise = null;
+    let providerCatalog = [];
+    let catalogAt = 0;
+    function refreshProviderCatalog(force) {
+      if (typeof ctx.invoke !== 'function') return Promise.resolve();
+      if (!force && Date.now() - catalogAt < 30000 && providerCatalog.length > 0) {
+        return Promise.resolve();
+      }
+      catalogAt = Date.now();
+      return Promise.resolve()
+        .then(() => ctx.invoke('usage.getProviderCatalog', {}))
+        .then((res) => {
+          if (res && res.ok && Array.isArray(res.providers)) {
+            providerCatalog = res.providers;
+          }
+        })
+        .catch(() => {});
+    }
     function refreshSnapshot(force) {
       if (refreshPromise && !force) return refreshPromise;
       const p = (async () => {
+        await refreshProviderCatalog(force);
         const insts = ds.getInstances();
         snapshot = await Promise.all(
           insts.map(async (inst) => ({
@@ -559,7 +1136,7 @@ export default definePlugin({
     /** Which instance follows the current selection — subscription source
         (供应商前缀段) decides first; model chain only for prefix-less labels. */
     function matchCurrentSelection(sel) {
-      return matchSelection(sel, snapshot);
+      return matchSelection(sel, snapshot, providerCatalog);
     }
 
     function bindPopoverLinks(wrap) {
@@ -585,9 +1162,13 @@ export default definePlugin({
       }
       const status = snapshot.find((s) => s.inst.id === inst.id)?.status;
       const wrap = document.createElement('div');
-      wrap.className = 'flex flex-col gap-2.5 border-t border-border pt-2 mt-2';
+      wrap.className = 'flex flex-col gap-2.5 border-t border-border pt-2 mt-2 zmod-qp-scope';
       wrap.setAttribute('data-' + POPOVER_MARK, inst.id);
-      wrap.innerHTML = renderV1Section(inst.type, status, sel, inst.name);
+      // 滚动只包卡片主体；标题/链接/刷新按钮不进滚动容器，避免被滚走或点不到
+      wrap.innerHTML = scrollWrap(
+        renderV1Section(inst.type, status, sel, inst.name, prefs),
+        scrollOpts(prefs, 'popover')
+      );
       bindPopoverLinks(wrap);
       return wrap;
     }
@@ -611,7 +1192,11 @@ export default definePlugin({
         existing.setAttribute('data-' + POPOVER_MARK, inst.id);
       }
       const status = snapshot.find((s) => s.inst.id === inst.id)?.status;
-      existing.innerHTML = renderV1Section(inst.type, status, sel, inst.name);
+      existing.classList.add('zmod-qp-scope');
+      existing.innerHTML = scrollWrap(
+        renderV1Section(inst.type, status, sel, inst.name, prefs),
+        scrollOpts(prefs, 'popover')
+      );
       bindPopoverLinks(existing);
     }
 
@@ -687,17 +1272,21 @@ export default definePlugin({
       const card = document.createElement('div');
       card.setAttribute('data-' + DETAIL_MARK, inst.id);
       card.dataset.snapshotAt = String(snapshotAt || 0);
-      card.className = 'rounded-xl border border-border bg-surface p-4 space-y-3 shadow-xs';
+      card.dataset.prefsRev = String(prefsRev);
+      card.className = 'rounded-xl border border-border bg-surface p-4 space-y-3 shadow-xs zmod-qp-scope' +
+        (prefs.compactMode ? ' zmod-qp-compact' : '');
       const ok = status && status.ok;
       const rows = ok ? status.rows || [] : [];
-      // header meta per v1: money sources show 可用总额, antigravity shows its tier pill
+      // header meta per v1: money sources show 可用总额, subscription sources show their tier pill
       let meta = '';
-      if (ok && (inst.type === 'antigravity' || inst.type === 'magpie')) {
+      if (ok && (inst.type === 'antigravity' || inst.type === 'magpie' || inst.type === 'zhipu-coding-plan' || inst.type === 'minimax')) {
         const tier = rowValue(rows, '订阅档位');
         if (tier) {
           meta = `<span class="rounded-full px-2 py-0.5 text-[10px] font-semibold bg-primary/10 text-primary border border-primary/20 tracking-wider">${esc(tier)}</span>`;
         }
-      } else if (ok && status.balance != null) {
+      } else if (ok && status.unlimited) {
+        meta = `<span class="rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 tracking-wider">无限额度</span>`;
+      } else if (ok && status.balance != null && isFinite(parseFloat(status.balance))) {
         let total = parseFloat(status.balance) || 0;
         if (inst.type === 'bailian-bss') total += numFrom(rowValue(rows, '可用代金券')) || 0;
         const code = inst.type === 'bailian-bss' ? 'CNY' : codeOf(status);
@@ -710,8 +1299,11 @@ export default definePlugin({
         `<span class="text-ui-base font-semibold text-foreground">${esc(title)}</span>${meta}</div>` +
         `<button type="button" data-${REFRESH_MARK}="${inst.id}" class="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border/80 bg-surface px-2.5 py-1 text-ui-xs font-medium text-foreground-subtle hover:bg-surface-hover hover:text-foreground transition-all cursor-pointer shadow-2xs">刷新</button>` +
         `</div>` +
-        renderV1DetailBody(inst.type, status) +
-        `<div class="text-ui-xs text-foreground-subtle/70">ZMod 数据源 · ${ok ? '更新于 ' + new Date(snapshotAt).toLocaleTimeString() : esc(status?.message || '查询失败')}</div>`;
+        scrollWrap(
+          renderV1DetailBody(inst.type, status, prefs),
+          scrollOpts(prefs, 'detail')
+        ) +
+        `<div class="qp-footer text-ui-xs text-foreground-subtle/70">ZMod 数据源 · ${ok ? '更新于 ' + new Date(snapshotAt).toLocaleTimeString() : esc(status?.message || '查询失败')}</div>`;
       card.querySelector(`[data-${REFRESH_MARK}]`)?.addEventListener('click', async () => {
         await refreshSnapshot(true).catch(() => {});
         rerenderDetail();
@@ -766,7 +1358,10 @@ export default definePlugin({
           existing?.remove();
           continue;
         }
-        if (existing && existing.getAttribute(`data-${DETAIL_MARK}`) === inst.id && Number(existing.dataset.snapshotAt || 0) === snapshotAt) continue;
+        // 快照没变但设置变了（prefsRev 自增）时也要重建，否则改设置不生效
+        if (existing && existing.getAttribute(`data-${DETAIL_MARK}`) === inst.id &&
+            Number(existing.dataset.snapshotAt || 0) === snapshotAt &&
+            Number(existing.dataset.prefsRev || 0) === prefsRev) continue;
         const status = snapshot.find((s) => s.inst.id === inst.id)?.status;
         const fresh = buildDetailCard(inst, status);
         if (existing) existing.replaceWith(fresh);

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import { configManager } from '../common/config.js';
 import { autodetectDatasources } from '../common/autodetect.js';
 import { secretVault } from './vault.js';
@@ -271,16 +272,39 @@ class RpcGateway {
       }
       return { success: false, error: 'Invalid URL' };
     });
-    this.register('system.openFolder', async ({ path } = {}) => {
+    this.register('system.openFolder', async ({ path: targetPath } = {}) => {
       try {
-        if (!electronShell || typeof path !== 'string' || !path.trim()) {
+        if (!electronShell || typeof targetPath !== 'string' || !targetPath.trim()) {
           return { ok: false, error: 'Invalid path' };
         }
-        if (!fs.existsSync(path) || !fs.statSync(path).isDirectory()) {
+        if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
           return { ok: false, error: 'Folder not found' };
         }
-        const failure = await electronShell.openPath(path);
+        const failure = await electronShell.openPath(targetPath);
         return failure ? { ok: false, error: failure } : { ok: true };
+      } catch (err) {
+        return { ok: false, error: String(err?.message || err) };
+      }
+    });
+    this.register('system.launchApp', async ({ execPath, args = [], cwd } = {}) => {
+      try {
+        if (typeof execPath !== 'string' || !execPath.trim()) {
+          return { ok: false, error: 'Invalid execPath' };
+        }
+        const resolvedPath = path.resolve(execPath.trim());
+        if (!fs.existsSync(resolvedPath)) {
+          return { ok: false, error: `Executable not found: ${resolvedPath}` };
+        }
+        const spawnArgs = Array.isArray(args) ? args.filter((a) => typeof a === 'string') : [];
+        const workDir = typeof cwd === 'string' && fs.existsSync(cwd) ? cwd : path.dirname(resolvedPath);
+        const child = spawn(resolvedPath, spawnArgs, {
+          detached: true,
+          stdio: 'ignore',
+          cwd: workDir,
+          windowsHide: false
+        });
+        child.unref();
+        return { ok: true, pid: child.pid };
       } catch (err) {
         return { ok: false, error: String(err?.message || err) };
       }

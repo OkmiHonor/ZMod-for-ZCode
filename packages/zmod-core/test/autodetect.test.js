@@ -87,6 +87,65 @@ test('DataSource Autodetect Suite', async (t) => {
     assert.deepEqual(autodetectDatasources({ homeDir: empty, existingTypes: [] }), []);
   });
 
+  await t.test('autodetects magpie, openrouter, siliconflow, moonshot, zhipu-coding-plan, minimax & newapi proxies', () => {
+    const home2 = path.join(tempDir, 'home-extended');
+    writeJSON(path.join(home2, '.zcode', 'v2', 'provider_config.json'), {
+      config: {
+        providerConfigRules: {
+          providerRules: [
+            {
+              providerId: 'mp', providerName: 'magpie',
+              config: { api: { baseUrl: 'http://127.0.0.1:3425/api/anthropic' }, access: { apiKey: 'sk-magpie' } }
+            },
+            {
+              providerId: 'or', providerName: 'OpenRouter', templateId: 'openrouter',
+              config: { api: { baseUrl: 'https://openrouter.ai/api/v1' }, access: { apiKey: 'sk-or-123' } }
+            },
+            {
+              providerId: 'sf', providerName: '硅基流动', templateId: 'siliconflow-cn',
+              config: { api: { baseUrl: 'https://api.siliconflow.cn/v1' }, access: { apiKey: 'sk-sf-123' } }
+            },
+            {
+              providerId: 'ms', providerName: 'Moonshot（中国）', templateId: 'moonshot-cn',
+              config: { api: { baseUrl: 'https://api.moonshot.cn/v1' }, access: { apiKey: 'sk-ms-123' } }
+            },
+            {
+              providerId: 'zp', providerName: '智谱 Coding Plan', templateId: 'zhipu-coding-plan',
+              config: { api: { baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4' }, access: { apiKey: 'zp-key-123' } }
+            },
+            {
+              providerId: 'mm', providerName: 'MiniMax（中国）', templateId: 'minimax-cn',
+              config: { api: { baseUrl: 'https://api.minimaxi.com/anthropic/v1' }, access: { apiKey: 'mm-key-123' } }
+            },
+            {
+              providerId: 'custom-proxy', providerName: '公益站反代',
+              config: { api: { baseUrl: 'https://api.my-newapi-relay.com/v1' }, access: { apiKey: 'sk-relay-999' } }
+            }
+          ]
+        }
+      }
+    });
+
+    const proposals = autodetectDatasources({ homeDir: home2, existingTypes: [] });
+    const byType = Object.fromEntries(proposals.map((p) => [p.type, p]));
+
+    assert.equal(byType.magpie?.status, 'ready');
+    assert.equal(byType.magpie?.settings?.url, 'http://127.0.0.1:3425');
+    assert.equal(byType.openrouter?.status, 'ready');
+    assert.equal(byType.openrouter?.secrets?.token, 'sk-or-123');
+    assert.equal(byType.siliconflow?.status, 'ready');
+    assert.equal(byType.siliconflow?.secrets?.token, 'sk-sf-123');
+    assert.equal(byType.moonshot?.status, 'ready');
+    assert.equal(byType.moonshot?.secrets?.token, 'sk-ms-123');
+    assert.equal(byType['zhipu-coding-plan']?.status, 'ready');
+    assert.equal(byType['zhipu-coding-plan']?.secrets?.token, 'zp-key-123');
+    assert.equal(byType.minimax?.status, 'ready');
+    assert.equal(byType.minimax?.secrets?.token, 'mm-key-123');
+    assert.equal(byType.newapi?.status, 'ready');
+    assert.equal(byType.newapi?.settings?.url, 'https://api.my-newapi-relay.com/v1');
+    assert.equal(byType.newapi?.secrets?.token, 'sk-relay-999');
+  });
+
   await t.test('config hot reload picks up external edits', async () => {
     ensureDirectoriesForTest();
     configManager.reset();
