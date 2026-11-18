@@ -51,7 +51,7 @@ export default definePlugin({
     magpiePath: {
       type: 'text',
       title: '可执行文件完整路径',
-      default: 'C:\\Users\\YOUR_USERNAME\\AppData\\Local\\Programs\\magpie\\magpie.exe'
+      default: ''
     },
     magpieUrl: {
       type: 'text',
@@ -99,7 +99,7 @@ export default definePlugin({
           id: 'magpie',
           name: 'Magpie',
           enabled: s.get('magpieEnabled', false) === true,
-          path: s.get('magpiePath', 'C:\\Users\\YOUR_USERNAME\\AppData\\Local\\Programs\\magpie\\magpie.exe'),
+          path: s.get('magpiePath', ''),
           url: s.get('magpieUrl', 'http://127.0.0.1:3425'),
           keywords: s.get('magpieKeywords', 'magpie, zcode/')
         }
@@ -133,9 +133,20 @@ export default definePlugin({
 
         // 双重冷却检查：防止探活网络等待期间其他调用已触发拉起
         if (!canLaunch(gw.id, lastLaunchMap, cooldownMs)) return;
-        recordLaunch(gw.id, lastLaunchMap);
 
         const autoToast = s.get('autoToast', true) !== false;
+
+        // 未配置可执行路径时绝不 spawn 空路径：给出清晰提示并放弃本次拉起，
+        // 也不占用冷却时间，否则 system.launchApp 可能以空参数报错或误解析到系统默认程序。
+        if (typeof gw.path !== 'string' || !gw.path.trim()) {
+          console.warn(`[gateway-keeper] ${gw.name} 尚未配置可执行文件完整路径，跳过自动拉起`);
+          if (autoToast) {
+            ui?.showToast?.(`「${gw.name}」未配置可执行文件路径，请在插件设置中填写后再启用自动拉起`, 'warn');
+          }
+          return;
+        }
+
+        recordLaunch(gw.id, lastLaunchMap);
         if (autoToast) {
           ui?.showToast?.(`检测到反代模型「${modelName}」，正在后台唤起 ${gw.name}...`, 'info');
         }

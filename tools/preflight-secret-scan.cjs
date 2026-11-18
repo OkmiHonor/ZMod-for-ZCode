@@ -12,14 +12,16 @@
  *   node tools/preflight-secret-scan.cjs --staged           # 仅扫描已暂存：git diff --cached --name-only
  *   node tools/preflight-secret-scan.cjs --all              # 全仓存量审计：git ls-files
  *   node tools/preflight-secret-scan.cjs --files <路径...>   # 显式路径，支持目录递归（跳过 node_modules 与 .git）
+ *   node tools/preflight-secret-scan.cjs --files <zip路径>    # .zip 解包扫描其中的文本条目
  *   node tools/preflight-secret-scan.cjs --worktree --strict # WARN 级命中也判定失败
  *
  * 约定：
  *  - 只扫描存在的普通文件；内容前 8KB 含 \0 判定为二进制并跳过；
+ *  - .zip 走 PowerShell/.NET 解包，仅扫文本类条目，命中路径显示为「外层路径!条目名」；
  *  - ERROR 级命中文本脱敏显示（保留前 6 与后 3 字符，中间以 … 代替）；
  *  - 退出码：0 = 干净 / 仅 WARN（--strict 时 WARN 也失败）；1 = 存在 ERROR 级命中；2 = 用法或 IO 错误。
  *
- * 零第三方依赖，Node >= 18。
+ * 零第三方依赖，Node >= 18。zip 解包调用系统 PowerShell（Windows 基座自带）。
  */
 
 'use strict';
@@ -30,6 +32,11 @@ const { spawnSync } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const BINARY_SNIFF_BYTES = 8 * 1024;
+
+// zip 内条目：仅这些扩展名按文本扫描，其余（图片、音频、字体等）跳过
+const ZIP_TEXT_EXT = /\.(js|cjs|mjs|json|jsonc|md|ts|tsx|jsx|yml|yaml|txt|html|css|xml|svg|sh|bat|ps1|backup\d*|bak|orig|old)$/i;
+// 单条目解压上限：超过则跳过，避免被 zip bomb 拖垮
+const ZIP_ENTRY_MAX_BYTES = 8 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // 规则定义（逐行独立测试；g 标志供 matchAll 使用）
@@ -178,35 +185,28 @@ function collectFiles(mode, fileArgs) {
   return [...new Set(absFiles)].sort();
 }
 
-function addHit(hits, seen, lineNo, level, id, text) {
-  const key = `${id}|${lineNo}|${text}`;
+function addHit(hits, seen, lineNo, level, id, text, entry) {
+  const key = `${entry || ''}|${id}|${lineNo}|${text}`;
   if (seen.has(key)) return;
   seen.add(key);
-  hits.push({ lineNo, level, id, text });
+  const hit = { lineNo, level, id, text };
+  if (entry) hit.entry = entry;
+  hits.push(hit);
 }
 
-function scanFile(abs) {
-  const content = (() => {
-    try {
-      return fs.readFileSync(abs, 'utf8');
-    } catch (err) {
-      return failIO(`文件读取失败: ${displayPath(abs)} (${err.message})`);
-    }
-  })();
+function looksBinary(content) {
+  return content.slice(0, BINARY_SNIFF_BYTES).includes('\0');
+}
 
-  const result = { binary: false, hits: [] };
-  if (content.slice(0, BINARY_SNIFF_BYTES).includes('\0')) {
-    result.binary = true;
-    return result;
-  }
-
-  const hits = result.hits;
+// 对一段文本套用全部规则；baseName 用于 sensitive-filename 判定，
+// zip 内条目传条目名而非外层文件名。
+function scanText(content, baseName) {
+  const hits = [];
   const seen = new Set();
 
   // sensitive-filename：按 basename 判定，行号记 0 表示文件级命中
-  const base = path.basename(abs);
   for (const re of FILENAME_RULES) {
-    if (re.test(base)) addHit(hits, seen, 0, 'ERROR', 'sensitive-filename', base);
+    if (re.test(baseName)) addHit(hits, seen, 0, 'ERROR', 'sensitive-filename', baseName);
   }
 
   const lines = content.split(/\r?\n/);
@@ -228,7 +228,92 @@ function scanFile(abs) {
       addHit(hits, seen, lineNo, 'WARN', 'private-address', m[0]);
     }
   }
-  return result;
+  return hits;
+}
+
+function scanFile(abs) {
+  let content;
+  try {
+    content = fs.readFileSync(abs, 'utf8');
+  } catch (err) {
+    return failIO(`文件读取失败: ${displayPath(abs)} (${err.message})`);
+  }
+  if (looksBinary(content)) return { binary: true, hits: [] };
+  return { binary: false, hits: scanText(content, path.basename(abs)) };
+}
+
+// PowerShell 单引号内需把 ' 翻倍；zip 路径经此转义后嵌入 -EncodedCommand 脚本
+function psQuote(p) { return p.replace(/'/g, "''"); }
+
+// zip 解包：借系统 .NET ZipFile 把每个文本条目读成字节，再以 base64 走 stdout，
+// 全程 ASCII 管道，规避 Windows 中文路径/编码问题，且不落临时文件。
+function readZipTextEntries(abs) {
+  // 与 ZIP_TEXT_EXT 等价；PowerShell -notmatch 本身大小写不敏感，无需 (i)
+  const extPattern = '\\.(js|cjs|mjs|json|jsonc|md|ts|tsx|jsx|yml|yaml|txt|html|css|xml|svg|sh|bat|ps1|backup\\d*|bak|orig|old)$';
+  // 条目内容与错误原因都走 base64 的 ASCII 行，失败时始终 exit 0，
+  // 避免 PowerShell 本地化错误文本/CLIXML 经控制台编码后变成乱码。
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "$ProgressPreference='SilentlyContinue'",
+    'Add-Type -AssemblyName System.IO.Compression.FileSystem',
+    'try {',
+    `  $z=[System.IO.Compression.ZipFile]::OpenRead('${psQuote(path.resolve(abs))}')`,
+    '  try {',
+    '    foreach ($e in $z.Entries) {',
+    `      if ($e.Length -gt ${ZIP_ENTRY_MAX_BYTES}) { continue }`,
+    `      if ($e.FullName -notmatch '${extPattern}') { continue }`,
+    '      try {',
+    '        $s=$e.Open(); $ms=New-Object System.IO.MemoryStream',
+    '        try { $s.CopyTo($ms); $bytes=$ms.ToArray() } finally { $s.Dispose(); $ms.Dispose() }',
+    '        $nb=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($e.FullName))',
+    '        $cb=[Convert]::ToBase64String($bytes)',
+    '        [Console]::Out.WriteLine($nb + "`t" + $cb)',
+    '      } catch { continue }',
+    '    }',
+    '  } finally { $z.Dispose() }',
+    '} catch {',
+    '  $msg=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_.Exception.Message))',
+    '  [Console]::Out.WriteLine("ZIPERR|" + $msg)',
+    '}',
+  ].join('\n');
+
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  if (r.error) throw r.error;
+  const entries = [];
+  for (const line of r.stdout.split(/\r?\n/)) {
+    if (!line) continue;
+    if (line.startsWith('ZIPERR|')) {
+      let reason = 'zip 读取失败';
+      try { reason = Buffer.from(line.slice(7), 'base64').toString('utf8'); } catch { /* 保留默认原因 */ }
+      throw new Error(reason.slice(0, 200));
+    }
+    const tab = line.indexOf('\t');
+    if (tab < 0) continue;
+    try {
+      const name = Buffer.from(line.slice(0, tab), 'base64').toString('utf8');
+      const bytes = Buffer.from(line.slice(tab + 1), 'base64');
+      entries.push({ name, content: bytes.toString('utf8') }); // Node utf8 解码即 errors:'replace'
+    } catch { /* 单条解码失败则跳过，不影响其它条目 */ }
+  }
+  return entries;
+}
+
+function scanZip(abs) {
+  let entries;
+  try {
+    entries = readZipTextEntries(abs);
+  } catch (err) {
+    return { unreadable: true, hits: [{ lineNo: 0, level: 'WARN', id: 'zip-unreadable', text: String(err.message || err).slice(0, 200) }] };
+  }
+  const hits = [];
+  for (const entry of entries) {
+    if (!ZIP_TEXT_EXT.test(entry.name) || looksBinary(entry.content)) continue;
+    for (const h of scanText(entry.content, path.posix.basename(entry.name))) {
+      hits.push({ ...h, entry: entry.name });
+    }
+  }
+  return { unreadable: false, hits };
 }
 
 function main() {
@@ -267,23 +352,29 @@ function main() {
   let errorCount = 0;
   let warnCount = 0;
   let binarySkipped = 0;
+  let zipUnreadable = 0;
 
   for (const abs of absFiles) {
-    const { binary, hits } = scanFile(abs);
+    const isZip = path.extname(abs).toLowerCase() === '.zip';
+    const { binary, hits, unreadable } = isZip ? scanZip(abs) : scanFile(abs);
     if (binary) {
       binarySkipped++;
       continue;
     }
+    const outer = displayPath(abs);
     for (const hit of hits) {
       const shown = hit.level === 'ERROR' ? mask(hit.text) : hit.text;
-      console.log(`  ${displayPath(abs)}:${hit.lineNo} [${hit.level}] ${hit.id}: ${shown}`);
+      const where = hit.entry ? `${outer}!${hit.entry}` : outer;
+      console.log(`  ${where}:${hit.lineNo} [${hit.level}] ${hit.id}: ${shown}`);
       if (hit.level === 'ERROR') errorCount++;
       else warnCount++;
     }
+    if (unreadable) zipUnreadable++;
   }
 
   const binNote = binarySkipped > 0 ? `（跳过二进制 ${binarySkipped} 个）` : '';
-  console.log(`\n📊 扫描汇总：文件 ${absFiles.length}，ERROR ${errorCount}，WARN ${warnCount} ${binNote}`.trimEnd());
+  const zipNote = zipUnreadable > 0 ? `（zip 不可读 ${zipUnreadable} 个）` : '';
+  console.log(`\n📊 扫描汇总：文件 ${absFiles.length}，ERROR ${errorCount}，WARN ${warnCount} ${binNote}${zipNote}`.trimEnd());
 
   if (errorCount > 0) {
     console.error('✖ 发现 ERROR 级敏感信息命中，禁止发版！请先清理上述敏感内容。');

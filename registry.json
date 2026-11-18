@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-18T13:59:57.691Z",
+  "updated": "2026-11-18T14:35:46.194Z",
   "plugins": [
     {
       "id": "acrylic-window",
@@ -43,7 +43,7 @@
       "id": "gateway-keeper",
       "version": "1.0.0",
       "url": "https://github.com/OkmiHonor/ZMod-for-ZCode/releases/download/plugins/gateway-keeper-1.0.0.zip",
-      "shasum": "3a63ee7c664117b4d30b480f771c83a1f68a52aaa20e4ad246c0ab72da7b32c3",
+      "shasum": "398e0e03842b077fc0c004ecb959c1cdaae624613776a48a828754f3d56afc02",
       "manifest": {
         "id": "gateway-keeper",
         "name": "反代网关守护",
